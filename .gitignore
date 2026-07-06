@@ -1,0 +1,16 @@
+node_modules/
+.env
+.mcp.local.backup.json
+playwright-report/
+test-results/
+dist/
+*.log
+.DS_Store
+CLAUDE.local.md
+docs/local/
+tests/freeland/
+tests/magicpay/
+ecc-install.json
+.claude/settings.local.json
+playwright/.auth/
+playwright-results.xml
