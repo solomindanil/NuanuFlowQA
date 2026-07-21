@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VoiceDeck — сцена</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="stage-body">
+    <canvas id="bg" aria-hidden="true"></canvas>
+    <main id="slide-root"></main>
+    <div id="hud">
+      <div id="hud-pending" class="hud-pending" hidden></div>
+      <div id="hud-status" class="hud-status"></div>
+    </div>
+    <script type="module" src="/src/stage.ts"></script>
+  </body>
+</html>

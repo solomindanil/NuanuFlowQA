@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VoiceDeck — пульт</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="console-body">
+    <header class="c-header">
+      <div class="c-title">VoiceDeck · пульт спикера</div>
+      <div class="c-header-controls">
+        <button id="btn-prev" title="Предыдущий слайд">←</button>
+        <span id="c-position" class="c-position">–/–</span>
+        <button id="btn-next" title="Следующий слайд">→</button>
+        <label class="c-toggle"><input type="checkbox" id="chk-auto" /> авто-переходы</label>
+        <label class="c-toggle">
+          ASR:
+          <select id="sel-asr">
+            <option value="webspeech">микрофон (Web Speech)</option>
+            <option value="fake">текст (fake)</option>
+          </select>
+        </label>
+        <a href="/" target="voice-deck-stage" class="c-link">открыть сцену ↗</a>
+      </div>
+    </header>
+
+    <main class="c-grid">
+      <section class="c-panel">
+        <h2>Слайды и уверенность матчинга</h2>
+        <ol id="slide-list" class="c-slide-list"></ol>
+      </section>
+
+      <section class="c-panel">
+        <h2>Переход</h2>
+        <div id="c-pending" class="c-pending c-pending--idle">автопредложений нет</div>
+        <div class="c-row">
+          <button id="btn-accept">Принять (Space)</button>
+          <button id="btn-cancel">Отменить (Esc)</button>
+          <button id="btn-generate">Сгенерировать из речи (G)</button>
+        </div>
+        <div id="c-gen-status" class="c-muted"></div>
+
+        <h2>Транскрипт (окно матчинга)</h2>
+        <div id="c-transcript" class="c-transcript"></div>
+
+        <h2>Ввод текста (fake-ASR)</h2>
+        <div class="c-row">
+          <input id="inp-feed" type="text" placeholder="скажите что-нибудь текстом…" />
+          <button id="btn-feed">Отправить</button>
+          <button id="btn-script">▶ Демо-сценарий</button>
+        </div>
+
+        <h2>Настройки</h2>
+        <div class="c-row">
+          <label>Язык распознавания
+            <select id="sel-lang">
+              <option value="ru-RU">русский (ru-RU)</option>
+              <option value="en-US">английский (en-US)</option>
+            </select>
+          </label>
+        </div>
+        <div class="c-row">
+          <label class="c-grow">Anthropic API key (для живой генерации; хранится только в этом браузере)
+            <input id="inp-key" type="password" placeholder="sk-ant-… (пусто = локальный mock-генератор)" />
+          </label>
+          <button id="btn-key">Сохранить</button>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/console.ts"></script>
+  </body>
+</html>
