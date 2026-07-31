@@ -172,6 +172,7 @@ FreelandQA/
         legacy-matrix-map.v1.schema.json
         nuanu-snapshot.v1.schema.json
         patchset-manifest.v1.schema.json
+        playwright-review-map.v1.schema.json
         subproject-acceptance.v1.schema.json
         test-inventory.v1.schema.json
         ticket-mapping.v1.schema.json
@@ -278,7 +279,7 @@ tools and do not enter the persisted schema.
 
 **Interfaces:**
 
-- **Consumes:** an injected `Record<string, string | undefined>`, the tracked
+- **Consumes:** an injected `HarnessEnv`, the tracked
   `config/environments/staging.yaml`, and no ambient `.env` during unit tests.
 - **Produces:** `HarnessMode`, a validated `StagingEnvironment`, and a
   non-empty `PlaywrightTestConfig['projects']` array.
@@ -319,7 +320,7 @@ test('discovery mode uses .invalid data and separate Chromium/WebKit auth paths'
 test('the staging project definitions exist in discovery mode');
 ```
 
-Use an injected `Record<string, string | undefined>` rather than mutating global environment state.
+Use an injected `HarnessEnv` rather than mutating global environment state.
 Add and run them one at a time:
 
 - [ ] missing live inputs;
@@ -356,6 +357,8 @@ Create this exact package shape:
     "test:list": "tsx tools/coverage/capture-playwright.ts --check",
     "coverage:import-matrix": "tsx tools/coverage/import-matrix.ts --source coverage/sources/TEST-CASES-2026-07-07.md --review-at 2026-08-07T00:00:00Z --write",
     "coverage:validate": "tsx tools/coverage/validate-registry.ts",
+    "coverage:validate:requirements": "tsx tools/coverage/validate-registry.ts --requirements-only",
+    "coverage:report": "tsx tools/coverage/render-report.ts",
     "coverage:reconcile": "tsx tools/coverage/reconcile-qa.ts",
     "patchset:verify": "tsx tools/patchsets/verify-patchset.ts",
     "security:scan": "tsx tools/security/scan-repository.ts --history",
@@ -384,7 +387,7 @@ Expose these signatures:
 export type HarnessMode = 'discovery' | 'live';
 
 export function resolveHarnessMode(
-  env: Record<string, string | undefined>,
+  env: HarnessEnv,
 ): HarnessMode;
 
 export interface StagingEnvironment {
@@ -418,7 +421,7 @@ export function loadStagingPolicy(
 ): StagingEnvironmentPolicy;
 
 export function loadStagingEnvironment(
-  env: Record<string, string | undefined>,
+  env: HarnessEnv,
   mode: HarnessMode,
   policy: StagingEnvironmentPolicy,
 ): StagingEnvironment;
@@ -604,7 +607,10 @@ export function createPlaywrightProjects(
       name: 'freeland-staging-setup',
       testDir: './tests/playwright/freeland',
       testMatch: /auth\.setup\.ts/,
-      metadata: { authFile: environment.chromiumAuthFile },
+      metadata: {
+        authFile: environment.chromiumAuthFile,
+        expectedGitSha: environment.expectedGitSha,
+      },
       use: chrome,
     },
     {
@@ -612,6 +618,7 @@ export function createPlaywrightProjects(
       testDir: './tests/playwright/freeland',
       testIgnore: /auth\.setup\.ts/,
       dependencies: ['freeland-staging-setup'],
+      metadata: { expectedGitSha: environment.expectedGitSha },
       use: { ...chrome, storageState: environment.chromiumAuthFile },
     },
   ];
@@ -718,7 +725,7 @@ export interface StagingCredentials {
 }
 
 export function resolveCreds(
-  env: Readonly<Record<string, string | undefined>>,
+  env: HarnessEnv,
 ): StagingCredentials;
 
 export function requireProjectAuthFile(
@@ -919,12 +926,13 @@ git commit -m "test: track the 164-case Freeland baseline"
 
 **Interfaces:**
 
-- **Consumes:** the five audited ignored source files listed in Step 2,
-  `StagingEnvironment`, and an absolute `FREELAND_PRODUCT_ROOT` whose tree is
-  first asserted as the audited final tree.
+- **Consumes:** the five audited ignored source files listed in Step 2 and
+  `StagingEnvironment`. Product source is not imported or executed in this
+  task.
 - **Produces:** three behavioral discovery projects plus one WebKit setup
-  project, one independent Node contract inventory, a loopback-only mesh
-  proxy, and sanitized tracked documents.
+  project, one statically verified tagged Node contract source for later Task 6
+  inventory capture, a loopback-only mesh proxy, and sanitized tracked
+  documents.
 - **Evidence boundary:** executable tests produce only Playwright
   `testInfo.outputPath()` files and attachments.
 
@@ -944,17 +952,22 @@ export function createAuxiliaryProjects(
 export function startMeshConnectProxy(
   options: MeshProxyOptions,
 ): Promise<{ close(): Promise<void> }>;
+
+export function requireExpectedGitSha(
+  metadata: Readonly<Record<string, unknown>>,
+  projectName: string,
+): string;
 ```
 
 The project names are exactly `freeland-direct-ingress`,
 `freeland-vpn-regression`, `freeland-webkit-setup`, and
-`freeland-webkit-release`. In Task 3 the Node boundary accepts only the audited
-source-head worktree after `git write-tree`/`HEAD^{tree}` equals `839e77…`; in
-Task 8 and CI it accepts only the verifier's returned `patchedWorktree`. It then
-runs `npm run test:product-contracts`. Live projects require the candidate SHA;
-discovery only enumerates them.
+`freeland-webkit-release`. Task 3 only parses the tagged Node contract source;
+Task 8 and CI execute it only with `FREELAND_PRODUCT_ROOT` equal to the
+verifier's returned `patchedWorktree`. Live Playwright projects receive the
+candidate SHA through project metadata; discovery only enumerates them.
 `createAuxiliaryProjects()` is implemented in
-`packages/playwright-support/src/projects.ts`; `MeshProxyOptions` and
+`packages/playwright-support/src/projects.ts`, including
+`requireExpectedGitSha()`; `MeshProxyOptions` and
 `startMeshConnectProxy()` are implemented in
 `tools/network/mesh-connect-proxy.ts`.
 
@@ -1050,23 +1063,26 @@ Refactor them as follows:
 3. Use project-provided auth state and routing.
 4. Keep public-ingress tests off mesh.
 5. Keep VPN and authenticated WebKit tests on the explicitly configured mesh lane.
-6. Require `FREELAND_PRODUCT_ROOT` for the product contract test; remove its local fallback.
+6. Remove the product contract's local fallback; Task 3 only parses its tags,
+   while Task 8 supplies the absolute verified root for execution.
 7. Preserve all expected-failure logic and ticket identifiers.
 
 Promote one artifact per red/green checkpoint:
 
 - [ ] add the direct-ingress file and `1 test` assertion; replace its SHA
-      fallback and direct evidence writes; rerun migration safety plus
-      `--project=freeland-direct-ingress --list`;
+      fallback and direct evidence writes; rerun migration safety plus the
+      static source-count assertion;
 - [ ] add the VPN file and `3 tests` assertion; inject mesh routing and
-      attachment-only evidence; rerun migration safety plus its list command;
+      attachment-only evidence; rerun migration safety plus its static
+      source-count assertion;
 - [ ] add the semantic-responsive file and exact `10 tests` assertion; replace
       repository writes with attachments; rerun migration safety;
 - [ ] add WebKit setup and exact `1 setup` assertion; consume only
       `metadata.authFile`; rerun migration safety;
 - [ ] add the Node contract and exact `1 tagged node:test` assertion; require
-      absolute `FREELAND_PRODUCT_ROOT`; rerun migration safety and
-      `test:product-contracts`.
+      absolute `FREELAND_PRODUCT_ROOT` in its runtime guard; rerun migration
+      safety and a static AST tag/count assertion without importing product
+      source or constructing `TestInventory`.
 
 Replace direct repository writes with attachments:
 
@@ -1081,10 +1097,10 @@ await testInfo.attach('responsive-screenshot', {
 Require, rather than default, the candidate:
 
 ```ts
-const expectedGitSha = process.env.FREELAND_EXPECTED_STAGE_SHA;
-if (!expectedGitSha && process.env.FREELAND_DISCOVERY !== '1') {
-  throw new Error('FREELAND_EXPECTED_STAGE_SHA is required');
-}
+const expectedGitSha = requireExpectedGitSha(
+  testInfo.project.metadata,
+  testInfo.project.name,
+);
 ```
 
 - [ ] **Step 3: Integrate auxiliary discovery projects**
@@ -1149,6 +1165,8 @@ Build the project factory in focused checkpoints:
 - [ ] add and pass direct-ingress project-name/count assertions;
 - [ ] add and pass VPN project-name/count/mesh assertions;
 - [ ] add and pass WebKit setup dependency/auth-path assertions;
+- [ ] add and pass expected-SHA metadata assertions for every live auxiliary
+      project; no regression module reads process environment directly;
 - [ ] add and pass the smoke/responsive selection assertions;
 - [ ] add and pass the exact 13 access-control selection assertion with
       `ACL-05` excluded;
@@ -1201,16 +1219,12 @@ npx tsx --test tests/security/migration-safety.test.ts
 FREELAND_DISCOVERY=1 npx playwright test --project=freeland-direct-ingress --list
 FREELAND_DISCOVERY=1 npx playwright test --project=freeland-vpn-regression --list
 FREELAND_DISCOVERY=1 npx playwright test --project=freeland-webkit-release --list
-test "$(git -C /Users/danilsolomin/Documents/Freeland/.worktrees/staging-qa rev-parse 'HEAD^{tree}')" = "839e77b1640f682486a297210b30f0fbc1211219"
-test "$(git -C /Users/danilsolomin/Documents/Freeland/.worktrees/staging-qa write-tree)" = "839e77b1640f682486a297210b30f0fbc1211219"
-git -C /Users/danilsolomin/Documents/Freeland/.worktrees/staging-qa diff --exit-code
-FREELAND_PRODUCT_ROOT=/Users/danilsolomin/Documents/Freeland/.worktrees/staging-qa npm run test:product-contracts
 npm run typecheck
 git diff --check
 ```
 
-The product-contract command imports source and runs `node:test`; it does not
-start a browser or contact a deployment. No live test command is allowed.
+The product-contract check parses source only and does not import product code.
+No live test command is allowed.
 
 - [ ] **Step 6: Commit**
 
@@ -1227,7 +1241,6 @@ git commit -m "test: promote sanitized Freeland release regressions"
 
 - Create: all files under `/Users/danilsolomin/projectsnew/FreelandQA/packages/contracts/`
 - Create: `/Users/danilsolomin/projectsnew/FreelandQA/coverage/registry.v1.yaml`
-- Create: `/Users/danilsolomin/projectsnew/FreelandQA/coverage/bootstrap/coverage-report.v1.json`
 - Create: `/Users/danilsolomin/projectsnew/FreelandQA/tools/coverage/validate-registry.ts`
 - Create: `/Users/danilsolomin/projectsnew/FreelandQA/tools/coverage/render-report.ts`
 - Create: `/Users/danilsolomin/projectsnew/FreelandQA/tests/coverage/registry-validation.test.ts`
@@ -1237,7 +1250,9 @@ git commit -m "test: promote sanitized Freeland release regressions"
 - **Consumes:** repository root, lexical YAML requirement/ticket files, and the
   two committed test-inventory JSON files.
 - **Produces:** a typed `CoverageRegistry`, sorted validation diagnostics, and
-  canonical `coverage/bootstrap/coverage-report.v1.json`.
+  the deterministic writer for the later canonical
+  `coverage/bootstrap/coverage-report.v1.json`; Task 6 creates the first
+  tracked report after nonzero inventories exist.
 
 ```ts
 export interface ValidationIssue {
@@ -1268,6 +1283,8 @@ export interface CoverageReport {
   generatedFromSha256: string;
   requirements: Record<LifecycleStatus, number>;
   checks: Record<CheckResultPolicy, number>;
+  stability: Record<CheckStability, number>;
+  outcomes: Record<ObservedOutcomeStatus, number>;
   promotionEligible: number;
   promotionIneligible: number;
   missing: number;
@@ -1304,6 +1321,12 @@ auxiliaryInventory: coverage/bootstrap/playwright-auxiliary.v1.json
 generatedReport: coverage/bootstrap/coverage-report.v1.json
 ```
 
+Task 4 implements and fixture-tests report generation but does not create the
+tracked report because the nonzero baseline/auxiliary inventories do not exist
+until Task 6. `--requirements-only` validates requirement schemas/graphs
+without loading inventories, tickets, or a generated report. Full validation
+remains fail-closed and is first legal after Task 6 writes all three.
+
 - [ ] **Step 1: Write failing lifecycle and cross-reference tests**
 
 Cover at least:
@@ -1315,7 +1338,12 @@ test('rejects INAPPLICABLE without candidate evidence and expiresAt');
 test('rejects MISSING without reason, owner, and proposedCheck');
 test('rejects AUTOMATED when an assertion or required lane has no authoritative check');
 test('rejects promotion credit for expected-fail, conditional-fail, skipped, or flaky checks');
-test('rejects duplicate requirement, assertion, check, and stable Playwright IDs');
+test('requires stability and observed outcome for every check');
+test('rejects PASS without timestamped authoritative evidence');
+test('keeps discovery outcomes NOT_RUN and promotion-ineligible');
+test('rejects requirement/inventory execution metadata drift by check ID');
+test('groups repeated logical check IDs across baseline and WebKit occurrences without double credit');
+test('rejects duplicate requirement/check bindings and conflicting logical check or stable-tag reuse');
 test('rejects an unknown requirement or ticket reverse reference');
 test('rejects a zero-sized Playwright inventory');
 test('rejects a QA ticket mapping that is neither mapped nor explicitly missing');
@@ -1331,7 +1359,12 @@ Add exactly one failing fixture/test per micro-cycle:
 - [ ] complete `MISSING`;
 - [ ] authoritative `AUTOMATED`;
 - [ ] non-pass promotion credit;
-- [ ] unique IDs/tags;
+- [ ] stability/outcome presence;
+- [ ] evidenced `PASS`;
+- [ ] discovery `NOT_RUN`;
+- [ ] requirement/inventory metadata equality;
+- [ ] cross-leaf logical-ID grouping and occurrence de-duplication;
+- [ ] composite binding uniqueness and logical ID/tag consistency;
 - [ ] reverse references;
 - [ ] zero inventory;
 - [ ] QA mapped-or-missing;
@@ -1355,7 +1388,8 @@ Implement one contract per focused failing assertion:
 - [ ] add registry/report assignment assertions; add `ValidationIssue`,
       `CoverageRegistry`, and `CoverageReport`;
 - [ ] add an inventory assignment assertion; create `test-inventory.ts` with
-      `InventoryCheck` and `TestInventory`;
+      `InventoryCheck`, `TestInventory`, `PlaywrightReviewDocument`, and its
+      entry type;
 - [ ] add a Nuanu assignment assertion; create `nuanu.ts` with
       `NuanuQaSnapshot` and `TicketMapping`;
 - [ ] add a patch assignment assertion; create `patchset.ts` with
@@ -1386,6 +1420,24 @@ export type CheckResultPolicy =
   | 'MAY_SKIP'
   | 'DIAGNOSTIC'
   | 'SUPPORT';
+
+export type CheckStability = 'STABLE' | 'FLAKY' | 'UNKNOWN';
+
+export type ObservedOutcomeStatus =
+  | 'NOT_RUN'
+  | 'PASS'
+  | 'FAIL'
+  | 'EXPECTED_FAIL'
+  | 'SKIPPED'
+  | 'FLAKY';
+
+export type ObservedOutcome =
+  | { status: 'NOT_RUN' }
+  | {
+      status: Exclude<ObservedOutcomeStatus, 'NOT_RUN'>;
+      observedAt: string;
+      evidenceRef: string;
+    };
 
 export type TicketResolution = 'mapped' | 'missing';
 ```
@@ -1428,6 +1480,8 @@ export interface CoverageRequirement {
     file: string;
     assertionIds: string[];
     resultPolicy: CheckResultPolicy;
+    stability: CheckStability;
+    observedOutcome: ObservedOutcome;
   }>;
   lifecycle: {
     status: LifecycleStatus;
@@ -1478,11 +1532,12 @@ focused Ajv assertion:
 - [ ] `ticket-mapping.v1.schema.json`;
 - [ ] `nuanu-snapshot.v1.schema.json`;
 - [ ] `patchset-manifest.v1.schema.json`;
+- [ ] `playwright-review-map.v1.schema.json`;
 - [ ] `subproject-acceptance.v1.schema.json`;
 - [ ] `coverage-registry.v1.schema.json`;
 - [ ] `coverage-report.v1.schema.json`.
 
-Drive all eleven files from this exact schema-surface test rather than writing
+Drive all twelve files from this exact schema-surface test rather than writing
 open-ended schemas:
 
 ```ts
@@ -1498,7 +1553,8 @@ const SCHEMA_SURFACES = {
     closed: [
       '', '/lanes', '/variants', '/externalEffects/items',
       '/authoritativeAssertionSource', '/assertions/items', '/checks/items',
-      '/lifecycle', '/paymentOutcome', '/review', '/legacy',
+      '/checks/items/observedOutcome', '/lifecycle', '/paymentOutcome',
+      '/review', '/legacy',
     ],
   },
   'legacy-matrix-inventory.v1.schema.json': {
@@ -1520,7 +1576,11 @@ const SCHEMA_SURFACES = {
       'checks',
     ],
     optional: [],
-    closed: ['', '/checks/items', '/checks/items/variants'],
+    closed: [
+      '', '/checks/items', '/checks/items/occurrences/items',
+      '/checks/items/occurrences/items/variants',
+      '/checks/items/observedOutcome',
+    ],
   },
   'auxiliary-inventory.v1.schema.json': {
     required: ['schemaVersion', 'playwright', 'productContract'],
@@ -1555,6 +1615,11 @@ const SCHEMA_SURFACES = {
       '', '/source', '/patches/items', '/expectedNameStatus/items', '/upstream',
     ],
   },
+  'playwright-review-map.v1.schema.json': {
+    required: ['schemaVersion', 'entries'],
+    optional: [],
+    closed: ['', '/entries/items', '/entries/items/observedOutcome'],
+  },
   'subproject-acceptance.v1.schema.json': {
     required: [
       'schemaVersion', 'repositoryCommit', 'toolVersions', 'inventory',
@@ -1576,10 +1641,11 @@ const SCHEMA_SURFACES = {
   'coverage-report.v1.schema.json': {
     required: [
       'schemaVersion', 'generatedFromSha256', 'requirements', 'checks',
-      'promotionEligible', 'promotionIneligible', 'missing', 'blocked',
+      'stability', 'outcomes', 'promotionEligible', 'promotionIneligible',
+      'missing', 'blocked',
     ],
     optional: [],
-    closed: ['', '/requirements', '/checks'],
+    closed: ['', '/requirements', '/checks', '/stability', '/outcomes'],
   },
 } as const;
 
@@ -1601,11 +1667,24 @@ for (const [file, contract] of Object.entries(SCHEMA_SURFACES)) {
 
 For every property named above, add one wrong-type fixture before its schema
 property. The lifecycle tests in Step 1 define the exact conditional branches;
-the payment test additionally requires an `if` on an external effect whose
+both requirement-check and inventory-check schemas require `stability` plus a
+closed `observedOutcome` object. Every non-`NOT_RUN` status requires non-empty
+`observedAt` and `evidenceRef`; `NOT_RUN` forbids both. The schema implements
+those branches as an exact `oneOf`, matching the `ObservedOutcome`
+discriminated union. The payment test additionally requires an `if` on an external effect whose
 `kind` is `payment` and a `then.required` containing exactly
 `paymentProfile,paymentOutcome`. Ajv runs with
 `{ strict: true, allErrors: true }`, so empty/open nested objects cannot pass
 the surface tests.
+
+The inventory-check schema requires exactly `id`, `file`, `titleSha256`,
+`requirementIds`, `resultPolicy`, `stability`, `observedOutcome`, and
+`occurrences`. `occurrences` has `minItems: 1`; every item requires exactly
+`project` and `variants`; and `variants` requires exactly `engine`, `viewport`,
+and `transport`. `titleSha256` is 64 lowercase hexadecimal characters.
+Schema `uniqueItems` rejects byte-identical occurrence objects, while the
+runtime logical grouping validator rejects semantically duplicate tuples
+across inventory leaves.
 
 The YAML files are authoritative. JSON Schemas validate runtime input; TypeScript types validate implementation code. Tests must load representative YAML through Ajv and assign the parsed result to the corresponding TypeScript interface after validation.
 
@@ -1622,7 +1701,8 @@ Implement the registry pipeline as separate red/green checkpoints:
       `loadYamlFile()`;
 - [ ] add malformed YAML/JSON fixtures; implement `loadJsonFile()` and
       schema dispatch;
-- [ ] add duplicate requirement/check/tag fixtures; implement
+- [ ] add duplicate requirement/binding and conflicting logical-ID/tag
+      fixtures; implement
       `validateUniqueIds()`;
 - [ ] add missing dependency and cycle fixtures; implement
       `validateRequirementGraph()`;
@@ -1630,11 +1710,19 @@ Implement the registry pipeline as separate red/green checkpoints:
       `validateTicketReverseLinks()`;
 - [ ] add expected-fail/skip/diagnostic credit fixtures; implement
       `validateCheckPolicies()`;
+- [ ] add flaky/unknown and evidenced-outcome fixtures; include stability and
+      outcome in `validateCheckPolicies()`;
+- [ ] add mismatched file/policy/stability/outcome fixtures; implement
+      `validateCheckInventoryJoin()`;
+- [ ] add a baseline-plus-WebKit fixture that repeats one logical check ID;
+      implement `groupInventoryChecks()` so invariant metadata must match and
+      occurrence tuples must be unique;
 - [ ] add empty inventory fixtures; implement `validateNonZeroInventory()`;
 - [ ] add unordered issue fixtures; implement stable
       `compareValidationIssues()`;
 - [ ] add an aggregate report fixture; implement
-      `countWithoutConvertingNonPassPoliciesToPass()`;
+      `countWithoutConvertingNonPassPoliciesToPass()` with separate lifecycle,
+      policy, stability, and outcome counts;
 - [ ] add a stale-report fixture; implement
       `writeCanonicalCoverageReport()` and check mode;
 - [ ] add a captured-output assertion; print only aggregate counts and
@@ -1667,6 +1755,7 @@ export function validateCoverageRegistry(registry: CoverageRegistry): Validation
     ...validateRequirementGraph(registry),
     ...validateTicketReverseLinks(registry),
     ...validateCheckPolicies(registry),
+    ...validateCheckInventoryJoin(registry),
     ...validateNonZeroInventory(registry),
   ].sort(compareValidationIssues);
 }
@@ -1676,8 +1765,34 @@ export function renderCoverageReport(registry: CoverageRegistry): CoverageReport
 }
 ```
 
+Execution metadata has one canonical reporting source: the committed
+`TestInventory` leaves under `registry.baseline` and `registry.auxiliary`.
+Requirement-side check records are binding projections. For every executable
+`playwright`, `api`, or `contract` check ID,
+`groupInventoryChecks()` first combines all baseline and auxiliary leaves by
+logical `id`. Repeated IDs are required for selected reruns such as the WebKit
+release lane. Every record in a logical group must have exact equality of
+`file`, `titleSha256`, `requirementIds`, `resultPolicy`, `stability`, and
+`observedOutcome`; every `(project, engine, viewport, transport)` occurrence
+tuple must be unique. `validateCheckInventoryJoin()` then requires exactly one
+logical group and exact equality of the projection's `file`, the sorted set of
+requirement IDs derived from all requirements that bind that check,
+`resultPolicy`, `stability`, and `observedOutcome`. Requirement-side identity
+is the composite `(requirement.id, check.id)`: duplicates inside one
+requirement are rejected, while the same logical check may bind multiple
+requirements only when `stableTag`, `file`, `resultPolicy`, `stability`, and
+`observedOutcome` agree. A stable tag maps one-to-one to a logical check ID.
+Unmatched, conflicting, or duplicate-occurrence projections fail validation.
+Manual/computer-use proposals are not execution inventory and receive no
+check/outcome counts.
+`countWithoutConvertingNonPassPoliciesToPass()` counts each logical ID once,
+so WebKit/viewport reruns and requirement projections cannot double-count or
+override an outcome. Raw leaf `setup`, `behavioral`, and `total` values remain
+occurrence counts and are validated separately from logical coverage credit.
+
 `globYaml`, `loadYamlFile`, `loadJsonFile`, and every validator named above are
-defined in `tools/coverage/validate-registry.ts`; they are not deferred names.
+defined in `tools/coverage/validate-registry.ts`; `groupInventoryChecks()` is a
+private helper in the same file. They are not deferred names.
 
 - [ ] **Step 5: Make the focused tests pass**
 
@@ -1689,7 +1804,7 @@ npm run typecheck
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/contracts coverage/registry.v1.yaml coverage/bootstrap/coverage-report.v1.json tools/coverage/validate-registry.ts tools/coverage/render-report.ts tests/coverage/registry-validation.test.ts
+git add packages/contracts coverage/registry.v1.yaml tools/coverage/validate-registry.ts tools/coverage/render-report.ts tests/coverage/registry-validation.test.ts
 git commit -m "feat: define versioned Freeland coverage contracts"
 ```
 
@@ -1926,7 +2041,7 @@ export function importLegacyMatrix(
 ```bash
 npm run coverage:import-matrix
 npx tsx --test tests/coverage/import-matrix.test.ts
-npm run coverage:validate
+npm run coverage:validate:requirements
 git diff --check
 ```
 
@@ -1948,9 +2063,10 @@ git commit -m "feat: normalize the 161-case legacy matrix"
 - Modify: all test-bearing files under `/Users/danilsolomin/projectsnew/FreelandQA/tests/playwright/`
 - Create: `/Users/danilsolomin/projectsnew/FreelandQA/coverage/bootstrap/playwright-164.v1.json`
 - Create: `/Users/danilsolomin/projectsnew/FreelandQA/coverage/bootstrap/playwright-auxiliary.v1.json`
+- Create: `/Users/danilsolomin/projectsnew/FreelandQA/coverage/bootstrap/coverage-report.v1.json`
 - Create: `/Users/danilsolomin/projectsnew/FreelandQA/coverage/sources/playwright-map.v1.yaml`
 - Create: `/Users/danilsolomin/projectsnew/FreelandQA/tools/coverage/capture-playwright.ts`
-- Create: `/Users/danilsolomin/projectsnew/FreelandQA/tools/coverage/render-report.ts`
+- Modify: `/Users/danilsolomin/projectsnew/FreelandQA/tools/coverage/render-report.ts`
 - Create: `/Users/danilsolomin/projectsnew/FreelandQA/tests/coverage/fixtures/playwright-list.json`
 - Modify: `/Users/danilsolomin/projectsnew/FreelandQA/tests/coverage/registry-validation.test.ts`
 
@@ -1967,15 +2083,19 @@ git commit -m "feat: normalize the 161-case legacy matrix"
 export interface InventoryCheck {
   id: string;
   file: string;
-  project: string;
   titleSha256: string;
   requirementIds: string[];
   resultPolicy: CheckResultPolicy;
-  variants: {
-    engine: string;
-    viewport: string;
-    transport: 'public' | 'mesh' | 'none';
-  };
+  stability: CheckStability;
+  observedOutcome: ObservedOutcome;
+  occurrences: Array<{
+    project: string;
+    variants: {
+      engine: string;
+      viewport: string;
+      transport: 'public' | 'mesh' | 'none';
+    };
+  }>;
 }
 
 export interface TestInventory {
@@ -1998,17 +2118,47 @@ export interface AuxiliaryInventory {
   productContract: TestInventory;
 }
 
+export interface InventoryReviewDisposition {
+  checkId: string;
+  resultPolicy: CheckResultPolicy;
+  stability: CheckStability;
+  observedOutcome: ObservedOutcome;
+}
+
+export interface PlaywrightReviewDocument {
+  schemaVersion: 1;
+  entries: InventoryReviewDisposition[];
+}
+
+export type InventoryReviewMap = ReadonlyMap<
+  string,
+  InventoryReviewDisposition
+>;
+
+export function loadInventoryReviewMap(
+  document: PlaywrightReviewDocument,
+): InventoryReviewMap;
 export function capturePlaywrightInventory(
   projectNames: readonly string[],
+  reviewMap: InventoryReviewMap,
 ): Promise<TestInventory>;
 export function captureProductContractInventory(
   sourcePaths: readonly string[],
+  reviewMap: InventoryReviewMap,
 ): Promise<TestInventory>;
 export function assertReviewedInventory(
   actual: TestInventory,
   committed: TestInventory,
 ): ValidationIssue[];
 ```
+
+`PlaywrightReviewDocument`, `InventoryReviewDisposition`, and
+`InventoryReviewMap` live in
+`packages/contracts/src/test-inventory.ts`.
+`loadInventoryReviewMap()` lives in
+`tools/coverage/capture-playwright.ts`; it schema-validates the parsed YAML,
+requires entries already sorted by `checkId`, rejects duplicate IDs, and
+returns `new Map(entries.map((entry) => [entry.checkId, entry]))`.
 
 - [ ] **Step 1: Add failing inventory-parser tests**
 
@@ -2017,26 +2167,32 @@ Require the parser to:
 1. run Playwright only with `--list --reporter=json`;
 2. reject reporter errors;
 3. strip absolute local paths;
-4. require one unique `@check:` tag on every behavioral test;
+4. require exactly one `@check:` tag on every behavioral declaration and
+   reject reuse for a different file/title identity;
 5. require at least one `@req:` tag or a reviewed `@diagnostic` disposition;
 6. require `@support` on setup;
-7. retain engine, viewport, and transport as variants, not duplicate requirements;
+7. group project reruns by logical check ID and retain every engine, viewport,
+   and transport occurrence without duplicate requirement credit;
 8. compare exact file-to-count maps;
 9. fail if total tests or files are zero;
-10. fail on any unreviewed addition, deletion, rename, duplicate tag, or count change.
+10. fail on any unreviewed addition, deletion, rename, conflicting tag reuse,
+    or count change.
+11. reject a malformed, unsorted, or duplicate-ID review-map document.
 
 Add and run one parser case at a time:
 
 - [ ] list/json process arguments;
 - [ ] reporter errors;
 - [ ] absolute-path stripping;
-- [ ] unique `@check`;
+- [ ] exactly one `@check` and no conflicting logical-ID reuse;
 - [ ] `@req` or diagnostic disposition;
 - [ ] setup support tag;
-- [ ] variants without duplicate credit;
+- [ ] baseline/WebKit logical grouping and variants without duplicate credit;
+- [ ] conflicting logical metadata and duplicate occurrence rejection;
 - [ ] exact file/count map;
 - [ ] zero inventory;
 - [ ] reviewed-diff enforcement.
+- [ ] serializable review-map shape/order/duplicate enforcement.
 
 - [ ] **Step 2: Run the parser tests and prove they fail**
 
@@ -2059,6 +2215,7 @@ const execFile = promisify(execFileCallback);
 
 export async function capturePlaywrightInventory(
   projectNames: readonly string[],
+  reviewMap: InventoryReviewMap,
 ): Promise<TestInventory> {
   const args = [
     'test',
@@ -2078,7 +2235,7 @@ export async function capturePlaywrightInventory(
       maxBuffer: 16 * 1024 * 1024,
     },
   );
-  return normalizePlaywrightJson(JSON.parse(stdout));
+  return normalizePlaywrightJson(JSON.parse(stdout), reviewMap);
 }
 
 interface ReporterSuite {
@@ -2094,23 +2251,28 @@ interface ReporterSuite {
   }>;
 }
 
-export function normalizePlaywrightJson(value: unknown): TestInventory {
+export function normalizePlaywrightJson(
+  value: unknown,
+  reviewMap: InventoryReviewMap,
+): TestInventory {
   const report = assertReporterShape(value);
   if (report.errors.length > 0) {
     throw new Error(`Playwright list reporter returned ${report.errors.length} errors`);
   }
-  const checks: InventoryCheck[] = [];
+  const checksById = new Map<string, InventoryCheck>();
   const visit = (suite: ReporterSuite, inheritedFile?: string): void => {
     const file = suite.file ?? inheritedFile;
     for (const spec of suite.specs ?? []) {
       for (const listed of spec.tests) {
-        checks.push(
+        mergeInventoryCheck(
+          checksById,
           inventoryCheckFromReporterSpec({
             file: requireRepositoryRelativeFile(file),
             title: spec.title,
             tags: spec.tags ?? [],
             projectName: listed.projectName,
             annotations: listed.annotations ?? [],
+            reviewMap,
           }),
         );
       }
@@ -2118,25 +2280,51 @@ export function normalizePlaywrightJson(value: unknown): TestInventory {
     for (const child of suite.suites ?? []) visit(child, file);
   };
   for (const suite of report.suites) visit(suite);
-  const sorted = checks.toSorted((a, b) => a.id.localeCompare(b.id));
-  assertUnique(sorted.map(({ id }) => id), 'Playwright check ID');
-  if (sorted.length === 0) throw new Error('ZERO_TEST_INVENTORY');
+  const sorted = [...checksById.values()]
+    .map(sortInventoryOccurrences)
+    .toSorted((a, b) => a.id.localeCompare(b.id));
+  const occurrenceCount = sorted.reduce(
+    (sum, check) => sum + check.occurrences.length,
+    0,
+  );
+  if (occurrenceCount === 0) throw new Error('ZERO_TEST_INVENTORY');
   return summarizeInventory(sorted, 'playwright');
 }
 ```
 
 `normalizePlaywrightJson` rejects reporter errors, converts every file to a
-repository-relative POSIX path, extracts tags/result policy, sorts by stable
-check ID, and then validates exact counts. `captureProductContractInventory`
+repository-relative POSIX path, extracts tags/result policy, groups reruns by
+stable logical check ID, sorts each occurrence tuple and check ID, and then
+validates exact occurrence counts. `mergeInventoryCheck()` rejects any
+invariant-field disagreement or repeated
+`(project, engine, viewport, transport)` tuple. A behavioral declaration uses
+its `@check:` value as the logical ID; a setup declaration tagged `@support`
+uses the deterministic logical ID
+`SUPPORT.${sha256(repositoryRelativeFile + "\0" + title)}` and has no
+requirement IDs. Thus Chromium/WebKit selection of the same declaration adds
+an occurrence rather than a second logical check.
+`captureProductContractInventory`
 parses the single `.mjs` file with the installed TypeScript parser and extracts
-the tagged `node:test` call without importing or executing product source.
+the tagged `node:test` call without importing or executing product source. Its
+single occurrence uses `project: product-contract`, `engine: node`,
+`viewport: none`, and `transport: none`.
 `assertReporterShape`, `requireRepositoryRelativeFile`,
-`inventoryCheckFromReporterSpec`, and `summarizeInventory` are private
+`inventoryCheckFromReporterSpec`, `mergeInventoryCheck`,
+`sortInventoryOccurrences`, and `summarizeInventory` are private
 functions in `tools/coverage/capture-playwright.ts`; each has a separate
 malformed/path/tag/count test from Step 1.
+The CLI loads `coverage/sources/playwright-map.v1.yaml` into
+`InventoryReviewMap`. An absent disposition fails as an unreviewed change.
+Discovery never derives an outcome from list output. New review dispositions
+use `UNKNOWN` plus `NOT_RUN`; a persisted `PASS` is accepted only when its
+timestamp and authoritative evidence reference are already present in the
+review map.
+The resulting committed inventories are canonical for execution policy,
+stability, and outcome reporting; Task 4's join validator rejects any
+requirement projection that differs.
 
-The full baseline file is a `TestInventory` with 164 generated `checks`
-entries and these fixed count invariants:
+The full baseline file is a `TestInventory` with 164 generated occurrences
+grouped into logical `checks` records and these fixed count invariants:
 
 ```ts
 const BASELINE_COUNTS = {
@@ -2163,7 +2351,11 @@ const AUXILIARY_COUNTS = {
 
 Each Playwright leaf also has `schemaVersion: 1, kind: playwright`; the product
 leaf has `schemaVersion: 1, kind: node-contract`. Count summaries are never
-accepted as substitutes for the typed manifests.
+accepted as substitutes for the typed manifests. For every leaf, `setup` and
+`behavioral` count occurrences by `SUPPORT` versus non-`SUPPORT` policy,
+`total === setup + behavioral === sum(check.occurrences.length)`, and
+`sourceFiles` is the number of distinct repository-relative files. Logical
+`checks.length` is deliberately not substituted for `total`.
 
 - [ ] **Step 4: Tag the baseline in small reviewable groups**
 
@@ -2183,7 +2375,11 @@ test(
 );
 ```
 
-Parameterized tests need unique check tags per expanded variant, for example a viewport suffix. The `@req:` tag may repeat across variants.
+Parameterized declarations that represent distinct assertions need unique
+check tags per expanded case, for example a viewport suffix. The `@req:` tag
+may repeat across those cases. Project-level engine/viewport/transport reruns
+of the same declaration deliberately reuse its logical check tag and become
+additional occurrences.
 
 For the Node product contract, put the same stable tags in the `node:test`
 name because it has no Playwright details object:
@@ -2264,6 +2460,13 @@ declaration and its `test.fail()`/`test.skip()` branches. `EXPECTED_FAIL`,
 coverage but never promotion credit. `DIAGNOSTIC` contributes inventory only,
 with neither coverage nor promotion credit.
 
+Review stability independently as `STABLE`, `FLAKY`, or `UNKNOWN`. `FLAKY`
+and `UNKNOWN` never receive promotion credit even when their declared policy
+is `MUST_PASS`. Discovery writes `observedOutcome.status: NOT_RUN`; it never
+manufactures `PASS`. A historical/runtime `PASS` is accepted only with an
+authoritative `observedAt` and `evidenceRef`. The generated report counts
+policy, stability, and observed outcome separately.
+
 - [ ] **Step 6: Bind all tests to requirements**
 
 Every behavioral test must either:
@@ -2299,6 +2502,9 @@ checks:
     file: tests/playwright/freeland/auth-flows.spec.ts
     assertionIds: [session-reload]
     resultPolicy: MUST_PASS
+    stability: STABLE
+    observedOutcome:
+      status: NOT_RUN
 lifecycle:
   status: AUTOMATED
 ```
@@ -2306,13 +2512,15 @@ lifecycle:
 An expected-fail-only requirement uses
 `resultPolicy: EXPECTED_FAIL`; its lifecycle may be `AUTOMATED` because the
 oracle exists, but the generated report must show current outcome as non-pass
-and promotion eligibility as false.
+and promotion eligibility as false. Use `NOT_RUN` during discovery or
+`EXPECTED_FAIL` only with timestamped authoritative evidence.
 
 - [ ] **Step 7: Generate manifests and prove deterministic discovery**
 
 ```bash
 npx tsx tools/coverage/capture-playwright.ts --write
 npm run test:list
+npm run coverage:report -- --write
 npm run coverage:validate
 npm run typecheck
 ```
@@ -2322,7 +2530,7 @@ Run `--write` twice and require no second-run diff.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add tests/playwright tests/product-contracts coverage/bootstrap/playwright-164.v1.json coverage/bootstrap/playwright-auxiliary.v1.json coverage/sources/playwright-map.v1.yaml coverage/requirements tools/coverage tests/coverage
+git add tests/playwright tests/product-contracts coverage/bootstrap/playwright-164.v1.json coverage/bootstrap/playwright-auxiliary.v1.json coverage/bootstrap/coverage-report.v1.json coverage/sources/playwright-map.v1.yaml coverage/requirements tools/coverage tests/coverage
 git commit -m "feat: bind the Freeland test inventory to coverage"
 ```
 
@@ -2448,6 +2656,21 @@ test('a changed issue content digest marks a stable mapping stale');
 test('explicit MISSING blocks routing but satisfies bootstrap accounting');
 test('state, priority, and current verdict stay out of stable mapping files');
 ```
+
+Add and run exactly one named test per micro-cycle:
+
+- [ ] HTML/sensitive normalization;
+- [ ] raw-title exclusion;
+- [ ] canonical digest ordering;
+- [ ] membership drift;
+- [ ] `updatedAt` drift;
+- [ ] revision drift;
+- [ ] relation drift;
+- [ ] attachment-metadata drift;
+- [ ] mapped-or-missing completeness;
+- [ ] stale content digest;
+- [ ] explicit `MISSING` accounting;
+- [ ] stable-mapping volatility exclusion.
 
 - [ ] **Step 2: Implement the normalized contracts**
 
@@ -2753,6 +2976,7 @@ reconciliation and schema validation.
 ```bash
 npx tsx --test tests/coverage/snapshot-normalization.test.ts tests/coverage/reconciliation.test.ts
 npm run coverage:reconcile
+npm run coverage:report -- --write
 npm run coverage:validate
 ```
 
@@ -2771,7 +2995,7 @@ Explicit `MISSING` records are visible gaps, not validation failures and not pas
 - [ ] **Step 8: Commit only sanitized outputs**
 
 ```bash
-git add coverage/bootstrap/nuanu-qa-*.sanitized.json coverage/tickets coverage/requirements/qa tools/coverage tests/coverage docs/runbooks/refresh-qa-snapshot.md
+git add coverage/bootstrap/nuanu-qa-*.sanitized.json coverage/bootstrap/coverage-report.v1.json coverage/tickets coverage/requirements/qa tools/coverage tests/coverage docs/runbooks/refresh-qa-snapshot.md
 git commit -m "feat: account for the current Nuanu QA column"
 ```
 
@@ -2847,11 +3071,17 @@ export interface PatchVerification {
   exactNameStatus: true;
 }
 
-export interface DriftVerification {
-  observedAt: string;
-  observedStagingSha?: string;
-  result: 'clean' | 'already-equivalent' | 'conflict' | 'unavailable';
-}
+export type DriftVerification =
+  | {
+      observedAt: string;
+      result: 'unavailable';
+      observedStagingSha?: never;
+    }
+  | {
+      observedAt: string;
+      observedStagingSha: string;
+      result: 'clean' | 'already-equivalent' | 'conflict';
+    };
 
 export function exportPatchset(
   sourceRepo: string,
@@ -2891,6 +3121,19 @@ dirty target checkout
 ```
 
 Also prove that a correct two-patch fixture applies and verifies without creating a commit.
+
+Add and run exactly one disposable-repository case per micro-cycle:
+
+- [ ] wrong base commit;
+- [ ] wrong base tree;
+- [ ] wrong patch SHA-256;
+- [ ] wrong stable patch ID;
+- [ ] wrong intermediate tree;
+- [ ] wrong final tree;
+- [ ] reordered manifest;
+- [ ] whitespace error;
+- [ ] dirty target checkout;
+- [ ] correct two-patch no-commit success.
 
 - [ ] **Step 2: Run and prove the tests fail**
 
@@ -3145,6 +3388,11 @@ unavailable
 ```
 
 It never changes the immutable-base result. A conflict against current staging is a maintenance signal, not evidence that the archived source series is corrupt.
+Add focused tests for both discriminated branches: `unavailable` records an
+ISO timestamp and forbids `observedStagingSha`; `clean`,
+`already-equivalent`, and `conflict` each require the observed 40-character
+lowercase hexadecimal staging SHA plus the ISO timestamp. The implementation
+constructs only those exact `DriftVerification` shapes.
 
 - [ ] **Step 8: Run local verification and safe product tests**
 
