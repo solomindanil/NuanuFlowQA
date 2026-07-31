@@ -29,11 +29,11 @@ QA
 ```
 
 Computer Use is the first lane for discovering unfamiliar flows and the
-authoritative lane for Telegram Web, OS clipboard behavior, the secret-free
-handoff to the opaque payment connector, provider-hosted navigation, and
-user-visible end-to-end certification. Stable assertions are then encoded in
-Playwright/API tests for speed and repeatability. High-risk flows run both
-lanes; Computer Use does not replace deterministic assertions.
+authoritative lane for Telegram Web, OS clipboard behavior, explicitly
+authorized payment-data entry, provider-hosted navigation, and user-visible
+end-to-end certification. Stable assertions are then encoded in Playwright/API
+tests for speed and repeatability. High-risk flows run both lanes; Computer Use
+does not replace deterministic assertions.
 
 Ordinary staging and production purchases for the allowlisted Freeland
 products run unattended after the safety conditions in this design are
@@ -155,10 +155,12 @@ must re-read all active issues and the deployed manifest on every decision.
 - The system does not install or activate a VPN on the Mac worker. It validates
   provisioning data, copy behavior, deep links, and format without changing
   the host's network/security settings.
-- No raw card number, security code, password, token, personal Telegram data,
-  email content, provisioned phone number, or VPN credential may enter Git,
-  environment files, the database, logs, traces, screenshots, videos, issue
-  comments, or object-storage evidence.
+- Raw PAN/CVV is allowed only inside the explicitly authorized transient
+  Computer Use/AppState and restricted payment-evidence boundary in section
+  12.2. It may not enter Git, `.env`, Nuanu, general logs/reports, analytics, or
+  ordinary evidence. Passwords, auth tokens, personal Telegram data, email
+  content, provisioned phone numbers, and VPN credentials remain excluded from
+  all published evidence.
 
 ## 5. What “100% E2E coverage” means
 
@@ -283,8 +285,10 @@ FreelandQA/
 ```
 
 Secrets are injected at runtime from GitHub Environments for Linux workers and
-macOS Keychain/dedicated browser profiles for the Mac worker. `.env` remains a
-local developer convenience and is never the production secret store.
+macOS Keychain/dedicated browser profiles for the Mac worker. CVV is the
+exception: it is one-attempt transient input and is not retained in those
+stores. `.env` remains a local developer convenience and is never the
+production secret store.
 
 ### 6.2 Temporary product patchsets
 
@@ -315,7 +319,7 @@ flowchart LR
     DB --> PLAN
     PLAN --> PW["Linux Playwright/API worker"]
     PLAN --> CU["Isolated macOS Computer Use worker"]
-    CU --> SEC["Audited payment connector: opaque instrument alias"]
+    CU --> SEC["Payment entry: direct CU or audited opaque connector"]
     PW --> AGG["Deterministic result aggregator"]
     CU --> AGG
     AGG --> OBJ[("Encrypted evidence storage")]
@@ -652,8 +656,8 @@ Computer Use is authoritative for:
 - visible navigation and browser behavior not faithfully represented by DOM
   automation;
 - OS clipboard verification for the VPN copy defect cluster;
-- provider-hosted page orchestration and the opaque payment-connector
-  checkpoint;
+- provider-hosted page orchestration and direct or connector-assisted
+  payment-field entry;
 - final visual/user-journey certification for high-risk flows.
 
 Scenarios are semantic documents, not recorded coordinates. Each declares:
@@ -742,35 +746,74 @@ The harness still automates their catalogs, eligibility, forms using synthetic
 non-sensitive data, validation, quote, disclosures, navigation, cancellation,
 and all steps before the restricted final action.
 
-### 12.2 Secret handling
+### 12.2 Payment-data handling
 
-- The owner-provided payment card is never copied into repository files,
-  `.env`, controller payloads, database rows, test code, issue comments, or
-  evidence.
-- The Computer Use runtime receives only an opaque payment-instrument alias. It
-  never reads, types, or receives the raw card number or security code in a
-  prompt, `node_repl` call, accessibility tree, AppState, screenshot, or tool
-  result.
-- Payment material is provisioned once into the Mac worker's
-  `FreelandQA.PaymentInstrument` Keychain service, readable only by the signed
-  `freeland-payment-connector`. Computer Use uses the dedicated Chrome profile
-  `Freeland QA Payments`, which stores at most a provider token/opaque alias,
-  never raw PAN/CVV. This exact one-time provisioning requires explicit owner
-  authorization and is separate from routine unattended purchases.
-- The payment connector is an independently audited component, not an
-  improvised Computer Use helper. It verifies the top-level and frame origins,
-  focused field semantics, merchant, and signed payment authorization before
-  using browser-native autofill/provider tokenization. It returns only
-  `FILLED`, `NOT_AVAILABLE`, or a typed error.
-- Computer Use pauses before connector entry and resumes only after the
-  connector proves that secret-bearing fields are masked or gone. If the
-  current browser/provider cannot guarantee that an AppState or screenshot is
-  secret-free, the live canary is `HARNESS_FAIL` and unattended payment remains
-  disabled for that profile.
-- Playwright screenshot/video/trace capture is disabled for the provider entry
-  context and resumes only after navigation reaches an evidence-safe page.
-- Logs record field names and redaction decisions, not values, lengths, last
-  digits, customer identifiers, or provider URLs containing tokens.
+The owner explicitly authorizes transmission of the supplied PAN, expiry data,
+and CVV to the allowlisted Freeland/acquirer payment form through Computer Use.
+Those values may appear transiently in `node_repl` action arguments,
+accessibility/AppState output, screenshots, and the raw evidence-processing
+buffer. Their presence inside this declared payment-data boundary is not a
+`HARNESS_FAIL`.
+
+That permission changes the capture boundary, not every storage boundary:
+
+- Computer Use direct-entry mode may use `set_value`/`type_text` for the
+  focused, origin-verified payment fields. The controller sends payment values
+  only to the single leased Mac job and never embeds them in a scenario,
+  repository file, `.env`, test, ticket, or general controller payload.
+- The dedicated Chrome profile remains `Freeland QA Payments`. PAN, expiry, and
+  cardholder data may instead be supplied through the independently audited
+  `freeland-payment-connector` or a provider token; the connector is a privacy
+  optimization, not a prerequisite for direct Computer Use entry.
+- Systems that can see raw PAN/CVV—including the Computer Use provider,
+  AppState store, and raw evidence buffer—are treated as part of the payment
+  data environment: access-controlled, encrypted in transit, fully audited, and
+  excluded from ordinary QA logs and artifacts.
+- A full PAN captured in raw evidence is encrypted at rest, access is limited
+  to the payment-incident role, every access is audited, and the raw object is
+  deleted within 24 hours. The same maximum TTL applies to every durable
+  PAN-bearing copy in Computer Use tool arguments, provider job logs, AppState,
+  screenshots, buffers, or object storage. The normal durable derivative masks
+  PAN and removes payment-field values before Nuanu delivery.
+- CVV may exist in memory, Computer Use/AppState, and a pre-authorization raw
+  capture, but it is never written to Keychain, browser card-on-file storage,
+  Postgres, object storage, or any retained evidence after authorization. The
+  payment-data scrubber zeroizes/removes every tool/evidence copy at a mandatory
+  pre-Submit barrier; Submit is disabled until deletion receipts and independent
+  tombstone checks produce `CVV_SCRUB_CONFIRMED`. Provider events,
+  decline/failure, submit timeout, worker lease loss, and a hard ten-minute TTL
+  from first capture are additional recovery triggers. On lease loss or hard
+  TTL the independent browser watchdog also closes the payment tab/context to
+  remove the live form value.
+- Direct Computer Use entry is enabled only when the Computer Use job/artifact
+  backend has backend-enforced TTL/deletion for CVV-bearing tool arguments,
+  AppStates, and screenshots independent of a live Mac worker or controller.
+  If that backend retains an immutable CVV copy, the harness must use the
+  connector/token path or classify the live run `HARNESS_FAIL`.
+- A non-secret `payment_data_artifacts` inventory records every system/object
+  that may contain PAN/CVV, its data class, creation time, mandatory deletion
+  deadline, deletion attempt, backend receipt, and verified tombstone. The
+  independent scrubber consumes provider events and lease/timeout recovery; it
+  does not depend on the payment worker completing its callback.
+- Git, Nuanu comments/attachments, Playwright HTML/JUnit/JSON reports,
+  application logs, analytics, and routine screenshots always receive the
+  sanitized derivative, never full PAN or CVV.
+
+This distinction is mandatory even with owner permission. PCI SSC treats
+images containing card data as in scope, requires stored PAN to be rendered
+unreadable, and prohibits retaining CVV after authorization even when the
+cardholder asks for it or the value is encrypted:
+[PCI SSC FAQ 1070](https://www.pcisecuritystandards.org/faqs/1070/),
+[FAQ 1222](https://www.pcisecuritystandards.org/faqs/1222/), and
+[FAQ 1280](https://www.pcisecuritystandards.org/faqs/1280/).
+
+For repeated unattended purchases, the preferred rail is a provider token or
+card-on-file reference created by the first authorized transaction. If the
+provider requires CVV again, a fresh one-time value may be supplied transiently
+to that specific Computer Use run, but it is not retained after the attempt.
+Without a tokenized rail or fresh one-time CVV input, that run is
+`NEEDS_HUMAN`; the harness does not create a persistent CVV store to avoid the
+gate.
 
 ### 12.3 Durable ledger
 
@@ -806,6 +849,8 @@ DISCOVERED
   -> PRECHECKED
   -> LEASED
   -> CHECKOUT_CREATED
+  -> ENTRY_FILLED
+  -> CVV_SCRUB_CONFIRMED
   -> SUBMIT_FENCED
   -> PAYMENT_SUBMITTED
   -> PROVIDER_PENDING
@@ -824,10 +869,12 @@ until authoritative reconciliation reaches a safe terminal state.
 Reconciliation does not reset the one-submission cardinality. Worker death
 never releases this prohibition.
 
-Creating the canonical checkout and moving to `SUBMIT_FENCED` are atomic
-write-ahead transitions. The database issues a monotonically increasing
-fencing epoch; the payment connector and product-side one-checkout gate reject
-any stale worker epoch before external Submit. A global mutex over
+Creating the canonical checkout, recording `CVV_SCRUB_CONFIRMED`, and moving to
+`SUBMIT_FENCED` are atomic write-ahead transitions. The database cannot enter
+`SUBMIT_FENCED` without verified scrub receipts/tombstones. It then issues a
+monotonically increasing fencing epoch; direct Computer Use, the payment
+connector, and the product-side one-checkout gate reject any missing scrub
+barrier or stale worker epoch before external Submit. A global mutex over
 environment/payment-instrument serializes VPN, eSIM, and virtual-number live
 payments in addition to the per-authorization lock.
 
@@ -876,14 +923,18 @@ The Mac worker:
 1. rechecks product/quote/recurrence in visible UI;
 2. creates or resumes only the ledger-bound checkout;
 3. navigates only through allowed origins;
-4. stops issuing Computer Use UI actions and AppState captures, invokes the
-   authorization-bound audited payment connector by opaque alias, and resumes
-   Computer Use only after its secret-free checkpoint;
-5. submits the ordinary purchase automatically;
-6. observes the provider result and return path;
-7. resumes evidence capture only on a sanitized product page;
-8. waits for authoritative order and entitlement reconciliation;
-9. performs the product-specific post-purchase assertion.
+4. uses the authorization-selected entry mode: direct Computer Use field entry
+   with transient PAN/CVV capture allowed, or the audited connector/provider
+   token path;
+5. runs the pre-Submit scrub barrier, which removes CVV from all tool/evidence
+   copies and converts any retained raw frame into a CVV-free encrypted
+   PAN-bearing object;
+6. obtains `CVV_SCRUB_CONFIRMED` and the fresh submission fencing epoch;
+7. submits the ordinary purchase automatically;
+8. observes the provider result and return path;
+9. publishes only the sanitized evidence derivative;
+10. waits for authoritative order and entitlement reconciliation and performs
+    the product-specific post-purchase assertion.
 
 Successful live reconciliation is a three-way join:
 
@@ -1045,18 +1096,23 @@ Each run produces an immutable evidence index with:
 - screenshots, video, trace, network summary, and CU checkpoints only where
   allowed;
 - redaction manifest and artifact hashes;
-- payment state transitions without secrets;
+- payment state transitions plus hashes/pointers for any separately restricted
+  raw payment capture;
 - cleanup and route read-back.
 
-Artifacts pass automated secret/PII scanning before upload. A scanner failure
-blocks publication and classification. Sensitive-entry windows produce no
-visual artifact. Evidence storage is encrypted, access-controlled to the QA
-team, and retained on explicit defaults: unredacted local staging artifacts are
-deleted within 24 hours after scan, redacted diagnostic artifacts after 30
-days, redacted verdict bundles after 180 days, and routing/payment audit
-metadata after 365 days. A legal or incident hold is a separately audited
-override. Nuanu comments link to the redacted bundle rather than embedding raw
-traces.
+Artifacts pass automated secret/PII classification before upload. Authorized
+raw PAN capture is routed only to the encrypted payment-evidence store; PAN or
+CVV found outside that boundary blocks publication and classification. CVV is
+removed by the mandatory pre-Submit scrub barrier plus independent recovery
+triggers/TTL and is never a retained post-authorization object. Every potential
+payment-data backend/container is
+pre-registered in `payment_data_artifacts`; deletion is complete only after a
+backend receipt and an independent not-found/tombstone verification. Every
+PAN-bearing durable copy is deleted within 24 hours, redacted diagnostic
+artifacts after 30 days, redacted verdict bundles after 180 days, and
+routing/payment audit metadata after 365 days. A legal or incident hold may
+extend sanitized evidence but never CVV or full-PAN retention. Nuanu comments
+link only to the redacted bundle rather than embedding raw traces.
 
 ## 16. Precision and reliability controls
 
@@ -1087,8 +1143,9 @@ traces.
 ### 16.3 Operational safeguards
 
 - global pause switch and per-lane kill switches;
-- automatic pause on any duplicate payment, evidence leak, wrong origin,
-  unexpected Nuanu transition, or false `Ready for prod`;
+- automatic pause on any duplicate payment, PAN/CVV outside the authorized
+  payment-data boundary, failed CVV scrub deadline, PAN copy older than 24
+  hours, wrong origin, unexpected Nuanu transition, or false `Ready for prod`;
 - bounded concurrency per environment, account, provider, and product;
 - signed expiring worker jobs and origin allowlists;
 - structured audit trail for every decision and external mutation;
@@ -1155,17 +1212,24 @@ successful read-back.
 ### Phase 5 — live payments
 
 - Implement the durable ledger and all `FREEL-211` tests.
-- Implement and independently audit the opaque payment connector; prove that
-  raw payment data cannot reach Computer Use/AppState or evidence.
-- Complete the one-time explicitly authorized payment-instrument provisioning
-  into the dedicated profile/connector.
+- Implement direct Computer Use payment entry and the optional audited opaque
+  connector/provider-token path.
+- Prove that transient PAN/CVV may flow through the declared Computer Use and
+  raw-evidence boundary, while the independent pre-Submit scrub barrier and
+  provider/timeout/lease-loss recovery triggers remove CVV and every
+  PAN-bearing backend copy has a verified maximum 24-hour TTL.
+- Complete any explicitly authorized PAN/expiry/token provisioning into the
+  dedicated profile/connector; do not persist CVV.
 - Add eSIM and complete virtual-number/VPN profiles.
 - Run cross-ticket/cross-account duplicate, worker-loss, redirect,
-  unknown-result, secret-capture, and evidence-leak fault injection.
+  unknown-result, worker-death-immediately-after-submit, out-of-boundary
+  payment-data, missed-CVV-callback, PAN-TTL, and evidence-redaction fault
+  injection.
 - Enable one bounded staging canary per impacted class/candidate, then one
   separately attested production canary per impacted class after deployment.
 
-Exit: zero duplicate attempts, zero secret evidence, and verified
+Exit: zero duplicate attempts, zero unauthorized payment-data disclosure, zero
+missed CVV scrub deadlines, zero PAN copies older than 24 hours, and verified
 paid-to-provisioned lifecycle plus post-purchase action.
 
 ### Phase 6 — full inventory and continuous optimization
@@ -1204,8 +1268,8 @@ Implementation is split into independently testable subprojects:
    cross-lane evidence.
 6. **Durable payment automation**
 
-   global authorization/ledger, profiles, audited opaque payment connector,
-   fault injection, live canaries.
+   global authorization/ledger, profiles, direct Computer Use entry, optional
+   audited connector, payment-data boundary, fault injection, live canaries.
 7. **Full-flow certification and optimization**
 
    remaining inventory, drift detection, release certification, SLOs.
@@ -1247,7 +1311,10 @@ be implemented.
 - False automatic return to development: below 1%.
 - Verdict-lane flake rate: below 1%.
 - Duplicate or untracked charge: exactly 0.
-- Secret/PII evidence leak: exactly 0.
+- PAN/CVV outside the authorized payment-data boundary: exactly 0.
+- Durable post-authorization CVV object: exactly 0.
+- Missed CVV scrub deadline: exactly 0.
+- PAN-bearing copy older than 24 hours: exactly 0.
 - Wrong-environment verdict: exactly 0.
 - QA-entry to first result: p50 under 15 minutes, p95 under 60 minutes,
   excluding provider/environment blocks.
@@ -1261,12 +1328,16 @@ be implemented.
 - Controller restart resumes durable queued/running jobs from leases.
 - Linux/Mac worker loss marks non-payment execution retryable; payment execution
   enters reconciliation before any new action.
+- Provider authorization/decline events, submit timeout, and payment-worker
+  lease loss independently enqueue the payment-data scrubber; startup recovery
+  scans every overdue `payment_data_artifacts` record before enabling payments.
 - Manifest change cancels routing and queues a new candidate run.
 - Issue change cancels routing and queues the latest revision if still in QA.
 - Nuanu API failure retries the same idempotent mutation and verifies read-back.
 - Evidence scan/storage failure prevents verdict publication.
 - Any safety invariant breach flips the affected lane—and for duplicate charge,
-  wrong origin, or secret exposure the entire system—to shadow/pause mode.
+  wrong origin, out-of-boundary payment data, missed CVV scrub deadline, or PAN
+  older than 24 hours the entire system—to shadow/pause mode.
 - State rollback means stopping automation and moving no further issues; it
   does not automatically undo a human-reviewed board transition or attempt an
   unsafe compensating financial action.
@@ -1283,15 +1354,18 @@ The autonomous loop is complete only when:
   coverage;
 - Computer Use scenarios are versioned and reproducible on the isolated Mac;
 - ordinary allowlisted payments are ledger-backed, securely entered,
-  reconciled, and provisioned without duplicate attempts or payment secrets
-  entering Computer Use;
+  reconciled, and provisioned without duplicate attempts; explicitly
+  authorized PAN/CVV capture remains inside the declared payment-data boundary
+  with independent crash-safe CVV scrubbing and a verified inventory/TTL for
+  every PAN-bearing copy;
 - production payment canaries use production-only attestation, account,
   authorization, catalog, and evidence and never reuse staging verdict data;
 - strict classifications route correctly in Nuanu with read-back;
 - 30–50 shadow decisions meet the precision targets before any automatic route;
 - all human intervention is limited to typed critical exceptions;
 - the kill switches, stale-run handling, worker-loss recovery, payment unknown
-  state, evidence leak, and wrong-origin drills have passed.
+  state, payment-data-boundary, CVV-scrubber, PAN-TTL, and wrong-origin drills
+  have passed.
 
 This design intentionally prioritizes false-green prevention over maximum
 automatic throughput. A ticket remaining visibly in QA is recoverable; a false
