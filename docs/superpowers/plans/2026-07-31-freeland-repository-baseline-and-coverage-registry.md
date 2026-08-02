@@ -4237,3 +4237,7 @@ After this plan is approved for execution, use one of:
 2. `superpowers:executing-plans` for inline sequential execution with the same task boundaries and commits.
 
 Do not combine this plan with subproject 2 until every row in the final acceptance matrix is green.
+
+## Follow-on Plan
+
+To close the still-pending remote/publication gate and then implement the next capability slice, continue with [Freeland Agent-First CDP Feedback Loop I0/I1](./2026-08-02-freeland-agent-first-cdp-feedback-loop.md). Its Task 1 mirrors this plan's unfinished Task 11 as the hard `I0` entry gate; it preserves Tasks 1–11 here and forbids starting its Task 2 until that exact remote acceptance is green.
