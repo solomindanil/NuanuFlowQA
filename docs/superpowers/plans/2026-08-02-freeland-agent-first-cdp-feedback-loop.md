@@ -13,9 +13,9 @@
 1. This plan implements only design iterations `I0` and `I1`. Authenticated sessions, Nuanu ticket polling, product worktree fixes, Computer Use, Telegram, mutations, payments, and automatic routing remain out of scope.
 2. Execute repository changes only in the authoritative clean publication checkout `/Users/danilsolomin/projectsnew/NuanuFlowQA/.worktrees/freelandqa-publication`, or in a new worktree created from its `origin/main`. Do not use the stale partial checkout `/Users/danilsolomin/projectsnew/FreelandQA`.
 3. Invoke `superpowers:using-git-worktrees` at execution time and create branch `codex/freeland-agent-first-cdp-i1` only after Task 1 is green.
-4. The audited remote baseline is private `solomindanil/FreelandQA` `main@a4df0c5e4b57dfda3ed658171452cccda6095d52`.
+4. The audited remote baseline is private `nuanu-ai/FreelandQA` `main@a4df0c5e4b57dfda3ed658171452cccda6095d52`.
 5. As observed on 2026-08-02, Baseline run `30731560482` passed on that commit and Patchset run `30731560480` failed because `FREELAND_SOURCE_DEPLOY_KEY` was absent. Re-read GitHub before acting; the observation is not a substitute for the Task 1 gate.
-6. The authenticated user has `ADMIN` on `solomindanil/FreelandQA` and `MAINTAIN` on `nuanu-ai/freeland_app`; product-repository deploy-key read-back still requires the product administrator.
+6. The repository was transferred with human approval to `nuanu-ai/FreelandQA` while preserving its private visibility, repository ID, and exact entry commit. Immediately after transfer the authenticated user has `WRITE` on `nuanu-ai/FreelandQA` and `MAINTAIN` on `nuanu-ai/freeland_app`; Task 1 therefore also requires an organization owner to grant repository `ADMIN` and enable a GitHub plan that supports protected branches on private organization repositories. Product-repository deploy-key read-back still requires the product administrator.
 7. Do not begin Task 2 until Task 1 proves both required workflows successful on the exact entry commit, read-only source access, and protected `main`.
 8. Never paste, print, commit, or attach a private key, password, bearer token, cookie, storage state, PAN, CVV, checkout URL, provider payload, personal email, phone number, VPN credential, Telegram init data, raw DOM, raw AX tree, request/response body, or browser profile.
 9. The first live target is exactly `https://mf0.forum`; `mf0.store`, foreign Supabase projects, provider origins, unknown origins, and unknown URL schemes fail closed.
@@ -175,7 +175,7 @@ Run from the authoritative publication checkout:
 
 ```bash
 set -euo pipefail
-QA_REPOSITORY="solomindanil/FreelandQA"
+QA_REPOSITORY="nuanu-ai/FreelandQA"
 PRODUCT_REPOSITORY="nuanu-ai/freeland_app"
 ENTRY_COMMIT="a4df0c5e4b57dfda3ed658171452cccda6095d52"
 
@@ -183,12 +183,16 @@ PUBLICATION_STATUS="$(git status --porcelain)"
 test -z "$PUBLICATION_STATUS"
 test "$(git branch --show-current)" = "main"
 test "$(git rev-parse HEAD)" = "$ENTRY_COMMIT"
-test "$(git remote get-url origin)" = "https://github.com/solomindanil/FreelandQA.git"
+test "$(git remote get-url origin)" = "https://github.com/nuanu-ai/FreelandQA.git"
 gh repo view "$QA_REPOSITORY" --json nameWithOwner,visibility,defaultBranchRef,viewerPermission,isPrivate
 gh repo view "$PRODUCT_REPOSITORY" --json nameWithOwner,visibility,viewerPermission
+test "$(gh api "repos/$QA_REPOSITORY" --jq .id)" = "1319799876"
+test "$(gh repo view "$QA_REPOSITORY" --json viewerPermission --jq .viewerPermission)" = "ADMIN"
+NUANU_ORGANIZATION_PLAN="$(gh api orgs/nuanu-ai --jq '.plan.name')"
+case "$NUANU_ORGANIZATION_PLAN" in team|enterprise) ;; *) exit 1 ;; esac
 ```
 
-Expected: QA repository private, default branch `main`, QA permission `ADMIN`, product permission `MAINTAIN`, and no local changes. Any different commit or remote stops the task for inspection; do not force-push or reset.
+Expected: QA repository private, default branch `main`, immutable REST repository ID `1319799876`, QA permission `ADMIN`, product permission `MAINTAIN`, an organization plan whose exact API name is `team` or `enterprise`, and no local changes. Any different identity, permission, plan, commit, or remote stops the task before a secret write or workflow dispatch; do not force-push or reset.
 
 - [ ] **Step 2: Verify the administrator's read-only deploy-key attestation without reading private material**
 
@@ -383,7 +387,8 @@ Add a fixture in `tests/acceptance/cdp-entry-gate.test.ts` with this interface a
 interface CdpEntryGate {
   schemaVersion: 1;
   repository: {
-    nameWithOwner: 'solomindanil/FreelandQA';
+    databaseId: 1319799876;
+    nameWithOwner: 'nuanu-ai/FreelandQA';
     visibility: 'PRIVATE';
     defaultBranch: 'main';
   };
@@ -414,7 +419,7 @@ interface CdpEntryGate {
 }
 ```
 
-The test must import `validateCdpEntryGate` from `packages/contracts/src/cdp-entry-gate.ts`, accept one valid object, then reject every missing field, unknown field, non-success conclusion, mismatched `headSha`, unsafe access mode, write access, malformed/mismatched SSH SHA-256 fingerprint, unordered/missing check context, non-hex commit, non-positive run ID, and non-64-hex digest.
+The test must import `validateCdpEntryGate` from `packages/contracts/src/cdp-entry-gate.ts`, accept one valid object, then reject every missing field, unknown field, repository database-ID mismatch, non-success conclusion, mismatched `headSha`, unsafe access mode, write access, malformed/mismatched SSH SHA-256 fingerprint, unordered/missing check context, non-hex commit, non-positive run ID, and non-64-hex digest.
 
 - [ ] **Step 2: Run the focused test and verify red**
 
@@ -451,7 +456,7 @@ export function validateCdpEntryGate(input: unknown): asserts input is CdpEntryG
 }
 ```
 
-Define local `assertExactKeys`, `assertRepository`, `assertChecks`, `assertSourceAccess`, and `assertBranchProtection` helpers in this file. Each helper first enforces its exact key set, then the literal values shown in `CdpEntryGate`; `assertChecks` additionally requires positive safe-integer run IDs, `conclusion === 'success'`, and both `headSha` values equal the entry commit. Follow the closed-object style in `packages/contracts/src/acceptance.ts`; do not export a generic permissive object validator. Create a closed JSON Schema with the same required keys, `additionalProperties:false` at every object level, literal repository/access/protection values, positive integer run IDs, and the exact commit/digest patterns. Export the validator from `packages/contracts/src/index.ts`.
+Define local `assertExactKeys`, `assertRepository`, `assertChecks`, `assertSourceAccess`, and `assertBranchProtection` helpers in this file. Each helper first enforces its exact key set, then the literal values shown in `CdpEntryGate`, including `repository.databaseId === 1319799876`; `assertChecks` additionally requires positive safe-integer run IDs, `conclusion === 'success'`, and both `headSha` values equal the entry commit. Follow the closed-object style in `packages/contracts/src/acceptance.ts`; do not export a generic permissive object validator. Create a closed JSON Schema with the same required keys, `additionalProperties:false` at every object level, literal repository identity/access/protection values, positive integer run IDs, and the exact commit/digest patterns. Export the validator from `packages/contracts/src/index.ts`.
 
 - [ ] **Step 4: Run the focused test and verify green**
 
@@ -472,7 +477,7 @@ Extend `tests/acceptance/cdp-entry-gate.test.ts` by importing and faking the pro
 import type { GateReader } from '../../tools/acceptance/capture-cdp-entry-gate.js';
 ```
 
-Assert `captureCdpEntryGate` returns the exact validated object for safe injected values, hashes the real registry and active manifest bytes, rejects the old failed Patchset run, rejects a missing secret, rejects a source attestation with `allowWrite=true`, and performs no write unless CLI flag `--write` is present.
+Assert `captureCdpEntryGate` returns the exact validated object for safe injected values, hashes the real registry and active manifest bytes, rejects a repository database-ID mismatch, rejects the old failed Patchset run, rejects a missing secret, rejects a source attestation with `allowWrite=true`, and performs no write unless CLI flag `--write` is present.
 
 - [ ] **Step 6: Run the capture-tool test and verify red**
 
@@ -489,7 +494,7 @@ Create `tools/acceptance/capture-cdp-entry-gate.ts` with exported functions:
 
 ```ts
 export interface GateReader {
-  repository(): Promise<{ nameWithOwner: string; visibility: string; defaultBranch: string }>;
+  repository(): Promise<{ databaseId: number; nameWithOwner: string; visibility: string; defaultBranch: string }>;
   run(id: number): Promise<{ headSha: string; conclusion: string }>;
   protection(): Promise<unknown>;
   secretNames(): Promise<string[]>;
@@ -517,7 +522,7 @@ export async function runCaptureCdpEntryGateCli(
 ): Promise<number>;
 ```
 
-Define `ACTIVE_PATCHSET_MANIFEST_RELATIVE` inside the module as the literal `patchsets/freeland/virtual-numbers-card-canary-20260801/manifest.yaml`; expose no CLI path override. Parse the administrator attestation as a closed object, require its exact repository/title/read-only values, require `sourceKeyFingerprint` to match its `SHA256:<43-base64>` value, and persist that same non-secret fingerprint in `sourceAccess`. The production `GateReader` uses `execFile('gh', commandArgs)` without a shell, where `commandArgs` is one of the exact read-only commands from Task 1 (`repo view`, `run view`, `secret list`, or `api repos/solomindanil/FreelandQA/branches/main/protection`). It parses only the documented JSON fields and never reads secret values. Hash the exact registry and active-manifest bytes with `createHash('sha256')`. Write JSON and Markdown only under `--write`, by temporary file plus rename, and render no issue titles, paths outside the repository, key bytes, or credential material.
+Define `ACTIVE_PATCHSET_MANIFEST_RELATIVE` inside the module as the literal `patchsets/freeland/virtual-numbers-card-canary-20260801/manifest.yaml`; expose no CLI path override. Parse the administrator attestation as a closed object, require its exact repository/title/read-only values, require `sourceKeyFingerprint` to match its `SHA256:<43-base64>` value, and persist that same non-secret fingerprint in `sourceAccess`. The production `GateReader` uses `execFile('gh', commandArgs)` without a shell, where `commandArgs` is one of the exact read-only commands from Task 1 (`repo view`, `run view`, `secret list`, `api repos/nuanu-ai/FreelandQA`, or `api repos/nuanu-ai/FreelandQA/branches/main/protection`). It parses only the documented JSON fields and never reads secret values. Hash the exact registry and active-manifest bytes with `createHash('sha256')`. Write JSON and Markdown only under `--write`, by temporary file plus rename, and render no issue titles, paths outside the repository, key bytes, or credential material.
 
 - [ ] **Step 8: Run focused and aggregate deterministic checks**
 
@@ -2710,7 +2715,7 @@ With a Task 6 `SessionControl` fixture, require:
 - simultaneous socket connections prove broker single-flight: only one non-stop handler reaches an adapter, later work gets the typed busy result, and a `stop`/process signal closes admission, aborts and awaits the active handler, then tears down;
 - the server admits at most eight concurrent sockets and 128 lifetime sockets. Excess concurrent sockets are destroyed immediately before allocating a command buffer; the 129th lifetime socket atomically closes listener admission and invokes the daemon's once-only terminal path. Counters saturate and there is no queue. Flood, partial-line, never-newline, slow-reader, and reconnect tests prove bounded FDs/buffers/timers and eventual daemon/socket cleanup;
 - peer disconnect and the fixed 30-second command deadline abort a linked non-stop handler and leave no open socket, timer, CDP request, capture, or artifact write; once a validated `stop` is accepted, disconnect may suppress its response but cannot cancel safety cleanup;
-- CLI start and daemon startup each use the same fixed 90-second monotonic outer budget from Task 13; readiness races the private active manifest against direct-child exit and the CLI deadline. Tests advance a fake clock through the complete 75-second staged budget and prove it succeeds, then test expiry at every boundary.
+- CLI start and daemon startup each use the same fixed 90-second monotonic outer budget from Task 13; readiness races the private active manifest against direct-child exit and the CLI deadline. Tests advance a fake clock through the complete 80-second staged budget and prove it succeeds, then test expiry at every boundary.
 - timeout/early-exit cleanup retains the original direct `AgentDaemonChild` handle and birth token, verifies its exact identity, sends `SIGTERM` through that still-unsettled handle, and allows the broker's complete 35,000 ms safety-cleanup budget plus a separate 10,000 ms scheduling/daemon-finalization margin. If the daemon is still present after 45,000 ms, the CLI revalidates the same direct-child token/identity and the private manifest and permits handle-bound `SIGKILL` only when the manifest plus Task 7 bounded inspection prove Chrome/watchdog absent and cleanup state complete. Missing/malformed/partial evidence, a live child, token mismatch, or uncertain guard cleanup returns a typed failure and leaves the daemon alive. After an authorized kill, wait at most 5,000 ms for exact daemon exit; PID reuse/mismatch is never signalled.
 - after a successful start has been unreferenced, absent-socket recovery is observation-only. It never signals a daemon, watchdog, or Chrome by persisted PID; it cleans files only after persisted PID/start-token/executable inspection plus the mandatory profile-user scan proves the three recorded processes and all profile-bound helpers absent. Any live, reused, mismatched, uncertain, or quarantined process tuple returns a typed failure and preserves evidence.
 
@@ -3479,16 +3484,16 @@ test "$(git branch --show-current)" = "$BRANCH"
 FINAL_HEAD="$(git rev-parse HEAD)"
 PUSH_STATUS="$(git status --porcelain)"
 test -z "$PUSH_STATUS"
-BASELINE_MAX_BEFORE="$(gh run list --repo solomindanil/FreelandQA --workflow baseline.yml --limit 100 --json databaseId --jq 'map(.databaseId) | max // 0')"
-PATCHSET_MAX_BEFORE="$(gh run list --repo solomindanil/FreelandQA --workflow patchset.yml --limit 100 --json databaseId --jq 'map(.databaseId) | max // 0')"
+BASELINE_MAX_BEFORE="$(gh run list --repo nuanu-ai/FreelandQA --workflow baseline.yml --limit 100 --json databaseId --jq 'map(.databaseId) | max // 0')"
+PATCHSET_MAX_BEFORE="$(gh run list --repo nuanu-ai/FreelandQA --workflow patchset.yml --limit 100 --json databaseId --jq 'map(.databaseId) | max // 0')"
 git push --set-upstream origin "$BRANCH"
-PR_URL="$(gh pr create --repo solomindanil/FreelandQA --base main --head "$BRANCH" \
+PR_URL="$(gh pr create --repo nuanu-ai/FreelandQA --base main --head "$BRANCH" \
   --title "Add read-only agent-first Freeland CDP broker" \
   --body "Implements FL-CDP-I0/I1: typed public-staging observation only; no auth, mutations, Nuanu writes, or payments.")"
-PR_NUMBER="$(gh pr view "$PR_URL" --repo solomindanil/FreelandQA --json number --jq .number)"
+PR_NUMBER="$(gh pr view "$PR_URL" --repo nuanu-ai/FreelandQA --json number --jq .number)"
 
 for ATTEMPT in $(seq 1 36); do
-  BASELINE_RUN_IDS="$(gh run list --repo solomindanil/FreelandQA --workflow baseline.yml \
+  BASELINE_RUN_IDS="$(gh run list --repo nuanu-ai/FreelandQA --workflow baseline.yml \
     --branch "$BRANCH" --event pull_request --limit 100 \
     --json databaseId,headSha \
     --jq "map(select(.headSha == \"$FINAL_HEAD\" and .databaseId > $BASELINE_MAX_BEFORE)) | .[].databaseId")"
@@ -3501,7 +3506,7 @@ test "$BASELINE_RUN_COUNT" = 1
 BASELINE_RUN_ID="$BASELINE_RUN_IDS"
 
 for ATTEMPT in $(seq 1 36); do
-  PATCHSET_RUN_IDS="$(gh run list --repo solomindanil/FreelandQA --workflow patchset.yml \
+  PATCHSET_RUN_IDS="$(gh run list --repo nuanu-ai/FreelandQA --workflow patchset.yml \
     --branch "$BRANCH" --event pull_request --limit 100 \
     --json databaseId,headSha \
     --jq "map(select(.headSha == \"$FINAL_HEAD\" and .databaseId > $PATCHSET_MAX_BEFORE)) | .[].databaseId")"
@@ -3513,17 +3518,17 @@ done
 test "$PATCHSET_RUN_COUNT" = 1
 PATCHSET_RUN_ID="$PATCHSET_RUN_IDS"
 
-gh run watch "$BASELINE_RUN_ID" --repo solomindanil/FreelandQA --exit-status
-gh run watch "$PATCHSET_RUN_ID" --repo solomindanil/FreelandQA --exit-status
-test "$(gh run view "$BASELINE_RUN_ID" --repo solomindanil/FreelandQA --json headSha --jq .headSha)" = "$FINAL_HEAD"
-test "$(gh run view "$BASELINE_RUN_ID" --repo solomindanil/FreelandQA --json conclusion --jq .conclusion)" = "success"
-test "$(gh run view "$BASELINE_RUN_ID" --repo solomindanil/FreelandQA --json jobs --jq '[.jobs[] | select(.name == "deterministic" and .conclusion == "success")] | length')" = "1"
-test "$(gh run view "$PATCHSET_RUN_ID" --repo solomindanil/FreelandQA --json headSha --jq .headSha)" = "$FINAL_HEAD"
-test "$(gh run view "$PATCHSET_RUN_ID" --repo solomindanil/FreelandQA --json conclusion --jq .conclusion)" = "success"
-test "$(gh run view "$PATCHSET_RUN_ID" --repo solomindanil/FreelandQA --json jobs --jq '[.jobs[] | select(.name == "immutable-base" and .conclusion == "success")] | length')" = "1"
-BASELINE_RUN_URL="$(gh run view "$BASELINE_RUN_ID" --repo solomindanil/FreelandQA --json url --jq .url)"
-PATCHSET_RUN_URL="$(gh run view "$PATCHSET_RUN_ID" --repo solomindanil/FreelandQA --json url --jq .url)"
-gh pr comment "$PR_NUMBER" --repo solomindanil/FreelandQA \
+gh run watch "$BASELINE_RUN_ID" --repo nuanu-ai/FreelandQA --exit-status
+gh run watch "$PATCHSET_RUN_ID" --repo nuanu-ai/FreelandQA --exit-status
+test "$(gh run view "$BASELINE_RUN_ID" --repo nuanu-ai/FreelandQA --json headSha --jq .headSha)" = "$FINAL_HEAD"
+test "$(gh run view "$BASELINE_RUN_ID" --repo nuanu-ai/FreelandQA --json conclusion --jq .conclusion)" = "success"
+test "$(gh run view "$BASELINE_RUN_ID" --repo nuanu-ai/FreelandQA --json jobs --jq '[.jobs[] | select(.name == "deterministic" and .conclusion == "success")] | length')" = "1"
+test "$(gh run view "$PATCHSET_RUN_ID" --repo nuanu-ai/FreelandQA --json headSha --jq .headSha)" = "$FINAL_HEAD"
+test "$(gh run view "$PATCHSET_RUN_ID" --repo nuanu-ai/FreelandQA --json conclusion --jq .conclusion)" = "success"
+test "$(gh run view "$PATCHSET_RUN_ID" --repo nuanu-ai/FreelandQA --json jobs --jq '[.jobs[] | select(.name == "immutable-base" and .conclusion == "success")] | length')" = "1"
+BASELINE_RUN_URL="$(gh run view "$BASELINE_RUN_ID" --repo nuanu-ai/FreelandQA --json url --jq .url)"
+PATCHSET_RUN_URL="$(gh run view "$PATCHSET_RUN_ID" --repo nuanu-ai/FreelandQA --json url --jq .url)"
+gh pr comment "$PR_NUMBER" --repo nuanu-ai/FreelandQA \
   --body "FL-CDP-I1 remote acceptance: head $FINAL_HEAD; Baseline $BASELINE_RUN_ID succeeded ($BASELINE_RUN_URL); Patchset $PATCHSET_RUN_ID succeeded ($PATCHSET_RUN_URL)."
 ```
 
