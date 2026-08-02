@@ -1,6 +1,7 @@
 # Freeland Agent-First CDP Feedback Loop — Design
 
-**Status:** Approved in conversation on 2026-08-02; pending written-spec review
+**Status:** Approved in conversation on 2026-08-02; private GitHub Free-safe
+amendment approved in conversation on 2026-08-02; pending written-spec review
 
 **Program:** Freeland autonomous QA harness
 
@@ -33,27 +34,281 @@ This design extends, but does not rewrite, the approved
 [`Freeland Autonomous QA Harness` design](./2026-07-31-freeland-autonomous-qa-harness-design.md).
 The existing definitions of coverage, ticket/candidate freezing, verdicts,
 Computer Use, payment handling, Nuanu routing, shadow calibration, and program
-completion remain authoritative.
+completion remain authoritative. The owner's later GitHub Free-safe decision
+supersedes only the earlier protected-private-branch requirement; it does not
+weaken any product, payment, privacy, evidence, or candidate rule.
 
 The current
 [`Repository Baseline and Coverage Registry` plan](../plans/2026-07-31-freeland-repository-baseline-and-coverage-registry.md)
-implements only program subproject 1. Its Tasks 1–11, final acceptance matrix,
-credential contract, and exact workflow requirements remain unchanged. The CDP
-feedback loop will receive its own sibling implementation plan; it will not be
-appended as Task 12 or cause completed baseline tasks to be renumbered.
+implements only program subproject 1. Its Tasks 1–10, credential contract, and
+exact workflow requirements remain unchanged. Its Task 11 and final acceptance
+matrix are superseded only where they require paid private-branch protection;
+the Free-safe integrity contract below governs instead. The CDP feedback loop
+keeps its own sibling implementation plan; it is not appended as Task 12 and
+does not cause completed baseline tasks to be renumbered.
 
 Implementation cannot cross the `I0` entry gate until Task 11 proves all of the
-following against one immutable `FreelandQA` commit:
+following against one immutable `nuanu-ai/FreelandQA` commit:
 
-1. the remote repository is private;
+1. the remote repository is private and its immutable REST repository ID is
+   `1319799876`;
 2. read-only product-source access uses the approved deploy key or
    repository-scoped GitHub App;
 3. both exact required workflows pass on that commit;
-4. `main` protection is read back successfully;
+4. the GitHub Free-safe integrity gate records that server-side private-branch
+   protection is unavailable, automatic merge is disabled, and `main` equals
+   the entry commit before and after every external step;
 5. the accepted coverage revision and product patchset proof are pinned.
 
-Design and planning may continue while that external access dependency is
-being resolved. Runtime implementation does not bypass it.
+The owner explicitly accepts the narrow residual risk of GitHub Free: a user
+with write authority can push before the harness observes it. This gate is
+therefore detect-and-refuse, not prevent-and-claim. The closed operation ledger
+below enumerates every guarded I0 and delivery step, including run selection,
+feature-worktree creation, acceptance-record commit, feature push, PR creation,
+and PR comment. Immediately before and after each step, the harness re-reads
+repository ID, private visibility, default branch, and exact `main` SHA. Any
+drift, object replacement, ambiguous run selection, or failed read closes the
+gate without retrying, merging, or starting the next operation.
+
+The canonical I0 record must state this limitation directly. It must not use a
+field named `branchProtection`, `protected`, or any equivalent success claim.
+Instead it records this closed conceptual contract:
+
+```ts
+interface FreePlanRepositorySnapshot {
+  repositoryId: 1319799876;
+  visibility: 'PRIVATE';
+  defaultBranch: 'main';
+  mainSha: string; // exact 40-lowercase-hex entry commit
+}
+
+type FreePlanI0Operation =
+  | 'repository-secret-write'
+  | 'baseline-workflow-dispatch'
+  | 'patchset-workflow-dispatch'
+  | 'baseline-run-selection'
+  | 'patchset-run-selection'
+  | 'feature-worktree-create';
+
+type FreePlanDeliveryOperation =
+  | 'acceptance-record-commit'
+  | 'feature-branch-push'
+  | 'pull-request-create'
+  | 'baseline-pr-run-selection'
+  | 'patchset-pr-run-selection'
+  | 'pull-request-comment';
+
+type FreePlanOperation = FreePlanI0Operation | FreePlanDeliveryOperation;
+
+interface FreePlanOperationAttestation<
+  TOperation extends FreePlanOperation,
+> {
+  operation: TOperation;
+  before: FreePlanRepositorySnapshot;
+  after: FreePlanRepositorySnapshot;
+  result: 'observed_no_drift';
+}
+
+interface FreePlanDispatchOperation<
+  TOperation extends
+    | 'baseline-workflow-dispatch'
+    | 'patchset-workflow-dispatch',
+  TWorkflow extends 'baseline.yml' | 'patchset.yml',
+> extends FreePlanOperationAttestation<TOperation> {
+  workflowFile: TWorkflow;
+  preWindowMaxRunId: number;
+  windowOpenedAt: string;
+}
+
+interface FreePlanRunSelectionOperation<
+  TOperation extends
+    | 'baseline-run-selection'
+    | 'patchset-run-selection'
+    | 'baseline-pr-run-selection'
+    | 'patchset-pr-run-selection',
+  TWorkflow extends 'baseline.yml' | 'patchset.yml',
+  TJob extends 'deterministic' | 'immutable-base',
+  TEvent extends 'workflow_dispatch' | 'pull_request',
+  TExpectedHeadRole extends 'entryCommit' | 'acceptedFeatureHead',
+> extends FreePlanOperationAttestation<TOperation> {
+  workflowFile: TWorkflow;
+  event: TEvent;
+  preWindowMaxRunId: number;
+  windowOpenedAt: string;
+  exactlyOneMatch: true;
+  runId: number;
+  createdAt: string;
+  expectedHeadRole: TExpectedHeadRole;
+  expectedHeadSha: string;
+  headSha: string;
+  headMatchesExpected: true;
+  conclusion: 'success';
+  requiredJob: TJob;
+  requiredJobConclusion: 'success';
+}
+
+interface FreePlanFeaturePushOperation
+  extends FreePlanOperationAttestation<'feature-branch-push'> {
+  branch: 'codex/freeland-agent-first-cdp-i1';
+  acceptedFeatureHead: string;
+  pushedHeadSha: string;
+  headMatchesAcceptedFeatureHead: true;
+  baselinePreWindowMaxRunId: number;
+  patchsetPreWindowMaxRunId: number;
+  windowOpenedAt: string;
+}
+
+interface FreePlanSourceAccessAttestation {
+  repository: 'nuanu-ai/freeland_app';
+  title: 'FreelandQA read-only source checkout';
+  fingerprint: string;
+  attestationSha256: string;
+  readOnly: true;
+  allowWrite: false;
+  privateKeyFingerprintMatched: true;
+}
+
+interface FreePlanIntegrityBase {
+  mode: 'detect-and-refuse';
+  serverSidePushPrevention: false;
+  automaticMerge: false;
+  harnessMayUpdateMain: false;
+  ownerAcceptedResidualRisk: true;
+}
+
+interface FreePlanI0IntegrityRecord extends FreePlanIntegrityBase {
+  schemaVersion: 1;
+  entryCommit: string;
+  sourceAccess: {
+    before: FreePlanSourceAccessAttestation;
+    after: FreePlanSourceAccessAttestation;
+  };
+  i0Operations: [
+    FreePlanOperationAttestation<'repository-secret-write'>,
+    FreePlanDispatchOperation<
+      'baseline-workflow-dispatch',
+      'baseline.yml'
+    >,
+    FreePlanDispatchOperation<
+      'patchset-workflow-dispatch',
+      'patchset.yml'
+    >,
+    FreePlanRunSelectionOperation<
+      'baseline-run-selection',
+      'baseline.yml',
+      'deterministic',
+      'workflow_dispatch',
+      'entryCommit'
+    >,
+    FreePlanRunSelectionOperation<
+      'patchset-run-selection',
+      'patchset.yml',
+      'immutable-base',
+      'workflow_dispatch',
+      'entryCommit'
+    >,
+    FreePlanOperationAttestation<'feature-worktree-create'>,
+  ];
+}
+
+interface FreePlanDeliveryReceipt extends FreePlanIntegrityBase {
+  schemaVersion: 1;
+  i0RecordSha256: string;
+  i1AcceptanceRecordSha256: string;
+  i1AcceptanceCommit: string;
+  acceptedFeatureHead: string;
+  i0: FreePlanI0IntegrityRecord;
+  deliveryOperations: [
+    FreePlanOperationAttestation<'acceptance-record-commit'>,
+    FreePlanFeaturePushOperation,
+    FreePlanOperationAttestation<'pull-request-create'>,
+    FreePlanRunSelectionOperation<
+      'baseline-pr-run-selection',
+      'baseline.yml',
+      'deterministic',
+      'pull_request',
+      'acceptedFeatureHead'
+    >,
+    FreePlanRunSelectionOperation<
+      'patchset-pr-run-selection',
+      'patchset.yml',
+      'immutable-base',
+      'pull_request',
+      'acceptedFeatureHead'
+    >,
+    FreePlanOperationAttestation<'pull-request-comment'>,
+  ];
+}
+```
+
+Each tuple entry occurs exactly once and in the displayed order. Every
+before/after snapshot is recursively closed and must equal repository ID
+`1319799876`, private visibility, default branch `main`, and
+`FreePlanI0IntegrityRecord.entryCommit`. Timestamps are canonical UTC instants,
+run IDs and pre-window maxima are non-negative safe integers, and a selected
+run ID must be greater than its stored maximum. Each selection echoes the exact
+window opened by its corresponding dispatch or feature push, has exactly one
+match, and requires `createdAt >= windowOpenedAt`. For I0 selections,
+`expectedHeadSha`, `headSha`, and the enclosing `entryCommit` must be equal. For
+PR selections, both SHA fields must equal the enclosing
+`acceptedFeatureHead`. The feature-push operation requires
+`acceptedFeatureHead === pushedHeadSha === i1AcceptanceCommit` and
+`headMatchesAcceptedFeatureHead:true`. Any unequal SHA rejects the closed
+record even when every other field is valid. Old runs, duplicate matches,
+renamed/similarly named workflows, reruns outside the window, or ambiguous
+selection fail the gate.
+
+The product deploy key is an out-of-band administrator prerequisite rather
+than a harness write. Its closed administrator attestation digest, non-secret
+public-key fingerprint, `readOnly:true`, `allowWrite:false`, and local private
+key fingerprint match are persisted before the first I0 operation and
+revalidated into the exact `after` object after the final I0 operation. The two
+objects must be byte-for-byte equal. No key bytes enter the integrity record.
+
+The canonical I0 record is schema version 1 at
+`coverage/bootstrap/cdp-i0-entry-gate.v1.json`. It contains the base integrity
+fields, `entryCommit`, `sourceAccess`, and the complete `i0Operations` tuple.
+Its canonical encoding is compact JSON plus exactly one trailing LF;
+`i0RecordSha256` is SHA-256 over those exact on-disk bytes, including the LF.
+
+The pre-delivery I1 record is schema version 1 at
+`coverage/bootstrap/cdp-i1-acceptance.v1.json`. It stores
+`i0RecordSha256`, the local acceptance claims, and the exact implementation
+commit that must become the acceptance commit's sole parent. Its own digest
+uses the same exact-byte algorithm. It cannot contain its self-referential
+future commit hash or later PR facts.
+
+After feature push, PR creation, both exact PR-run selections, and the one
+sanitized PR comment have all completed and received their post-step snapshot,
+the collector writes the complete `FreePlanDeliveryReceipt` as canonical
+compact JSON plus LF to the ignored private path
+`.work/cdp-i1-delivery/receipt.v1.json`. It binds the exact I0 and I1 record
+digests, embeds the validated I0 record unchanged, requires
+`i1AcceptanceCommit === acceptedFeatureHead`, and appends the complete delivery
+tuple. The receipt is the final local action: no network request, Git mutation,
+push, PR update, or comment may occur afterward. GitHub retains the feature
+head, run IDs/URLs, and sanitized comment for independent reconstruction; the
+comment does not claim to contain its own post-comment receipt.
+
+Before writing the delivery receipt, the collector proves that
+`i1AcceptanceCommit` has exactly one parent equal to the I1 record's
+implementation commit and that the acceptance commit changes only the two
+reviewed canonical acceptance paths. It then requires
+`acceptedFeatureHead === i1AcceptanceCommit` without attempting to place that
+future hash inside the earlier committed record. The receipt validator also
+requires the I1 record's stored `i0RecordSha256` to equal both the receipt's
+`i0RecordSha256` and the digest recomputed from its embedded canonical I0
+record.
+
+The harness may push only `codex/freeland-agent-first-cdp-i1`; it may never
+push or update `refs/heads/main`, invoke a merge or auto-merge API, or treat a
+PR as integrated. Final integration is a human action.
+
+Repository-level Actions secrets remain supported on the free plan, but the
+operator needs repository `ADMIN` to create and manage them. Design and
+planning may continue while administrator permission and the read-only deploy
+key attestation are being resolved. Runtime implementation does not bypass
+either dependency.
 
 ## 3. Audited Starting Point
 
@@ -97,8 +352,8 @@ The current harness is not yet the agent feedback loop described here:
    target, request, route, or evidence policy is not satisfied.
 6. Keep the existing product payment harness and every payment evidence rule
    unchanged.
-7. Supply deterministic replay fixtures and security tests suitable for a
-   merge-gated CI lane.
+7. Supply deterministic replay fixtures and security tests as required
+   pre-integration evidence in the Free-safe manual-review workflow.
 
 ### 4.2 Program goals enabled later
 
@@ -426,8 +681,10 @@ diagnostic run with its own identity and artifacts.
 ### `I0` — Entry gate and immutable baseline
 
 Close the existing Task 11 and pin the accepted repository commit, remote,
-required workflow runs, coverage revision, branch protection, and product
-source access method.
+required workflow runs, coverage revision, closed GitHub Free-safe integrity
+record, and product source access method. The integrity record detects and
+rejects drift but does not claim that GitHub Free prevents a privileged direct
+push to a private repository.
 
 ### `I1` — Public staging CDP observer
 
@@ -490,7 +747,7 @@ tests.
 
 ## 12. Verification Strategy
 
-### 12.1 Merge-gated deterministic tests
+### 12.1 Required deterministic pre-integration evidence
 
 CI runs without contacting staging and proves:
 
@@ -530,8 +787,9 @@ fresh unauthenticated profile, and performs no writes. It proves:
 6. final attestation still matches;
 7. stop and cleanup succeed.
 
-Live staging results are evidence about the deployed environment, not a PR
-merge gate. An environment or mesh outage cannot fail deterministic CI.
+Live staging results are evidence about the deployed environment, not part of
+the deterministic pre-integration evidence. An environment or mesh outage
+cannot fail deterministic CI.
 
 ### 12.3 Playwright relationship
 
@@ -546,8 +804,8 @@ explicit setup/cleanup, and strict non-zero selection.
 `I1` is complete only when all of the following are true on one pinned
 `FreelandQA` commit:
 
-1. Task 11's repository, credential, workflow, and protection acceptance is
-   green.
+1. Task 11's repository identity, credential, exact-workflow, and Free-safe
+   detect-and-refuse acceptance is green.
 2. An agent can start, attest, navigate, observe, and stop the dedicated Chrome
    session without receiving or copying a CDP endpoint or target ID.
 3. Every exposed operation is in the typed command registry and both input and
@@ -557,9 +815,10 @@ explicit setup/cleanup, and strict non-zero selection.
 5. The persisted semantic snapshot, console summary, network summary, and
    screenshot artifacts satisfy the capture and size bounds.
 6. Synthetic secret/PII canaries produce zero durable leakage.
-7. The deterministic broker/replay/security suite is merge-gated and green.
-8. One exact-SHA live staging smoke is green and remains outside the merge
-   gate.
+7. The deterministic broker/replay/security suite is green, retained as
+   required evidence, and manually reviewed before any human integration.
+8. One exact-SHA live staging smoke is green and remains outside the
+   deterministic pre-integration evidence lane.
 9. The existing 154 product CDP harness tests are rerun through the read-only
    product checkout and remain green without weakening any assertion.
 10. Existing payment target, mutation, evidence, and manual/automated payment
@@ -579,6 +838,7 @@ explicit setup/cleanup, and strict non-zero selection.
 | Worker or popup bypasses page guard | Browser-wide target auto-attach and request policy before navigation |
 | Third-party egress is missed | Default-deny origin/method graph; no inferred telemetry exception |
 | Deployment changes mid-run | Pre/post attestation and `STALE_CANDIDATE` outcome |
+| GitHub Free cannot protect a private `main` branch | Keep the repository private; pin REST repository ID and exact SHA; re-read before/after every external step; accept only exact-SHA runs; disable automatic merge; fail closed on drift; explicitly record that prevention is unavailable |
 | Agent mistakes harness failure for product bug | Typed outcome model; no product verdict in `I1` |
 | Cleanup kills unrelated processes or removes user data | Ownership manifest, PID/start identity, path containment, no broad deletion |
 | Chrome/CDP version drift | Version probe, replay fixtures, explicit compatibility failure |
@@ -587,11 +847,14 @@ explicit setup/cleanup, and strict non-zero selection.
 
 ## 15. Plan Integration Decision
 
-After written-spec review, create a sibling implementation plan named
+After written-spec review, amend the existing sibling implementation plan
 `docs/superpowers/plans/2026-08-02-freeland-agent-first-cdp-feedback-loop.md`.
-It will use independent iteration IDs (`FL-CDP-I0`, `FL-CDP-I1`, and later
+Its current paid-plan/protected-main I0 clauses are superseded and execution is
+suspended until that amendment is written, reviewed, and committed. The plan
+continues to use independent iteration IDs (`FL-CDP-I0`, `FL-CDP-I1`, and later
 iterations) and 2–5 minute test-driven checkpoints. It will not edit or
-renumber baseline Tasks 1–11.
+renumber baseline Tasks 1–10; it may amend baseline Task 11 and its acceptance
+matrix only to install this exact Free-safe contract.
 
 The baseline plan may receive one short cross-link after its Execution Handoff
 only if that edit can be isolated from unrelated user work. The sibling plan is
@@ -605,5 +868,7 @@ The owner selected and approved:
 - a separate typed CDP broker in `FreelandQA`;
 - the architecture boundary and unchanged payment harness;
 - the route/evidence/safety contract;
+- the private GitHub Free-safe detect-and-refuse I0 gate, with no paid-plan or
+  public-repository dependency and no false branch-protection claim;
 - the `I0`–`I8` roadmap;
 - the stated `I1` acceptance criteria.
