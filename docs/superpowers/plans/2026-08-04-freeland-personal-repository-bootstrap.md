@@ -130,9 +130,18 @@ read_organization_snapshot() {
     --jq '.data.repository | {repositoryId:.databaseId,visibility:.visibility,automaticMerge:.autoMergeAllowed,defaultBranch:.defaultBranchRef.name,mainSha:.defaultBranchRef.target.oid}')"
   ORGANIZATION_SNAPSHOT="$raw" node -e '
     const value=JSON.parse(process.env.ORGANIZATION_SNAPSHOT);
-    const expected={repositoryId:1319799876,visibility:"PRIVATE",automaticMerge:false,defaultBranch:"main",mainSha:process.env.ENTRY_COMMIT};
-    if(JSON.stringify(value)!==JSON.stringify(expected))process.exit(1);
-    process.stdout.write(JSON.stringify(value));
+    const keys=["automaticMerge","defaultBranch","mainSha","repositoryId","visibility"];
+    if(JSON.stringify(Object.keys(value).sort())!==JSON.stringify(keys)
+      ||value.repositoryId!==1319799876||value.visibility!=="PRIVATE"
+      ||value.automaticMerge!==false||value.defaultBranch!=="main"
+      ||value.mainSha!==process.env.ENTRY_COMMIT)process.exit(1);
+    process.stdout.write(JSON.stringify({
+      repositoryId:value.repositoryId,
+      visibility:value.visibility,
+      automaticMerge:value.automaticMerge,
+      defaultBranch:value.defaultBranch,
+      mainSha:value.mainSha,
+    }));
   '
 }
 
@@ -286,10 +295,21 @@ read_personal_snapshot() {
     --jq '.data.repository | {repositoryId:.databaseId,visibility:.visibility,viewerPermission:.viewerPermission,automaticMerge:.autoMergeAllowed,defaultBranch:(.defaultBranchRef.name // null),mainSha:(.defaultBranchRef.target.oid // null)}')"
   PERSONAL_SNAPSHOT="$raw" node -e '
     const value=JSON.parse(process.env.PERSONAL_SNAPSHOT);
-    if(!Number.isSafeInteger(value.repositoryId)||value.repositoryId!==Number(process.env.PERSONAL_REPOSITORY_ID)
+    const keys=["automaticMerge","defaultBranch","mainSha","repositoryId","viewerPermission","visibility"];
+    const empty=value.defaultBranch===null&&value.mainSha===null;
+    const seeded=value.defaultBranch==="main"&&value.mainSha===process.env.ENTRY_COMMIT;
+    if(JSON.stringify(Object.keys(value).sort())!==JSON.stringify(keys)
+      ||!Number.isSafeInteger(value.repositoryId)||value.repositoryId!==Number(process.env.PERSONAL_REPOSITORY_ID)
       ||value.visibility!=="PRIVATE"||value.viewerPermission!=="ADMIN"
-      ||value.automaticMerge!==false)process.exit(1);
-    process.stdout.write(JSON.stringify(value));
+      ||value.automaticMerge!==false||(!empty&&!seeded))process.exit(1);
+    process.stdout.write(JSON.stringify({
+      repositoryId:value.repositoryId,
+      visibility:value.visibility,
+      viewerPermission:value.viewerPermission,
+      automaticMerge:value.automaticMerge,
+      defaultBranch:value.defaultBranch,
+      mainSha:value.mainSha,
+    }));
   '
 }
 
