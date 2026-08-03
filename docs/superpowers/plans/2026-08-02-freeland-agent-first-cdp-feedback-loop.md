@@ -4,7 +4,7 @@
 
 **Goal:** Deliver a fail-closed, typed, read-only CDP capability broker that lets an agent inspect explicitly approved public Freeland staging routes without receiving raw CDP access, persisting sensitive browser data, or mutating Freeland or Nuanu Flow.
 
-**Architecture:** Complete the existing repository/publication gate first, then implement the broker inside the private `FreelandQA` repository. A long-lived local daemon owns an ephemeral Chrome profile and an inherited `--remote-debugging-pipe`; no TCP debugging endpoint exists. Agent commands reach the daemon only through a private Unix socket and versioned JSON contracts. A daemon-owned, capability-authenticated allow-one CONNECT proxy plus catch-all Chrome resolver/transport lockdown makes browser egress fail closed; proxy credentials exist only in daemon memory and are answered through the guarded CDP auth challenge. A direct-child watchdog kills Chrome if the daemon lifetime pipe disappears. Candidate attestation, browser-wide target/request interception, semantic projection, public screenshot policy, and private artifact storage all fail closed and remain separate from the existing product payment harness.
+**Architecture:** Complete the GitHub Free detect-and-refuse repository/publication gate first, then implement the broker inside the private `FreelandQA` repository. The gate pins the immutable repository identity and `main` SHA around every permitted external operation, records exact workflow windows, never updates or merges `main`, and ends with a private cryptographically bound delivery receipt. A long-lived local daemon owns an ephemeral Chrome profile and an inherited `--remote-debugging-pipe`; no TCP debugging endpoint exists. Agent commands reach the daemon only through a private Unix socket and versioned JSON contracts. A daemon-owned, capability-authenticated allow-one CONNECT proxy plus catch-all Chrome resolver/transport lockdown makes browser egress fail closed; proxy credentials exist only in daemon memory and are answered through the guarded CDP auth challenge. A direct-child watchdog kills Chrome if the daemon lifetime pipe disappears. Candidate attestation, browser-wide target/request interception, semantic projection, public screenshot policy, and private artifact storage all fail closed and remain separate from the existing product payment harness.
 
 **Tech Stack:** Node.js 20, npm, TypeScript 6, Node test runner, Ajv 8, YAML 2, the closed reviewed macOS runtime `Chrome/150.0.7871.187` with CDP `1.3`, null-delimited Chrome DevTools Protocol over inherited OS pipes behind a typed broker, GitHub Actions, GitHub CLI.
 
@@ -12,11 +12,11 @@
 
 1. This plan implements only design iterations `I0` and `I1`. Authenticated sessions, Nuanu ticket polling, product worktree fixes, Computer Use, Telegram, mutations, payments, and automatic routing remain out of scope.
 2. Execute repository changes only in the authoritative clean publication checkout `/Users/danilsolomin/projectsnew/NuanuFlowQA/.worktrees/freelandqa-publication`, or in a new worktree created from its `origin/main`. Do not use the stale partial checkout `/Users/danilsolomin/projectsnew/FreelandQA`.
-3. Invoke `superpowers:using-git-worktrees` at execution time and create branch `codex/freeland-agent-first-cdp-i1` only after Task 1 is green.
+3. Invoke `superpowers:using-git-worktrees` only at Task 1 Step 8, after the preceding five I0 operations and both exact runs are green; create only branch `codex/freeland-agent-first-cdp-i1` at the pinned entry commit. Completing that guarded worktree operation closes Task 1.
 4. The audited remote baseline is private `nuanu-ai/FreelandQA` `main@a4df0c5e4b57dfda3ed658171452cccda6095d52`.
 5. As observed on 2026-08-02, Baseline run `30731560482` passed on that commit and Patchset run `30731560480` failed because `FREELAND_SOURCE_DEPLOY_KEY` was absent. Re-read GitHub before acting; the observation is not a substitute for the Task 1 gate.
-6. The repository was transferred with human approval to `nuanu-ai/FreelandQA` while preserving its private visibility, repository ID, and exact entry commit. Immediately after transfer the authenticated user has `WRITE` on `nuanu-ai/FreelandQA` and `MAINTAIN` on `nuanu-ai/freeland_app`; Task 1 therefore also requires an organization owner to grant repository `ADMIN` and enable a GitHub plan that supports protected branches on private organization repositories. Product-repository deploy-key read-back still requires the product administrator.
-7. Do not begin Task 2 until Task 1 proves both required workflows successful on the exact entry commit, read-only source access, and protected `main`.
+6. The repository was transferred with human approval to `nuanu-ai/FreelandQA` while preserving private visibility, immutable REST repository ID `1319799876`, and the exact entry commit. GitHub organization plan `free` is intentional. The operator still needs repository `ADMIN` solely to create/manage the repository Actions secret; the product administrator must provide the closed read-only deploy-key attestation. No paid-plan upgrade or public-repository conversion is required.
+7. Do not begin Task 2 until Task 1 proves both exact workflows successful on the entry commit, byte-stable read-only source access, automatic merge disabled, and the complete ordered six-operation Free-safe observation bundle with unchanged `main` before and after every operation. Tasks 3–16 cannot begin until Task 2 commits the canonical I0 record.
 8. Never paste, print, commit, or attach a private key, password, bearer token, cookie, storage state, PAN, CVV, checkout URL, provider payload, personal email, phone number, VPN credential, Telegram init data, raw DOM, raw AX tree, request/response body, or browser profile.
 9. The first live target is exactly `https://mf0.forum`; `mf0.store`, foreign Supabase projects, provider origins, unknown origins, and unknown URL schemes fail closed.
 10. The staging Supabase project is exactly `qsxsiunkflfumhcluyhv`. This public project reference is policy identity, not a credential.
@@ -28,14 +28,15 @@
 16. Raw CDP payloads may exist only in daemon memory. Only schema-valid, bounded, capture-time-sanitized derivatives may be logged, returned, or written.
 17. Public screenshots require a fresh unauthenticated profile, a `public-safe` route, frozen execution/rendering, a verified fixed stylesheet that hides every descendant and paints one fixed opaque viewport cover, no sensitive frame/authenticated marker, exact all-pixel equality with that fixed cover, a 4096×4096 decoded-pixel bound, and a 5 MiB encoded bound.
 18. Artifacts live only below the ignored `artifacts/cdp/` root. Directories are `0700`, regular files are `0600`, and sanitized-artifact retention is seven days. A crashed session's raw profile is released immediately on the next startup once every exact process identity is proven absent; mismatch is quarantined rather than deleted unsafely.
-19. Deterministic CI never contacts staging or starts real Chrome. The synthetic loopback real-Chrome security smoke and live staging smoke are separate local macOS acceptance commands and are not merge gates.
+19. Deterministic CI never contacts staging or starts real Chrome. The synthetic loopback real-Chrome security smoke and live staging smoke are separate local macOS acceptance commands. Deterministic results are required pre-integration evidence reviewed by a human; GitHub Free does not enforce them as a private-branch merge gate.
 20. Existing product source worktrees, CDP/payment files, and assertions are not edited. Final acceptance creates an OS-temporary detached checkout at the active manifest's exact base commit, applies only the repository-owned immutable patchset verifier to reach its exact final tree, reruns the full accepted product CDP harness, and requires at least the existing 154 tests with zero failures and an unchanged verified index/worktree tuple.
-21. Do not mutate a Nuanu issue, product object, account, checkout, payment, analytics event, provider resource, or application/customer/Telegram/email message in any task. The only external writes are the exact repository-scoped GitHub secret, workflow dispatch, branch-protection, branch, PR, and sanitized PR-comment operations explicitly enumerated in Tasks 1 and 16.
+21. Do not mutate a Nuanu issue, product object, account, checkout, payment, analytics event, provider resource, or application/customer/Telegram/email message in any task. The only external writes are the exact repository-scoped GitHub secret, two workflow dispatches, exact feature-branch push, PR creation, and one sanitized PR comment explicitly enumerated in Tasks 1 and 16. Branch-protection, merge, auto-merge, force-push, deletion, and any `main` update are forbidden.
 22. Use `.invalid` domains and runtime-generated secret-shaped fixtures in unit tests. Do not hardcode a Luhn-valid number or numeric security code in source.
 23. Every implementation checkbox follows red → green → `git diff --check`; each task ends with a focused commit containing only its listed files.
 24. Threat model: staging/page content, network destinations, malformed CDP, crashes, and accidental/cooperative-agent escape attempts are untrusted; the local macOS user account and same-UID process/filesystem introspection are trusted. `0600` files, the private socket, and in-memory proxy capability prevent normal API/confused-deputy use but do not claim isolation from a malicious same-UID debugger that reads daemon memory/profile files. Adversarial-agent isolation requires a separate OS identity/container and is deferred to a later reviewed iteration; acceptance wording must not imply otherwise.
 25. I1 is content-minimizing, not a formal non-interference system. It persists no raw/arbitrary page text, values, URLs, bodies, headers, DOM/AX identifiers, or reversible unkeyed content digest, but the reviewed bounded structural outputs (role/state/presence/order/count/timing/status classes) are necessarily page-influenced and a deliberately malicious page could encode bits through them. That covert-channel adversary and re-publication of local artifacts are out of scope; eliminating it would require returning no useful page-derived QA evidence. Acceptance claims must say `forbidden raw/direct content leaks:0`, not “zero information flow” or mathematically “secret-free,” and tests must distinguish those claims.
 26. The fresh browser profile is not sufficient OS-secret, browser-process writer, or local-network isolation on macOS. Production Chrome must use `--use-mock-keychain`; its exact disabled-feature tuple must include `UseKeychainKeyProvider`, `DialMediaRouteProvider`, `MediaRouter`, `KeepAliveInBrowserMigration`, and `FetchRetry`; and the real-Chrome security lane proves the byte-exact sync switch plus async-provider disable, source-pinned semantics, no SSDP/mDNS/local-discovery datagram, and no renderer-detached keepalive/retry write. It never probes or mutates the user's default Keychain and must not claim runtime non-access beyond those reviewed switches. Never substitute the user's Chrome profile or system Safe Storage entry.
+27. GitHub Free cannot prevent a privileged direct push to private `main`; the owner accepts that narrow residual risk. Every I0 and delivery operation therefore re-reads repository ID `1319799876`, visibility `PRIVATE`, default branch `main`, exact entry SHA, and disabled automatic merge immediately before and after the operation. Drift, ambiguous run selection, read failure, or a non-exact result stops without retry. The harness may push only `codex/freeland-agent-first-cdp-i1`; final integration is human-only.
 
 ---
 
@@ -84,6 +85,7 @@ FreelandQA/
       cdp-artifact-index.v1.schema.json
       cdp-run-result.v1.schema.json
       cdp-i1-acceptance.v1.schema.json
+      cdp-i1-delivery-receipt.v1.schema.json
       cdp-live-smoke-result.v1.schema.json
       cdp-local-security-smoke-result.v1.schema.json
       cdp-i1-evidence.v1.schema.json
@@ -94,6 +96,7 @@ FreelandQA/
       cdp-live-smoke.ts
       cdp-local-security-smoke.ts
       cdp-i1-evidence.ts
+      cdp-i1-delivery-receipt.ts
       index.ts
   packages/cdp-broker/src/
     artifacts.ts
@@ -142,225 +145,512 @@ FreelandQA/
   tests/acceptance/
     cdp-entry-gate.test.ts
     cdp-i1-acceptance.test.ts
+    cdp-i1-delivery-receipt.test.ts
   tools/acceptance/
     capture-cdp-entry-gate.ts
     collect-cdp-i1-evidence.ts
     render-cdp-i1-acceptance.ts
+    collect-cdp-i1-delivery-receipt.ts
   tools/cdp/
     agent-cdp.ts
     live-smoke.ts
     local-security-smoke.ts
 ```
 
-### Task 1: Close the Existing Remote Entry Gate (`FL-CDP-I0`)
+### Task 1: Collect the GitHub Free-Safe Remote Entry Gate (`FL-CDP-I0`)
 
 **Files:**
 
 - Read: `.github/workflows/baseline.yml`
 - Read: `.github/workflows/patchset.yml`
-- Read: `.github/branch-protection.json`
 - Read: `coverage/bootstrap/subproject-1-acceptance.v1.json`
-- External only: GitHub repository settings, Actions secret metadata, workflow runs, branch protection
+- Read: `coverage/registry.v1.yaml`
+- Read: `patchsets/freeland/virtual-numbers-card-canary-20260801/manifest.yaml`
+- Read outside Git: `/Users/danilsolomin/.config/freelandqa/source-access/freeland_app_readonly_ed25519`
+- Read outside Git: `/Users/danilsolomin/.config/freelandqa/source-access/freeland_app_readonly_attestation.json`
+- Create outside Git: one mode-`0600` `$FREELAND_CDP_I0_OBSERVATIONS_FILE` below a fresh mode-`0700` `/private/tmp/freeland-cdp-i0.*` directory
+- External only: GitHub repository/organization metadata, Actions secret metadata, and exact workflow dispatch/run APIs
 
 **Interfaces:**
 
-- **Consumes:** existing Task 11, a protected local private-key file supplied outside Git, and the product administrator's non-secret confirmation that the matching deploy key has `read_only=true` and write access disabled.
-- **Produces:** two successful exact-SHA workflow runs, read-only product checkout, protected `main`, and the immutable inputs used by Task 2.
+- **Consumes:** the approved Free-safe supersession of baseline Task 11, repository `ADMIN`, the protected private key at the exact path above, and the product administrator's closed five-field read-only deploy-key attestation.
+- **Produces:** a complete private candidate `FreePlanI0IntegrityRecord` with the exact ordered six-operation tuple, two successful exact-SHA workflow runs, byte-identical source-access before/after objects, and the isolated feature worktree consumed by Task 2.
+- **Safety boundary:** this task never calls a branch-protection, merge, auto-merge, branch-deletion, or `main` update API. Each permitted operation is enclosed by exact repository snapshots; any failure leaves the partial external state for human inspection and is never retried automatically.
 
-Run all Task 1 command blocks in one persistent operator shell (an agent may keep one PTY session) so the deliberately non-secret repository/run-bound variables survive through Step 9. Every block still enables fail-fast independently. If that shell is lost, rerun the exact read-only state/run resolution steps; never guess or reuse stale IDs.
+Run every Task 1 block and all of Task 2 in one persistent operator shell so the private observation path and source-file bindings survive through Task 2 Step 10. If the shell is lost after any external write, stop for human reconstruction; do not redispatch, overwrite, infer an operation record, or begin Task 2 in a replacement shell.
 
-- [ ] **Step 1: Re-read the exact repository and permission state**
+- [ ] **Step 1: Fail closed on repository identity, Free plan, permission, and automatic merge**
 
 Run from the authoritative publication checkout:
 
 ```bash
 set -euo pipefail
 QA_REPOSITORY="nuanu-ai/FreelandQA"
-PRODUCT_REPOSITORY="nuanu-ai/freeland_app"
 ENTRY_COMMIT="a4df0c5e4b57dfda3ed658171452cccda6095d52"
+PUBLICATION_ROOT="/Users/danilsolomin/projectsnew/NuanuFlowQA/.worktrees/freelandqa-publication"
+FEATURE_WORKTREE="/Users/danilsolomin/projectsnew/NuanuFlowQA/.worktrees/freelandqa-cdp-i1"
+FEATURE_BRANCH="codex/freeland-agent-first-cdp-i1"
+FREELAND_SOURCE_DEPLOY_KEY_FILE="/Users/danilsolomin/.config/freelandqa/source-access/freeland_app_readonly_ed25519"
+FREELAND_SOURCE_ACCESS_ATTESTATION_FILE="/Users/danilsolomin/.config/freelandqa/source-access/freeland_app_readonly_attestation.json"
+export QA_REPOSITORY ENTRY_COMMIT PUBLICATION_ROOT FEATURE_WORKTREE FEATURE_BRANCH
+export FREELAND_SOURCE_DEPLOY_KEY_FILE FREELAND_SOURCE_ACCESS_ATTESTATION_FILE
 
-PUBLICATION_STATUS="$(git status --porcelain)"
-test -z "$PUBLICATION_STATUS"
+monotonic_ms() {
+  /usr/bin/perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e \
+    'printf "%d\n", int(clock_gettime(CLOCK_MONOTONIC) * 1000)'
+}
+
+run_gh_until() {
+  local deadline_ms now_ms remaining_ms request_timeout_ms
+  deadline_ms="$1"
+  shift
+  now_ms="$(monotonic_ms)"
+  remaining_ms=$((deadline_ms - now_ms))
+  test "$remaining_ms" -gt 0
+  request_timeout_ms=30000
+  test "$remaining_ms" -ge "$request_timeout_ms" || request_timeout_ms="$remaining_ms"
+  GH_REQUEST_TIMEOUT_MS="$request_timeout_ms" node -e '
+    const {spawn}=require("node:child_process");
+    const timeout=Number(process.env.GH_REQUEST_TIMEOUT_MS);
+    if(!Number.isSafeInteger(timeout)||timeout<1||timeout>30000)process.exit(1);
+    const child=spawn("gh",process.argv.slice(1),{
+      stdio:["inherit","pipe","pipe"],shell:false,
+    });
+    const chunks=[];
+    let bytes=0;
+    let settled=false;
+    let timedOut=false;
+    let overflow=false;
+    const finish=(success)=>{
+      if(settled)return;
+      settled=true;
+      clearTimeout(timer);
+      if(success)process.stdout.write(Buffer.concat(chunks));
+      else process.exitCode=1;
+    };
+    const timer=setTimeout(()=>{
+      timedOut=true;
+      child.kill("SIGKILL");
+    },timeout);
+    child.stdout.on("data",(chunk)=>{
+      bytes+=chunk.length;
+      if(bytes>16*1024*1024){overflow=true;child.kill("SIGKILL");return;}
+      chunks.push(chunk);
+    });
+    child.stderr.on("data",()=>{});
+    child.once("error",()=>finish(false));
+    child.once("close",(code,signal)=>finish(!timedOut&&!overflow&&code===0&&signal===null));
+  ' "$@"
+}
+
+test "$(pwd -P)" = "$PUBLICATION_ROOT"
+test -z "$(git status --porcelain)"
 test "$(git branch --show-current)" = "main"
 test "$(git rev-parse HEAD)" = "$ENTRY_COMMIT"
 test "$(git remote get-url origin)" = "https://github.com/nuanu-ai/FreelandQA.git"
-gh repo view "$QA_REPOSITORY" --json nameWithOwner,visibility,defaultBranchRef,viewerPermission,isPrivate
-gh repo view "$PRODUCT_REPOSITORY" --json nameWithOwner,visibility,viewerPermission
-test "$(gh api "repos/$QA_REPOSITORY" --jq .id)" = "1319799876"
-test "$(gh repo view "$QA_REPOSITORY" --json viewerPermission --jq .viewerPermission)" = "ADMIN"
-NUANU_ORGANIZATION_PLAN="$(gh api orgs/nuanu-ai --jq '.plan.name')"
-case "$NUANU_ORGANIZATION_PLAN" in team|enterprise) ;; *) exit 1 ;; esac
+PREFLIGHT_DEADLINE_MS=$(( $(monotonic_ms) + 120000 ))
+test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" api orgs/nuanu-ai --jq '.plan.name')" = "free"
+test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" repo view "$QA_REPOSITORY" --json viewerPermission --jq .viewerPermission)" = "ADMIN"
+REPOSITORY_PREFLIGHT="$(run_gh_until "$PREFLIGHT_DEADLINE_MS" api "repos/$QA_REPOSITORY" --jq '{repositoryId:.id,private:.private,visibility:.visibility,defaultBranch:.default_branch,allowAutoMerge:.allow_auto_merge}')"
+REPOSITORY_PREFLIGHT="$REPOSITORY_PREFLIGHT" node -e '
+const value = JSON.parse(process.env.REPOSITORY_PREFLIGHT);
+const expected = {repositoryId:1319799876,private:true,visibility:"private",defaultBranch:"main",allowAutoMerge:false};
+if (JSON.stringify(value) !== JSON.stringify(expected)) process.exit(1);
+'
+test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" api "repos/$QA_REPOSITORY/commits/main" --jq .sha)" = "$ENTRY_COMMIT"
+git cat-file -e "$ENTRY_COMMIT:coverage/bootstrap/subproject-1-acceptance.v1.json"
+git cat-file -e "$ENTRY_COMMIT:coverage/registry.v1.yaml"
+git cat-file -e "$ENTRY_COMMIT:patchsets/freeland/virtual-numbers-card-canary-20260801/manifest.yaml"
 ```
 
-Expected: QA repository private, default branch `main`, immutable REST repository ID `1319799876`, QA permission `ADMIN`, product permission `MAINTAIN`, an organization plan whose exact API name is `team` or `enterprise`, and no local changes. Any different identity, permission, plan, commit, or remote stops the task before a secret write or workflow dispatch; do not force-push or reset.
+Expected: private repository ID `1319799876`, exact `main`, organization plan `free`, automatic merge disabled, repository permission `ADMIN`, and all pinned baseline inputs present at the entry commit. Current `WRITE` permission is a hard blocker before any secret write.
 
-- [ ] **Step 2: Verify the administrator's read-only deploy-key attestation without reading private material**
+- [ ] **Step 2: Validate source access and initialize the private observation bundle**
 
-The product administrator provides a local JSON file outside both repositories with exactly:
+The administrator attestation contains exactly these five fields; the fingerprint value below is a shape example and the real file contains the matching key's actual fingerprint:
 
 ```json
-{
-  "repository": "nuanu-ai/freeland_app",
-  "title": "FreelandQA read-only source checkout",
-  "fingerprint": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-  "readOnly": true,
-  "allowWrite": false
-}
+{"repository":"nuanu-ai/freeland_app","title":"FreelandQA read-only source checkout","fingerprint":"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","readOnly":true,"allowWrite":false}
 ```
-
-The displayed fingerprint is a shape placeholder; the file must contain the actual SHA-256 SSH fingerprint of the public half of the exact private key that will be uploaded.
 
 Run:
 
 ```bash
 set -euo pipefail
-test -n "$FREELAND_SOURCE_ACCESS_ATTESTATION_FILE"
-case "$FREELAND_SOURCE_ACCESS_ATTESTATION_FILE" in /*) ;; *) exit 1 ;; esac
-test -f "$FREELAND_SOURCE_ACCESS_ATTESTATION_FILE"
-node -e 'const fs=require("node:fs");const p=process.env.FREELAND_SOURCE_ACCESS_ATTESTATION_FILE;const v=JSON.parse(fs.readFileSync(p,"utf8"));const keys=Object.keys(v).sort();const expected=["allowWrite","fingerprint","readOnly","repository","title"];if(JSON.stringify(keys)!==JSON.stringify(expected)||v.repository!=="nuanu-ai/freeland_app"||v.title!=="FreelandQA read-only source checkout"||v.readOnly!==true||v.allowWrite!==false||!/^SHA256:[A-Za-z0-9+/]{43}$/.test(v.fingerprint))process.exit(1)'
-```
-
-Expected: exit 0 and no key bytes printed. A chat message alone is not the machine-readable read-back required by this step.
-
-- [ ] **Step 3: Store only the protected private key as the QA Actions secret**
-
-The owner sets `FREELAND_SOURCE_DEPLOY_KEY_FILE` to the absolute protected key path outside Git. Then run:
-
-```bash
-set -euo pipefail
-test -n "$FREELAND_SOURCE_DEPLOY_KEY_FILE"
-case "$FREELAND_SOURCE_DEPLOY_KEY_FILE" in /*) ;; *) exit 1 ;; esac
 test -f "$FREELAND_SOURCE_DEPLOY_KEY_FILE"
-test "$(stat -f '%Lp' "$FREELAND_SOURCE_DEPLOY_KEY_FILE" 2>/dev/null || stat -c '%a' "$FREELAND_SOURCE_DEPLOY_KEY_FILE")" = "600"
-FREELAND_SOURCE_DEPLOY_KEY_FINGERPRINT="$(ssh-keygen -lf "$FREELAND_SOURCE_DEPLOY_KEY_FILE" -E sha256 | awk 'NR == 1 { print $2 }')"
-test "$FREELAND_SOURCE_DEPLOY_KEY_FINGERPRINT" = "$(node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.env.FREELAND_SOURCE_ACCESS_ATTESTATION_FILE,"utf8"));process.stdout.write(v.fingerprint)')"
-gh secret set FREELAND_SOURCE_DEPLOY_KEY --repo "$QA_REPOSITORY" < "$FREELAND_SOURCE_DEPLOY_KEY_FILE"
-gh secret list --repo "$QA_REPOSITORY" | awk '$1 == "FREELAND_SOURCE_DEPLOY_KEY" { found=1 } END { exit(found ? 0 : 1) }'
+test -f "$FREELAND_SOURCE_ACCESS_ATTESTATION_FILE"
+test "$(stat -f '%Lp' "$FREELAND_SOURCE_DEPLOY_KEY_FILE")" = "600"
+test "$(stat -f '%Lp' "$FREELAND_SOURCE_ACCESS_ATTESTATION_FILE")" = "600"
+
+read_source_access() {
+  local attestation_sha key_fingerprint
+  attestation_sha="$(shasum -a 256 "$FREELAND_SOURCE_ACCESS_ATTESTATION_FILE" | awk '{print $1}')"
+  key_fingerprint="$(ssh-keygen -lf "$FREELAND_SOURCE_DEPLOY_KEY_FILE" -E sha256 | awk 'NR == 1 {print $2}')"
+  ATTESTATION_SHA="$attestation_sha" KEY_FINGERPRINT="$key_fingerprint" node -e '
+    const fs = require("node:fs");
+    const value = JSON.parse(fs.readFileSync(process.env.FREELAND_SOURCE_ACCESS_ATTESTATION_FILE, "utf8"));
+    const keys = Object.keys(value).sort();
+    const expected = ["allowWrite","fingerprint","readOnly","repository","title"];
+    if (JSON.stringify(keys) !== JSON.stringify(expected)) process.exit(1);
+    if (value.repository !== "nuanu-ai/freeland_app"
+      || value.title !== "FreelandQA read-only source checkout"
+      || value.readOnly !== true || value.allowWrite !== false
+      || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(value.fingerprint)
+      || value.fingerprint !== process.env.KEY_FINGERPRINT
+      || !/^[0-9a-f]{64}$/.test(process.env.ATTESTATION_SHA)) process.exit(1);
+    process.stdout.write(JSON.stringify({
+      repository:value.repository,
+      title:value.title,
+      fingerprint:value.fingerprint,
+      attestationSha256:process.env.ATTESTATION_SHA,
+      readOnly:true,
+      allowWrite:false,
+      privateKeyFingerprintMatched:true,
+    }));
+  '
+}
+
+read_repository_snapshot() {
+  local raw deadline_ms
+  deadline_ms=$(( $(monotonic_ms) + 30000 ))
+  raw="$(run_gh_until "$deadline_ms" api graphql \
+    -f owner=nuanu-ai -f name=FreelandQA \
+    -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){databaseId visibility autoMergeAllowed defaultBranchRef{name target{... on Commit{oid}}}}}' \
+    --jq '.data.repository | {repositoryId:.databaseId,visibility:.visibility,defaultBranch:.defaultBranchRef.name,mainSha:.defaultBranchRef.target.oid,automaticMerge:.autoMergeAllowed}')"
+  REPOSITORY_SNAPSHOT="$raw" node -e '
+    const value = JSON.parse(process.env.REPOSITORY_SNAPSHOT);
+    const expectedKeys = ["automaticMerge","defaultBranch","mainSha","repositoryId","visibility"];
+    if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expectedKeys)
+      || value.repositoryId !== 1319799876 || value.visibility !== "PRIVATE"
+      || value.defaultBranch !== "main" || value.mainSha !== process.env.ENTRY_COMMIT
+      || value.automaticMerge !== false) process.exit(1);
+    process.stdout.write(JSON.stringify({
+      repositoryId:value.repositoryId,
+      visibility:value.visibility,
+      defaultBranch:value.defaultBranch,
+      mainSha:value.mainSha,
+    }));
+  '
+}
+
+append_i0_operation() {
+  I0_OPERATION_JSON="$1" node -e '
+    const fs = require("node:fs");
+    const file = process.env.FREELAND_CDP_I0_OBSERVATIONS_FILE;
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    value.i0Operations.push(JSON.parse(process.env.I0_OPERATION_JSON));
+    const next = `${file}.next`;
+    fs.writeFileSync(next, `${JSON.stringify(value)}\n`, {encoding:"utf8",mode:0o600,flag:"wx"});
+    fs.renameSync(next, file);
+  '
+}
+
+sleep_within_deadline() {
+  local deadline_ms now_ms remaining_ms sleep_ms
+  deadline_ms="$1"
+  now_ms="$(monotonic_ms)"
+  remaining_ms=$((deadline_ms - now_ms))
+  test "$remaining_ms" -gt 0
+  sleep_ms=5000
+  test "$remaining_ms" -ge "$sleep_ms" || sleep_ms="$remaining_ms"
+  SLEEP_MS="$sleep_ms" /usr/bin/perl -e \
+    'select undef, undef, undef, $ENV{SLEEP_MS} / 1000'
+}
+
+workflow_global_run_max() {
+  local workflow deadline_ms
+  workflow="$1"
+  case "$workflow" in baseline.yml|patchset.yml) ;; *) return 1 ;; esac
+  deadline_ms=$(( $(monotonic_ms) + 120000 ))
+  run_gh_until "$deadline_ms" api --paginate --slurp \
+    "repos/$QA_REPOSITORY/actions/workflows/$workflow/runs?per_page=100" |
+    node -e '
+      let input="";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data",(chunk)=>{input+=chunk;});
+      process.stdin.on("end",()=>{
+        const pages=JSON.parse(input);
+        if(!Array.isArray(pages)||pages.some((page)=>!Array.isArray(page.workflow_runs)))process.exit(1);
+        const ids=pages.flatMap((page)=>page.workflow_runs).map((run)=>run.id);
+        if(ids.some((id)=>!Number.isSafeInteger(id)||id<0))process.exit(1);
+        process.stdout.write(String(ids.reduce((maximum,id)=>Math.max(maximum,id),0)));
+      });
+    '
+}
+
+SOURCE_ACCESS_BEFORE="$(read_source_access)"
+I0_OBSERVATION_DIR="$(mktemp -d /private/tmp/freeland-cdp-i0.XXXXXX)"
+chmod 700 "$I0_OBSERVATION_DIR"
+FREELAND_CDP_I0_OBSERVATIONS_FILE="$I0_OBSERVATION_DIR/observations.v1.json"
+export FREELAND_CDP_I0_OBSERVATIONS_FILE SOURCE_ACCESS_BEFORE
+node -e '
+  const fs = require("node:fs");
+  const value = {
+    schemaVersion:1,
+    mode:"detect-and-refuse",
+    serverSidePushPrevention:false,
+    automaticMerge:false,
+    harnessMayUpdateMain:false,
+    ownerAcceptedResidualRisk:true,
+    entryCommit:process.env.ENTRY_COMMIT,
+    sourceAccess:{before:JSON.parse(process.env.SOURCE_ACCESS_BEFORE),after:null},
+    i0Operations:[],
+  };
+  fs.writeFileSync(process.env.FREELAND_CDP_I0_OBSERVATIONS_FILE, `${JSON.stringify(value)}\n`, {encoding:"utf8",mode:0o600,flag:"wx"});
+'
 ```
 
-Expected: the locally derived non-secret fingerprint equals the administrator's read-only deploy-key record before the secret write, and secret metadata then exists. Do not run `cat`, `head`, `ssh-keygen -y`, or any command that prints private/public key bytes; `ssh-keygen -lf` may expose only the fingerprint.
+Expected: no key bytes are printed; the private-key fingerprint matches the closed administrator attestation; the private bundle contains only non-secret metadata and an empty operation tuple. Do not run `cat`, `head`, `ssh-keygen -y`, or copy either key file into a repository.
 
-- [ ] **Step 4: Trigger both workflows on the unchanged entry commit**
+- [ ] **Step 3: Guard, perform, and record the repository-secret write**
 
 ```bash
 set -euo pipefail
-test "$(git rev-parse HEAD)" = "$ENTRY_COMMIT"
-test "$(gh api "repos/$QA_REPOSITORY/commits/main" --jq .sha)" = "$ENTRY_COMMIT"
-BASELINE_MAX_BEFORE="$(gh run list --repo "$QA_REPOSITORY" --workflow baseline.yml --limit 100 --json databaseId --jq 'map(.databaseId) | max // 0')"
-PATCHSET_MAX_BEFORE="$(gh run list --repo "$QA_REPOSITORY" --workflow patchset.yml --limit 100 --json databaseId --jq 'map(.databaseId) | max // 0')"
-DISPATCHED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-gh workflow run baseline.yml --repo "$QA_REPOSITORY" --ref main
-gh workflow run patchset.yml --repo "$QA_REPOSITORY" --ref main
+SECRET_BEFORE="$(read_repository_snapshot)"
+SECRET_OPERATION_DEADLINE_MS=$(( $(monotonic_ms) + 120000 ))
+run_gh_until "$SECRET_OPERATION_DEADLINE_MS" secret set FREELAND_SOURCE_DEPLOY_KEY --repo "$QA_REPOSITORY" < "$FREELAND_SOURCE_DEPLOY_KEY_FILE"
+test "$(run_gh_until "$SECRET_OPERATION_DEADLINE_MS" secret list --repo "$QA_REPOSITORY" --json name --jq '[.[] | select(.name == "FREELAND_SOURCE_DEPLOY_KEY")] | length')" = "1"
+SECRET_AFTER="$(read_repository_snapshot)"
+SECRET_OPERATION="$(OPERATION=repository-secret-write BEFORE="$SECRET_BEFORE" AFTER="$SECRET_AFTER" node -e '
+  process.stdout.write(JSON.stringify({operation:process.env.OPERATION,before:JSON.parse(process.env.BEFORE),after:JSON.parse(process.env.AFTER),result:"observed_no_drift"}));
+')"
+append_i0_operation "$SECRET_OPERATION"
 ```
 
-Expected: both dispatches accepted while `main` still resolves to the entry commit; the timestamp and prior maximum IDs uniquely bound the new runs.
+Expected: secret metadata exists exactly once and both snapshots are exact entry snapshots. Any API/read-back/snapshot failure stops; do not repeat `gh secret set` automatically.
 
-- [ ] **Step 5: Resolve and watch the new exact-SHA run IDs**
+- [ ] **Step 4: Guard, dispatch, and record Baseline**
 
 ```bash
 set -euo pipefail
-for ATTEMPT in $(seq 1 24); do
-  BASELINE_RUN_IDS="$(gh run list --repo "$QA_REPOSITORY" --workflow baseline.yml --branch main --event workflow_dispatch --limit 100 --json databaseId,headSha,createdAt --jq "map(select(.headSha == \"$ENTRY_COMMIT\" and .databaseId > $BASELINE_MAX_BEFORE and .createdAt >= \"$DISPATCHED_AT\")) | .[].databaseId")"
-  BASELINE_RUN_COUNT="$(printf '%s\n' "$BASELINE_RUN_IDS" | awk 'NF { count += 1 } END { print count + 0 }')"
+BASELINE_DISPATCH_BEFORE="$(read_repository_snapshot)"
+BASELINE_MAX_BEFORE="$(workflow_global_run_max baseline.yml)"
+BASELINE_WINDOW_OPENED_AT="$(node -p 'new Date(Math.floor(Date.now()/1000)*1000).toISOString()')"
+export BASELINE_MAX_BEFORE BASELINE_WINDOW_OPENED_AT
+node -e 'if(!Number.isSafeInteger(Number(process.env.BASELINE_MAX_BEFORE))||Number(process.env.BASELINE_MAX_BEFORE)<0||new Date(process.env.BASELINE_WINDOW_OPENED_AT).toISOString()!==process.env.BASELINE_WINDOW_OPENED_AT)process.exit(1)'
+BASELINE_DISPATCH_DEADLINE_MS=$(( $(monotonic_ms) + 120000 ))
+run_gh_until "$BASELINE_DISPATCH_DEADLINE_MS" workflow run baseline.yml --repo "$QA_REPOSITORY" --ref main
+BASELINE_DISPATCH_AFTER="$(read_repository_snapshot)"
+BASELINE_DISPATCH_OPERATION="$(BEFORE="$BASELINE_DISPATCH_BEFORE" AFTER="$BASELINE_DISPATCH_AFTER" node -e '
+  process.stdout.write(JSON.stringify({operation:"baseline-workflow-dispatch",before:JSON.parse(process.env.BEFORE),after:JSON.parse(process.env.AFTER),result:"observed_no_drift",workflowFile:"baseline.yml",preWindowMaxRunId:Number(process.env.BASELINE_MAX_BEFORE),windowOpenedAt:process.env.BASELINE_WINDOW_OPENED_AT}));
+')"
+append_i0_operation "$BASELINE_DISPATCH_OPERATION"
+```
+
+Expected: exactly one Baseline dispatch request is accepted inside unchanged snapshots; its non-negative pre-window maximum and canonical UTC opening instant are retained.
+
+- [ ] **Step 5: Guard, dispatch, and record Patchset**
+
+```bash
+set -euo pipefail
+PATCHSET_DISPATCH_BEFORE="$(read_repository_snapshot)"
+PATCHSET_MAX_BEFORE="$(workflow_global_run_max patchset.yml)"
+PATCHSET_WINDOW_OPENED_AT="$(node -p 'new Date(Math.floor(Date.now()/1000)*1000).toISOString()')"
+export PATCHSET_MAX_BEFORE PATCHSET_WINDOW_OPENED_AT
+node -e 'if(!Number.isSafeInteger(Number(process.env.PATCHSET_MAX_BEFORE))||Number(process.env.PATCHSET_MAX_BEFORE)<0||new Date(process.env.PATCHSET_WINDOW_OPENED_AT).toISOString()!==process.env.PATCHSET_WINDOW_OPENED_AT)process.exit(1)'
+PATCHSET_DISPATCH_DEADLINE_MS=$(( $(monotonic_ms) + 120000 ))
+run_gh_until "$PATCHSET_DISPATCH_DEADLINE_MS" workflow run patchset.yml --repo "$QA_REPOSITORY" --ref main
+PATCHSET_DISPATCH_AFTER="$(read_repository_snapshot)"
+PATCHSET_DISPATCH_OPERATION="$(BEFORE="$PATCHSET_DISPATCH_BEFORE" AFTER="$PATCHSET_DISPATCH_AFTER" node -e '
+  process.stdout.write(JSON.stringify({operation:"patchset-workflow-dispatch",before:JSON.parse(process.env.BEFORE),after:JSON.parse(process.env.AFTER),result:"observed_no_drift",workflowFile:"patchset.yml",preWindowMaxRunId:Number(process.env.PATCHSET_MAX_BEFORE),windowOpenedAt:process.env.PATCHSET_WINDOW_OPENED_AT}));
+')"
+append_i0_operation "$PATCHSET_DISPATCH_OPERATION"
+```
+
+Expected: exactly one Patchset dispatch request is accepted inside unchanged snapshots with its own independent run window.
+
+- [ ] **Step 6: Guard, select, bounded-poll, and record the exact Baseline run**
+
+```bash
+set -euo pipefail
+BASELINE_SELECTION_BEFORE="$(read_repository_snapshot)"
+BASELINE_SELECTION_DEADLINE_MS=$(( $(monotonic_ms) + 600000 ))
+list_baseline_run_ids() {
+  run_gh_until "$BASELINE_SELECTION_DEADLINE_MS" api --paginate --slurp \
+    "repos/$QA_REPOSITORY/actions/workflows/baseline.yml/runs?branch=main&event=workflow_dispatch&per_page=100" |
+    ENTRY_COMMIT="$ENTRY_COMMIT" BASELINE_MAX_BEFORE="$BASELINE_MAX_BEFORE" BASELINE_WINDOW_OPENED_AT="$BASELINE_WINDOW_OPENED_AT" node -e '
+      let input="";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data",(chunk)=>{input+=chunk;});
+      process.stdin.on("end",()=>{
+        const pages=JSON.parse(input);
+        if(!Array.isArray(pages)||pages.some((page)=>!Array.isArray(page.workflow_runs)))process.exit(1);
+        const maximum=Number(process.env.BASELINE_MAX_BEFORE);
+        const matches=pages.flatMap((page)=>page.workflow_runs).filter((run)=>{
+          if(!Number.isSafeInteger(run.id)||run.id<=maximum||run.event!=="workflow_dispatch"||run.head_sha!==process.env.ENTRY_COMMIT)return false;
+          return new Date(run.created_at).toISOString()>=process.env.BASELINE_WINDOW_OPENED_AT;
+        }).sort((left,right)=>left.id-right.id);
+        process.stdout.write(matches.map((run)=>String(run.id)).join("\n"));
+      });
+    '
+}
+BASELINE_RUN_IDS=""
+while test "$(monotonic_ms)" -lt "$BASELINE_SELECTION_DEADLINE_MS"; do
+  BASELINE_RUN_IDS="$(list_baseline_run_ids)"
+  BASELINE_RUN_COUNT="$(printf '%s\n' "$BASELINE_RUN_IDS" | awk 'NF {n += 1} END {print n + 0}')"
   test "$BASELINE_RUN_COUNT" -le 1
   test "$BASELINE_RUN_COUNT" = 1 && break
-  sleep 5
+  sleep_within_deadline "$BASELINE_SELECTION_DEADLINE_MS"
 done
 test "$BASELINE_RUN_COUNT" = 1
 BASELINE_RUN_ID="$BASELINE_RUN_IDS"
+BASELINE_COMPLETED=0
+while test "$(monotonic_ms)" -lt "$BASELINE_SELECTION_DEADLINE_MS"; do
+  BASELINE_STATE="$(run_gh_until "$BASELINE_SELECTION_DEADLINE_MS" run view "$BASELINE_RUN_ID" --repo "$QA_REPOSITORY" --json status,conclusion)"
+  BASELINE_STATE="$BASELINE_STATE" node -e '
+    const value=JSON.parse(process.env.BASELINE_STATE);
+    const pending=new Set(["queued","in_progress","waiting","requested","pending"]);
+    if(value.status!=="completed"&&!pending.has(value.status))process.exit(1);
+    if(value.status!=="completed"&&value.conclusion!==""&&value.conclusion!==null)process.exit(1);
+  '
+  if test "$(BASELINE_STATE="$BASELINE_STATE" node -e 'process.stdout.write(JSON.parse(process.env.BASELINE_STATE).status)')" = "completed"; then
+    test "$(BASELINE_STATE="$BASELINE_STATE" node -e 'process.stdout.write(JSON.parse(process.env.BASELINE_STATE).conclusion)')" = "success"
+    BASELINE_COMPLETED=1
+    break
+  fi
+  sleep_within_deadline "$BASELINE_SELECTION_DEADLINE_MS"
+done
+test "$BASELINE_COMPLETED" = 1
+BASELINE_RUN_IDS="$(list_baseline_run_ids)"
+BASELINE_RUN_COUNT="$(printf '%s\n' "$BASELINE_RUN_IDS" | awk 'NF {n += 1} END {print n + 0}')"
+test "$BASELINE_RUN_COUNT" = 1
+test "$BASELINE_RUN_IDS" = "$BASELINE_RUN_ID"
+BASELINE_RUN="$(run_gh_until "$BASELINE_SELECTION_DEADLINE_MS" run view "$BASELINE_RUN_ID" --repo "$QA_REPOSITORY" --json databaseId,headSha,createdAt,event,conclusion,jobs --jq '{runId:.databaseId,headSha:.headSha,createdAt:.createdAt,event:.event,conclusion:.conclusion,jobs:.jobs}')"
+BASELINE_RUN="$(BASELINE_RUN="$BASELINE_RUN" BASELINE_RUN_ID="$BASELINE_RUN_ID" node -e '
+  const value=JSON.parse(process.env.BASELINE_RUN);
+  const jobs=value.jobs.filter((job)=>job.name==="deterministic"&&job.conclusion==="success");
+  const createdAt=new Date(value.createdAt).toISOString();
+  if(value.runId!==Number(process.env.BASELINE_RUN_ID)||value.event!=="workflow_dispatch"||value.headSha!==process.env.ENTRY_COMMIT||value.conclusion!=="success"||createdAt<process.env.BASELINE_WINDOW_OPENED_AT||jobs.length!==1)process.exit(1);
+  process.stdout.write(JSON.stringify({...value,createdAt}));
+')"
+BASELINE_SELECTION_AFTER="$(read_repository_snapshot)"
+BASELINE_SELECTION_OPERATION="$(BEFORE="$BASELINE_SELECTION_BEFORE" AFTER="$BASELINE_SELECTION_AFTER" BASELINE_RUN="$BASELINE_RUN" node -e '
+  const run=JSON.parse(process.env.BASELINE_RUN);
+  process.stdout.write(JSON.stringify({operation:"baseline-run-selection",before:JSON.parse(process.env.BEFORE),after:JSON.parse(process.env.AFTER),result:"observed_no_drift",workflowFile:"baseline.yml",event:"workflow_dispatch",preWindowMaxRunId:Number(process.env.BASELINE_MAX_BEFORE),windowOpenedAt:process.env.BASELINE_WINDOW_OPENED_AT,exactlyOneMatch:true,runId:run.runId,createdAt:run.createdAt,expectedHeadRole:"entryCommit",expectedHeadSha:process.env.ENTRY_COMMIT,headSha:run.headSha,headMatchesExpected:true,conclusion:"success",requiredJob:"deterministic",requiredJobConclusion:"success"}));
+')"
+append_i0_operation "$BASELINE_SELECTION_OPERATION"
+export BASELINE_RUN_ID
+```
 
-for ATTEMPT in $(seq 1 24); do
-  PATCHSET_RUN_IDS="$(gh run list --repo "$QA_REPOSITORY" --workflow patchset.yml --branch main --event workflow_dispatch --limit 100 --json databaseId,headSha,createdAt --jq "map(select(.headSha == \"$ENTRY_COMMIT\" and .databaseId > $PATCHSET_MAX_BEFORE and .createdAt >= \"$DISPATCHED_AT\")) | .[].databaseId")"
-  PATCHSET_RUN_COUNT="$(printf '%s\n' "$PATCHSET_RUN_IDS" | awk 'NF { count += 1 } END { print count + 0 }')"
+Expected: one and only one new Baseline run in the stored window, exact entry head, exact event, overall success, and exactly one successful `deterministic` job. Old runs, duplicates, or a late mismatched head fail.
+
+- [ ] **Step 7: Guard, select, bounded-poll, and record the exact Patchset run**
+
+```bash
+set -euo pipefail
+PATCHSET_SELECTION_BEFORE="$(read_repository_snapshot)"
+PATCHSET_SELECTION_DEADLINE_MS=$(( $(monotonic_ms) + 600000 ))
+list_patchset_run_ids() {
+  run_gh_until "$PATCHSET_SELECTION_DEADLINE_MS" api --paginate --slurp \
+    "repos/$QA_REPOSITORY/actions/workflows/patchset.yml/runs?branch=main&event=workflow_dispatch&per_page=100" |
+    ENTRY_COMMIT="$ENTRY_COMMIT" PATCHSET_MAX_BEFORE="$PATCHSET_MAX_BEFORE" PATCHSET_WINDOW_OPENED_AT="$PATCHSET_WINDOW_OPENED_AT" node -e '
+      let input="";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data",(chunk)=>{input+=chunk;});
+      process.stdin.on("end",()=>{
+        const pages=JSON.parse(input);
+        if(!Array.isArray(pages)||pages.some((page)=>!Array.isArray(page.workflow_runs)))process.exit(1);
+        const maximum=Number(process.env.PATCHSET_MAX_BEFORE);
+        const matches=pages.flatMap((page)=>page.workflow_runs).filter((run)=>{
+          if(!Number.isSafeInteger(run.id)||run.id<=maximum||run.event!=="workflow_dispatch"||run.head_sha!==process.env.ENTRY_COMMIT)return false;
+          return new Date(run.created_at).toISOString()>=process.env.PATCHSET_WINDOW_OPENED_AT;
+        }).sort((left,right)=>left.id-right.id);
+        process.stdout.write(matches.map((run)=>String(run.id)).join("\n"));
+      });
+    '
+}
+PATCHSET_RUN_IDS=""
+while test "$(monotonic_ms)" -lt "$PATCHSET_SELECTION_DEADLINE_MS"; do
+  PATCHSET_RUN_IDS="$(list_patchset_run_ids)"
+  PATCHSET_RUN_COUNT="$(printf '%s\n' "$PATCHSET_RUN_IDS" | awk 'NF {n += 1} END {print n + 0}')"
   test "$PATCHSET_RUN_COUNT" -le 1
   test "$PATCHSET_RUN_COUNT" = 1 && break
-  sleep 5
+  sleep_within_deadline "$PATCHSET_SELECTION_DEADLINE_MS"
 done
 test "$PATCHSET_RUN_COUNT" = 1
 PATCHSET_RUN_ID="$PATCHSET_RUN_IDS"
-
-gh run watch "$BASELINE_RUN_ID" --repo "$QA_REPOSITORY" --exit-status
-gh run watch "$PATCHSET_RUN_ID" --repo "$QA_REPOSITORY" --exit-status
+PATCHSET_COMPLETED=0
+while test "$(monotonic_ms)" -lt "$PATCHSET_SELECTION_DEADLINE_MS"; do
+  PATCHSET_STATE="$(run_gh_until "$PATCHSET_SELECTION_DEADLINE_MS" run view "$PATCHSET_RUN_ID" --repo "$QA_REPOSITORY" --json status,conclusion)"
+  PATCHSET_STATE="$PATCHSET_STATE" node -e '
+    const value=JSON.parse(process.env.PATCHSET_STATE);
+    const pending=new Set(["queued","in_progress","waiting","requested","pending"]);
+    if(value.status!=="completed"&&!pending.has(value.status))process.exit(1);
+    if(value.status!=="completed"&&value.conclusion!==""&&value.conclusion!==null)process.exit(1);
+  '
+  if test "$(PATCHSET_STATE="$PATCHSET_STATE" node -e 'process.stdout.write(JSON.parse(process.env.PATCHSET_STATE).status)')" = "completed"; then
+    test "$(PATCHSET_STATE="$PATCHSET_STATE" node -e 'process.stdout.write(JSON.parse(process.env.PATCHSET_STATE).conclusion)')" = "success"
+    PATCHSET_COMPLETED=1
+    break
+  fi
+  sleep_within_deadline "$PATCHSET_SELECTION_DEADLINE_MS"
+done
+test "$PATCHSET_COMPLETED" = 1
+PATCHSET_RUN_IDS="$(list_patchset_run_ids)"
+PATCHSET_RUN_COUNT="$(printf '%s\n' "$PATCHSET_RUN_IDS" | awk 'NF {n += 1} END {print n + 0}')"
+test "$PATCHSET_RUN_COUNT" = 1
+test "$PATCHSET_RUN_IDS" = "$PATCHSET_RUN_ID"
+PATCHSET_RUN="$(run_gh_until "$PATCHSET_SELECTION_DEADLINE_MS" run view "$PATCHSET_RUN_ID" --repo "$QA_REPOSITORY" --json databaseId,headSha,createdAt,event,conclusion,jobs --jq '{runId:.databaseId,headSha:.headSha,createdAt:.createdAt,event:.event,conclusion:.conclusion,jobs:.jobs}')"
+PATCHSET_RUN="$(PATCHSET_RUN="$PATCHSET_RUN" PATCHSET_RUN_ID="$PATCHSET_RUN_ID" node -e '
+  const value=JSON.parse(process.env.PATCHSET_RUN);
+  const jobs=value.jobs.filter((job)=>job.name==="immutable-base"&&job.conclusion==="success");
+  const createdAt=new Date(value.createdAt).toISOString();
+  if(value.runId!==Number(process.env.PATCHSET_RUN_ID)||value.event!=="workflow_dispatch"||value.headSha!==process.env.ENTRY_COMMIT||value.conclusion!=="success"||createdAt<process.env.PATCHSET_WINDOW_OPENED_AT||jobs.length!==1)process.exit(1);
+  process.stdout.write(JSON.stringify({...value,createdAt}));
+')"
+PATCHSET_SELECTION_AFTER="$(read_repository_snapshot)"
+PATCHSET_SELECTION_OPERATION="$(BEFORE="$PATCHSET_SELECTION_BEFORE" AFTER="$PATCHSET_SELECTION_AFTER" PATCHSET_RUN="$PATCHSET_RUN" node -e '
+  const run=JSON.parse(process.env.PATCHSET_RUN);
+  process.stdout.write(JSON.stringify({operation:"patchset-run-selection",before:JSON.parse(process.env.BEFORE),after:JSON.parse(process.env.AFTER),result:"observed_no_drift",workflowFile:"patchset.yml",event:"workflow_dispatch",preWindowMaxRunId:Number(process.env.PATCHSET_MAX_BEFORE),windowOpenedAt:process.env.PATCHSET_WINDOW_OPENED_AT,exactlyOneMatch:true,runId:run.runId,createdAt:run.createdAt,expectedHeadRole:"entryCommit",expectedHeadSha:process.env.ENTRY_COMMIT,headSha:run.headSha,headMatchesExpected:true,conclusion:"success",requiredJob:"immutable-base",requiredJobConclusion:"success"}));
+')"
+append_i0_operation "$PATCHSET_SELECTION_OPERATION"
+export PATCHSET_RUN_ID
 ```
 
-Expected: exactly one new run per workflow and both watches exit 0. A missing or concurrent duplicate dispatch fails closed; the prior failed Patchset run is impossible to select.
+Expected: one and only one new Patchset run in its stored window, exact entry head/event, overall success, and exactly one successful `immutable-base` job. Do not print failed workflow logs.
 
-- [ ] **Step 6: Verify exact conclusions and source-harness execution**
+- [ ] **Step 8: Guard worktree creation, re-attest source access, and close the bundle**
+
+Invoke `superpowers:using-git-worktrees`, then run:
 
 ```bash
 set -euo pipefail
-test "$(gh run view "$BASELINE_RUN_ID" --repo "$QA_REPOSITORY" --json headSha --jq .headSha)" = "$ENTRY_COMMIT"
-test "$(gh run view "$BASELINE_RUN_ID" --repo "$QA_REPOSITORY" --json conclusion --jq .conclusion)" = "success"
-test "$(gh run view "$BASELINE_RUN_ID" --repo "$QA_REPOSITORY" --json jobs --jq '[.jobs[] | select(.name == "deterministic" and .conclusion == "success")] | length')" = "1"
-test "$(gh run view "$PATCHSET_RUN_ID" --repo "$QA_REPOSITORY" --json headSha --jq .headSha)" = "$ENTRY_COMMIT"
-test "$(gh run view "$PATCHSET_RUN_ID" --repo "$QA_REPOSITORY" --json conclusion --jq .conclusion)" = "success"
-test "$(gh run view "$PATCHSET_RUN_ID" --repo "$QA_REPOSITORY" --json jobs --jq '[.jobs[] | select(.name == "immutable-base" and .conclusion == "success")] | length')" = "1"
-gh run view "$PATCHSET_RUN_ID" --repo "$QA_REPOSITORY" --log | rg 'test:staging-cdp-harness|tests [0-9]+|pass [0-9]+'
-```
-
-Expected: both `headSha` values equal the entry commit, both conclusions are `success`, Patchset contains `immutable-base`, and the product CDP harness command completed successfully. Do not print failed-run logs that could contain checkout/provider data; the accepted workflow runs deterministic source tests only.
-
-- [ ] **Step 7: Apply and read back the tracked branch-protection payload**
-
-```bash
-set -euo pipefail
-gh api --method PUT -H "Accept: application/vnd.github+json" \
-  "repos/$QA_REPOSITORY/branches/main/protection" \
-  --input .github/branch-protection.json
-gh api -H "Accept: application/vnd.github+json" \
-  "repos/$QA_REPOSITORY/branches/main/protection" \
-  --jq '{strict:.required_status_checks.strict,contexts:.required_status_checks.contexts,enforce_admins:.enforce_admins.enabled,linear:.required_linear_history.enabled,force:.allow_force_pushes.enabled,deletions:.allow_deletions.enabled,resolution:.required_conversation_resolution.enabled}'
-```
-
-Expected exact read-back:
-
-```json
-{"strict":true,"contexts":["Baseline / deterministic","Patchset / immutable-base"],"enforce_admins":true,"linear":true,"force":false,"deletions":false,"resolution":true}
-```
-
-- [ ] **Step 8: Record the resolved non-secret gate inputs for Task 2**
-
-Keep these shell values in the current operator session without writing them into an untracked repository file:
-
-```bash
-set -euo pipefail
-export FREELAND_CDP_ENTRY_COMMIT="$ENTRY_COMMIT"
-export FREELAND_CDP_BASELINE_RUN_ID="$BASELINE_RUN_ID"
-export FREELAND_CDP_PATCHSET_RUN_ID="$PATCHSET_RUN_ID"
-export FREELAND_SOURCE_DEPLOY_KEY_FINGERPRINT
-```
-
-Expected: Task 2 can read all three values. If the shell session is lost, repeat the exact GitHub read-back rather than guessing IDs.
-
-- [ ] **Step 9: Create the isolated implementation worktree only after I0 is green**
-
-Invoke `superpowers:using-git-worktrees`, then run from the clean publication checkout:
-
-```bash
-set -euo pipefail
-PUBLICATION_ROOT="/Users/danilsolomin/projectsnew/NuanuFlowQA/.worktrees/freelandqa-publication"
-FEATURE_WORKTREE="/Users/danilsolomin/projectsnew/NuanuFlowQA/.worktrees/freelandqa-cdp-i1"
-FEATURE_BRANCH="codex/freeland-agent-first-cdp-i1"
-
+WORKTREE_BEFORE="$(read_repository_snapshot)"
 git -C "$PUBLICATION_ROOT" fetch origin main
 test "$(git -C "$PUBLICATION_ROOT" rev-parse origin/main)" = "$ENTRY_COMMIT"
-PUBLICATION_STATUS="$(git -C "$PUBLICATION_ROOT" status --porcelain)"
-test -z "$PUBLICATION_STATUS"
+test -z "$(git -C "$PUBLICATION_ROOT" status --porcelain)"
 test ! -e "$FEATURE_WORKTREE"
-FEATURE_BRANCH_MATCHES="$(git -C "$PUBLICATION_ROOT" branch --list "$FEATURE_BRANCH")"
-test -z "$FEATURE_BRANCH_MATCHES"
+test -z "$(git -C "$PUBLICATION_ROOT" branch --list "$FEATURE_BRANCH")"
 git -C "$PUBLICATION_ROOT" worktree add "$FEATURE_WORKTREE" -b "$FEATURE_BRANCH" "$ENTRY_COMMIT"
+test "$(git -C "$FEATURE_WORKTREE" branch --show-current)" = "$FEATURE_BRANCH"
+test "$(git -C "$FEATURE_WORKTREE" rev-parse HEAD)" = "$ENTRY_COMMIT"
+test -z "$(git -C "$FEATURE_WORKTREE" status --porcelain)"
+WORKTREE_AFTER="$(read_repository_snapshot)"
+WORKTREE_OPERATION="$(OPERATION=feature-worktree-create BEFORE="$WORKTREE_BEFORE" AFTER="$WORKTREE_AFTER" node -e '
+  process.stdout.write(JSON.stringify({operation:process.env.OPERATION,before:JSON.parse(process.env.BEFORE),after:JSON.parse(process.env.AFTER),result:"observed_no_drift"}));
+')"
+append_i0_operation "$WORKTREE_OPERATION"
+
+SOURCE_ACCESS_AFTER="$(read_source_access)"
+test "$SOURCE_ACCESS_AFTER" = "$SOURCE_ACCESS_BEFORE"
+export SOURCE_ACCESS_AFTER
+node -e '
+  const fs=require("node:fs");
+  const file=process.env.FREELAND_CDP_I0_OBSERVATIONS_FILE;
+  const value=JSON.parse(fs.readFileSync(file,"utf8"));
+  value.sourceAccess.after=JSON.parse(process.env.SOURCE_ACCESS_AFTER);
+  const expected=["repository-secret-write","baseline-workflow-dispatch","patchset-workflow-dispatch","baseline-run-selection","patchset-run-selection","feature-worktree-create"];
+  if(JSON.stringify(value.i0Operations.map((item)=>item.operation))!==JSON.stringify(expected)
+    || JSON.stringify(value.sourceAccess.before)!==JSON.stringify(value.sourceAccess.after))process.exit(1);
+  const next=`${file}.next`;
+  fs.writeFileSync(next,`${JSON.stringify(value)}\n`,{encoding:"utf8",mode:0o600,flag:"wx"});
+  fs.renameSync(next,file);
+'
+test "$(stat -f '%Lp' "$FREELAND_CDP_I0_OBSERVATIONS_FILE")" = "600"
 cd "$FEATURE_WORKTREE"
-test "$(git branch --show-current)" = "$FEATURE_BRANCH"
-test "$(git rev-parse HEAD)" = "$ENTRY_COMMIT"
-FEATURE_STATUS="$(git status --porcelain)"
-test -z "$FEATURE_STATUS"
-test "$(node -p 'process.versions.node.split(".")[0]')" = "20"
-npm ci
-npm run verify:deterministic
 ```
 
-Expected: isolated clean feature worktree at the exact entry commit and the unchanged deterministic baseline passes. Tasks 2–16 run only from `$FEATURE_WORKTREE`; an existing path/branch or changed `origin/main` stops execution for inspection rather than reusing or deleting anything.
+Expected: the final private bundle has the exact six-item order, all snapshots equal the entry repository state, and source-access objects are byte-for-byte equal. Tasks 2–16 use only this worktree. Do not delete the private bundle until Task 2 has committed and rechecked the canonical I0 record.
 
 ### Task 2: Add the Versioned I0 Entry-Gate Contract and Canonical Record
 
@@ -376,50 +666,116 @@ Expected: isolated clean feature worktree at the exact entry commit and the unch
 
 **Interfaces:**
 
-- **Consumes:** the three exported Task 1 values from the same persistent operator shell, the administrator attestation file, GitHub read-only metadata, `coverage/registry.v1.yaml`, and exactly `patchsets/freeland/virtual-numbers-card-canary-20260801/manifest.yaml`.
-- **Produces:** `validateCdpEntryGate(input)`, `captureCdpEntryGate(options)`, and the canonical `cdp-i0-entry-gate.v1.json` consumed by every later task.
+- **Consumes:** Task 1's exact private observation bundle and source files, current read-only GitHub metadata, and the three pinned entry paths named in Task 1.
+- **Produces:** `validateCdpEntryGate(input)`, canonical encoding/digest helpers, `captureCdpEntryGate(options)`, and the exact-byte `coverage/bootstrap/cdp-i0-entry-gate.v1.json` consumed by every later task.
+- **Canonical-byte contract:** JSON is `JSON.stringify(validatedRecord) + '\n'`; exactly one LF is present and SHA-256 covers every on-disk byte including that LF. The JSON record does not contain its own digest.
 
-- [ ] **Step 1: Write the failing exact-shape contract test**
+- [ ] **Step 1: Install the clean worktree and write the failing exact-shape contract test**
 
-Add a fixture in `tests/acceptance/cdp-entry-gate.test.ts` with this interface and assertions:
+First prove the new worktree is still the exact Task 1 output:
 
-```ts
-interface CdpEntryGate {
-  schemaVersion: 1;
-  repository: {
-    databaseId: 1319799876;
-    nameWithOwner: 'nuanu-ai/FreelandQA';
-    visibility: 'PRIVATE';
-    defaultBranch: 'main';
-  };
-  entryCommit: string;
-  checks: {
-    baseline: { runId: number; headSha: string; conclusion: 'success' };
-    patchset: { runId: number; headSha: string; conclusion: 'success' };
-  };
-  sourceAccess: {
-    repository: 'nuanu-ai/freeland_app';
-    kind: 'deploy-key';
-    fingerprint: string;
-    contents: 'read';
-    write: false;
-    administratorReadBack: true;
-  };
-  branchProtection: {
-    strict: true;
-    contexts: ['Baseline / deterministic', 'Patchset / immutable-base'];
-    enforceAdmins: true;
-    linearHistory: true;
-    forcePushes: false;
-    deletions: false;
-    conversationResolution: true;
-  };
-  coverageRegistrySha256: string;
-  patchsetManifestSha256: string;
-}
+Continue in the same persistent operator shell. Require all three exact Task 1
+bindings below before any install or file edit; if any is absent, stop for
+human reconstruction rather than rerunning an I0 operation.
+
+```bash
+set -euo pipefail
+test -n "$FREELAND_CDP_I0_OBSERVATIONS_FILE"
+test "$FREELAND_SOURCE_DEPLOY_KEY_FILE" = "/Users/danilsolomin/.config/freelandqa/source-access/freeland_app_readonly_ed25519"
+test "$FREELAND_SOURCE_ACCESS_ATTESTATION_FILE" = "/Users/danilsolomin/.config/freelandqa/source-access/freeland_app_readonly_attestation.json"
+test -f "$FREELAND_CDP_I0_OBSERVATIONS_FILE"
+test "$(pwd -P)" = "/Users/danilsolomin/projectsnew/NuanuFlowQA/.worktrees/freelandqa-cdp-i1"
+test "$(git branch --show-current)" = "codex/freeland-agent-first-cdp-i1"
+test "$(git rev-parse HEAD)" = "a4df0c5e4b57dfda3ed658171452cccda6095d52"
+test -z "$(git status --porcelain)"
+test "$(node -p 'process.versions.node.split(".")[0]')" = "20"
+npm ci
+npm run verify:deterministic
 ```
 
-The test must import `validateCdpEntryGate` from `packages/contracts/src/cdp-entry-gate.ts`, accept one valid object, then reject every missing field, unknown field, repository database-ID mismatch, non-success conclusion, mismatched `headSha`, unsafe access mode, write access, malformed/mismatched SSH SHA-256 fingerprint, unordered/missing check context, non-hex commit, non-positive run ID, and non-64-hex digest.
+Then add a valid fixture in `tests/acceptance/cdp-entry-gate.test.ts` using these exact exported contracts:
+
+```ts
+export interface FreePlanRepositorySnapshot {
+  repositoryId: 1319799876;
+  visibility: 'PRIVATE';
+  defaultBranch: 'main';
+  mainSha: string;
+}
+
+export interface FreePlanOperationAttestation<TOperation extends string> {
+  operation: TOperation;
+  before: FreePlanRepositorySnapshot;
+  after: FreePlanRepositorySnapshot;
+  result: 'observed_no_drift';
+}
+
+export interface FreePlanDispatchOperation<
+  TOperation extends 'baseline-workflow-dispatch' | 'patchset-workflow-dispatch',
+  TWorkflow extends 'baseline.yml' | 'patchset.yml',
+> extends FreePlanOperationAttestation<TOperation> {
+  workflowFile: TWorkflow;
+  preWindowMaxRunId: number;
+  windowOpenedAt: string;
+}
+
+export interface FreePlanRunSelectionOperation<
+  TOperation extends 'baseline-run-selection' | 'patchset-run-selection',
+  TWorkflow extends 'baseline.yml' | 'patchset.yml',
+  TJob extends 'deterministic' | 'immutable-base',
+> extends FreePlanOperationAttestation<TOperation> {
+  workflowFile: TWorkflow;
+  event: 'workflow_dispatch';
+  preWindowMaxRunId: number;
+  windowOpenedAt: string;
+  exactlyOneMatch: true;
+  runId: number;
+  createdAt: string;
+  expectedHeadRole: 'entryCommit';
+  expectedHeadSha: string;
+  headSha: string;
+  headMatchesExpected: true;
+  conclusion: 'success';
+  requiredJob: TJob;
+  requiredJobConclusion: 'success';
+}
+
+export interface FreePlanSourceAccessAttestation {
+  repository: 'nuanu-ai/freeland_app';
+  title: 'FreelandQA read-only source checkout';
+  fingerprint: string;
+  attestationSha256: string;
+  readOnly: true;
+  allowWrite: false;
+  privateKeyFingerprintMatched: true;
+}
+
+export interface CdpEntryGate {
+  schemaVersion: 1;
+  mode: 'detect-and-refuse';
+  serverSidePushPrevention: false;
+  automaticMerge: false;
+  harnessMayUpdateMain: false;
+  ownerAcceptedResidualRisk: true;
+  entryCommit: string;
+  sourceAccess: {
+    before: FreePlanSourceAccessAttestation;
+    after: FreePlanSourceAccessAttestation;
+  };
+  i0Operations: [
+    FreePlanOperationAttestation<'repository-secret-write'>,
+    FreePlanDispatchOperation<'baseline-workflow-dispatch', 'baseline.yml'>,
+    FreePlanDispatchOperation<'patchset-workflow-dispatch', 'patchset.yml'>,
+    FreePlanRunSelectionOperation<'baseline-run-selection', 'baseline.yml', 'deterministic'>,
+    FreePlanRunSelectionOperation<'patchset-run-selection', 'patchset.yml', 'immutable-base'>,
+    FreePlanOperationAttestation<'feature-worktree-create'>,
+  ];
+}
+
+export type FreePlanI0IntegrityRecord = CdpEntryGate;
+```
+
+Import `validateCdpEntryGate`, `encodeCdpEntryGate`, and `sha256CdpEntryGateBytes`. Accept one valid record, require compact JSON plus one LF, and pin its digest. Reject every missing/unknown key recursively; any `branchProtection` or `protected` key; tuple omission, duplication, or reordering; repository ID/visibility/default-branch/main drift in any snapshot; any non-Free-safe base literal; malformed entry SHA/fingerprint/digest/time; unequal source objects; write access; private-key mismatch; negative/unsafe run IDs; selected run not greater than its maximum; a selection maximum/window unequal to its corresponding dispatch; `createdAt < windowOpenedAt`; wrong workflow/event/job/head role; mismatched expected/head/entry SHA; or a non-success conclusion.
 
 - [ ] **Step 2: Run the focused test and verify red**
 
@@ -434,29 +790,39 @@ Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `packages/contracts/src/cdp-entry
 
 - [ ] **Step 3: Implement the exact TypeScript validator and JSON Schema**
 
-Create `packages/contracts/src/cdp-entry-gate.ts` with the interface above and:
+Create `packages/contracts/src/cdp-entry-gate.ts` with the interfaces above and:
 
 ```ts
 const commit = /^[0-9a-f]{40}$/;
 const digest = /^[0-9a-f]{64}$/;
+const fingerprint = /^SHA256:[A-Za-z0-9+/]{43}$/;
 
 export function validateCdpEntryGate(input: unknown): asserts input is CdpEntryGate {
   assertExactKeys(input, 'entryGate', [
-    'schemaVersion', 'repository', 'entryCommit', 'checks', 'sourceAccess',
-    'branchProtection', 'coverageRegistrySha256', 'patchsetManifestSha256',
+    'schemaVersion', 'mode', 'serverSidePushPrevention', 'automaticMerge',
+    'harnessMayUpdateMain', 'ownerAcceptedResidualRisk', 'entryCommit',
+    'sourceAccess', 'i0Operations',
   ]);
   if (input.schemaVersion !== 1) throw new Error('entryGate.schemaVersion');
   if (!commit.test(input.entryCommit as string)) throw new Error('entryGate.entryCommit');
-  assertRepository(input.repository);
-  assertChecks(input.checks, input.entryCommit as string);
-  assertSourceAccess(input.sourceAccess);
-  assertBranchProtection(input.branchProtection);
-  if (!digest.test(input.coverageRegistrySha256 as string)) throw new Error('entryGate.coverageRegistrySha256');
-  if (!digest.test(input.patchsetManifestSha256 as string)) throw new Error('entryGate.patchsetManifestSha256');
+  assertIntegrityBase(input);
+  assertSourceAccessPair(input.sourceAccess);
+  assertI0Operations(input.i0Operations, input.entryCommit as string);
+}
+
+export function encodeCdpEntryGate(input: unknown): Buffer {
+  validateCdpEntryGate(input);
+  return Buffer.from(`${JSON.stringify(input)}\n`, 'utf8');
+}
+
+export function sha256CdpEntryGateBytes(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 ```
 
-Define local `assertExactKeys`, `assertRepository`, `assertChecks`, `assertSourceAccess`, and `assertBranchProtection` helpers in this file. Each helper first enforces its exact key set, then the literal values shown in `CdpEntryGate`, including `repository.databaseId === 1319799876`; `assertChecks` additionally requires positive safe-integer run IDs, `conclusion === 'success'`, and both `headSha` values equal the entry commit. Follow the closed-object style in `packages/contracts/src/acceptance.ts`; do not export a generic permissive object validator. Create a closed JSON Schema with the same required keys, `additionalProperties:false` at every object level, literal repository identity/access/protection values, positive integer run IDs, and the exact commit/digest patterns. Export the validator from `packages/contracts/src/index.ts`.
+Implement local recursively closed helpers for the base literals, snapshots, source-access pair, dispatches, and selections. Every snapshot equals `{repositoryId:1319799876,visibility:'PRIVATE',defaultBranch:'main',mainSha:entryCommit}`. Source `before` and `after` must each validate and `JSON.stringify` identically. The exact tuple discriminant at every index selects its one legal workflow/event/job/head-role combination; each selection's maximum/window equals its corresponding dispatch exactly; `preWindowMaxRunId` and `runId` are non-negative safe integers with `runId > preWindowMaxRunId`; both instants round-trip through `toISOString`; selection time is not earlier than window time; every SHA equals `entryCommit`. Follow the closed-object style in `packages/contracts/src/acceptance.ts` and export no permissive generic validator.
+
+Create a closed JSON Schema with `additionalProperties:false` at every object level, `prefixItems` for the exact six tuple entries, `items:false`, exact constants, and the same formats/ranges. Cross-field equality/order remains enforced by the TypeScript validator. Export all public Task 2 types/functions from `packages/contracts/src/index.ts`.
 
 - [ ] **Step 4: Run the focused test and verify green**
 
@@ -477,7 +843,7 @@ Extend `tests/acceptance/cdp-entry-gate.test.ts` by importing and faking the pro
 import type { GateReader } from '../../tools/acceptance/capture-cdp-entry-gate.js';
 ```
 
-Assert `captureCdpEntryGate` returns the exact validated object for safe injected values, hashes the real registry and active manifest bytes, rejects a repository database-ID mismatch, rejects the old failed Patchset run, rejects a missing secret, rejects a source attestation with `allowWrite=true`, and performs no write unless CLI flag `--write` is present.
+Assert `captureCdpEntryGate` returns the exact validated bundle for safe injected values and does not synthesize an operation. It must reject a changed/malformed private bundle, current repository drift, automatic merge enabled, missing/duplicate secret metadata, absent pinned entry blobs, changed source-attestation bytes, changed key fingerprint, source `allowWrite:true`, or any mismatch between current source access and either stored source object. Check mode must perform no write; write mode must atomically create exactly the canonical JSON and deterministic Markdown.
 
 - [ ] **Step 6: Run the capture-tool test and verify red**
 
@@ -494,19 +860,18 @@ Create `tools/acceptance/capture-cdp-entry-gate.ts` with exported functions:
 
 ```ts
 export interface GateReader {
-  repository(): Promise<{ databaseId: number; nameWithOwner: string; visibility: string; defaultBranch: string }>;
-  run(id: number): Promise<{ headSha: string; conclusion: string }>;
-  protection(): Promise<unknown>;
+  repositoryState(): Promise<{
+    snapshot: FreePlanRepositorySnapshot;
+    automaticMergeAllowed: boolean;
+  }>;
   secretNames(): Promise<string[]>;
+  sourceAccess(): Promise<FreePlanSourceAccessAttestation>;
+  assertPinnedEntryInputs(entryCommit: string): Promise<void>;
 }
 
 export interface CaptureCdpEntryGateOptions {
   root: string;
-  entryCommit: string;
-  baselineRunId: number;
-  patchsetRunId: number;
-  sourceAttestationPath: string;
-  sourceKeyFingerprint: string;
+  observationsPath: string;
   reader: GateReader;
 }
 
@@ -514,7 +879,10 @@ export async function captureCdpEntryGate(
   options: CaptureCdpEntryGateOptions,
 ): Promise<CdpEntryGate>;
 
-export function renderCdpEntryGateMarkdown(gate: CdpEntryGate): string;
+export function renderCdpEntryGateMarkdown(
+  gate: CdpEntryGate,
+  i0RecordSha256: string,
+): string;
 
 export async function runCaptureCdpEntryGateCli(
   args: string[],
@@ -522,7 +890,9 @@ export async function runCaptureCdpEntryGateCli(
 ): Promise<number>;
 ```
 
-Define `ACTIVE_PATCHSET_MANIFEST_RELATIVE` inside the module as the literal `patchsets/freeland/virtual-numbers-card-canary-20260801/manifest.yaml`; expose no CLI path override. Parse the administrator attestation as a closed object, require its exact repository/title/read-only values, require `sourceKeyFingerprint` to match its `SHA256:<43-base64>` value, and persist that same non-secret fingerprint in `sourceAccess`. The production `GateReader` uses `execFile('gh', commandArgs)` without a shell, where `commandArgs` is one of the exact read-only commands from Task 1 (`repo view`, `run view`, `secret list`, `api repos/nuanu-ai/FreelandQA`, or `api repos/nuanu-ai/FreelandQA/branches/main/protection`). It parses only the documented JSON fields and never reads secret values. Hash the exact registry and active-manifest bytes with `createHash('sha256')`. Write JSON and Markdown only under `--write`, by temporary file plus rename, and render no issue titles, paths outside the repository, key bytes, or credential material.
+`runCaptureCdpEntryGateCli` accepts only optional `--write`; it reads the observation, attestation, and private-key paths from the three exact Task 1 environment variables and exposes no path/run/SHA override. Production `GateReader` uses `execFile` with `shell:false` and exact argv for one GraphQL repository snapshot, `gh secret list --repo nuanu-ai/FreelandQA --json name`, `ssh-keygen -lf <exact-key-path> -E sha256`, and read-only Git object/path assertions. It reads the five-field attestation bytes, recomputes their SHA-256, returns the seven-field source object without key bytes, requires `automaticMergeAllowed:false`, and proves the exact subproject acceptance, registry, and active manifest blobs exist at `entryCommit`. It never calls a workflow, protection, settings-write, merge, or push API.
+
+Parse and validate the private bundle, revalidate current repository/secret/source/pinned inputs, encode once with `encodeCdpEntryGate`, and compute its digest from those exact bytes. Under `--write`, atomically write only `coverage/bootstrap/cdp-i0-entry-gate.v1.json` and `docs/history/2026-08-02-cdp-i0-entry-gate.md`; check mode requires both existing bytes to match. Markdown records the digest, exact entry SHA, six operation names/run IDs, source attestation digest/fingerprint, and the explicit facts `mode: detect-and-refuse`, `server-side push prevention: unavailable`, `automatic merge: disabled`, `harness main updates: forbidden`, and `owner-accepted residual risk: true`. It contains no key bytes or false protection claim.
 
 - [ ] **Step 8: Run focused and aggregate deterministic checks**
 
@@ -540,16 +910,11 @@ Expected: all exit 0.
 
 ```bash
 set -euo pipefail
-node --import tsx tools/acceptance/capture-cdp-entry-gate.ts \
-  --entry-commit "$FREELAND_CDP_ENTRY_COMMIT" \
-  --baseline-run-id "$FREELAND_CDP_BASELINE_RUN_ID" \
-  --patchset-run-id "$FREELAND_CDP_PATCHSET_RUN_ID" \
-  --source-attestation "$FREELAND_SOURCE_ACCESS_ATTESTATION_FILE" \
-  --source-key-fingerprint "$FREELAND_SOURCE_DEPLOY_KEY_FINGERPRINT" \
-  --write
+test -n "$FREELAND_CDP_I0_OBSERVATIONS_FILE"
+node --import tsx tools/acceptance/capture-cdp-entry-gate.ts --write
 ```
 
-Expected stdout: `cdp-entry-gate=pass mode=write` and exactly two new canonical files. Re-run without `--write`; expected `cdp-entry-gate=pass mode=check` and zero diff.
+Expected stdout: `cdp-entry-gate=pass mode=write` and exactly two new canonical files. Re-run without `--write`; expected `cdp-entry-gate=pass mode=check`, byte-identical digest, and zero diff. Run `! rg -n 'branchProtection|"protected"' coverage/bootstrap/cdp-i0-entry-gate.v1.json`; it must exit 0 because the inner search selects zero lines.
 
 - [ ] **Step 10: Commit Task 2**
 
@@ -2925,7 +3290,7 @@ git commit -m "feat: expose private typed CDP control plane"
 **Interfaces:**
 
 - **Consumes:** Task 14 CLI and all safety modules.
-- **Produces:** an agent-usable workflow, `validateCdpLiveSmokeResult`, `validateCdpLocalSecuritySmokeResult`, `verifySessionArtifacts`, behavior-tested staging and local real-Chrome security smoke commands, stable synthetic CDP replay coverage, and source-contract proof that the existing Baseline workflow merge-gates deterministic broker tests through `test:unit`.
+- **Produces:** an agent-usable workflow, `validateCdpLiveSmokeResult`, `validateCdpLocalSecuritySmokeResult`, `verifySessionArtifacts`, behavior-tested staging and local real-Chrome security smoke commands, stable synthetic CDP replay coverage, and source-contract proof that the existing Baseline workflow runs deterministic broker tests through `test:unit` as required pre-integration evidence.
 
 - [ ] **Step 1: Write the failing agent-surface source contract**
 
@@ -3130,7 +3495,7 @@ It also documents that the local security smoke is mandatory before a staging sm
 
 Document:
 
-- deterministic `npm run test:cdp-broker` is merge-gated through existing `test:unit`;
+- deterministic `npm run test:cdp-broker` is executed by existing `test:unit` and retained for human pre-integration review;
 - `npm run cdp:local-security-smoke` is a mandatory operator-only, synthetic loopback real-Chrome acceptance check and never contacts staging;
 - `npm run cdp:live-smoke` is local, exact-SHA, staging-only, unauthenticated, read-only, and non-gated;
 - the product Patchset workflow continues to own payment-harness conformance;
@@ -3173,21 +3538,27 @@ git commit -m "feat: expose safe Freeland CDP agent workflow"
 
 - Create: `packages/contracts/schemas/cdp-i1-evidence.v1.schema.json`
 - Create: `packages/contracts/schemas/cdp-i1-acceptance.v1.schema.json`
+- Create: `packages/contracts/schemas/cdp-i1-delivery-receipt.v1.schema.json`
 - Create: `packages/contracts/src/cdp-i1-evidence.ts`
 - Create: `packages/contracts/src/cdp-acceptance.ts`
+- Create: `packages/contracts/src/cdp-i1-delivery-receipt.ts`
 - Modify: `packages/contracts/src/index.ts`
 - Create: `tools/acceptance/collect-cdp-i1-evidence.ts`
 - Create: `tools/acceptance/render-cdp-i1-acceptance.ts`
+- Create: `tools/acceptance/collect-cdp-i1-delivery-receipt.ts`
 - Create: `tests/acceptance/cdp-i1-acceptance.test.ts`
+- Create: `tests/acceptance/cdp-i1-delivery-receipt.test.ts`
 - Create after successful collection: `coverage/bootstrap/cdp-i1-acceptance.v1.json`
 - Create after successful collection: `docs/history/2026-08-02-cdp-i1-acceptance.md`
 - Private ignored output: `.work/cdp-i1-acceptance/evidence.v1.json`
+- Final private ignored output: `.work/cdp-i1-delivery/receipt.v1.json`
 
 **Interfaces:**
 
 - **Consumes:** one clean exact implementation commit from Tasks 2–15, the fixed I0 record and active patchset manifest, closed deterministic/TAP results, one exact-Chrome loopback security result, one exact-SHA public staging result, and an unchanged verifier-built product checkout.
-- **Produces:** one closed private evidence object, then canonical acceptance JSON/Markdown whose commit is the single direct child of the proven implementation commit.
-- **Invariant:** no shell-local result from one checkbox is trusted by another. The checked-in collector owns all lanes, revalidates repository cleanliness and exact commit/tree identity before and after each lane, and writes evidence only after the complete run succeeds.
+- **Produces:** one closed private evidence object, canonical acceptance JSON/Markdown whose commit is the sole direct child of the proven implementation commit, and the terminal cryptographically bound Free-safe delivery receipt.
+- **Invariant:** no shell-local result from one checkbox is trusted by another. The checked-in evidence collector owns all local lanes. The checked-in delivery collector alone owns acceptance commit, feature push, PR creation, both exact PR-run selections, one sanitized comment, and terminal receipt creation.
+- **Terminal boundary:** receipt validation and canonical encoding finish in memory before its atomic write. The receipt rename is the last collector action; no stdout, network request, Git read/write, push, PR mutation, comment, or cleanup follows it.
 
 - [ ] **Step 1: Write failing evidence, acceptance, collector, renderer, and provenance tests**
 
@@ -3196,6 +3567,7 @@ Define the closed evidence object:
 ```ts
 export interface CdpI1Evidence {
   schemaVersion: 1;
+  i0RecordSha256: string;
   implementationCommit: string;
   entryGateCommit: string;
   deterministic: {
@@ -3237,6 +3609,7 @@ Define acceptance as a lossless closed projection:
 ```ts
 export interface CdpI1Acceptance {
   schemaVersion: 1;
+  i0RecordSha256: string;
   implementationCommit: string;
   entryGateCommit: string;
   deterministic: {
@@ -3315,11 +3688,11 @@ export interface CdpI1Acceptance {
 }
 ```
 
-Require 40-lowercase-hex commits/trees/SHA, a 64-lowercase-hex manifest digest, canonical UTC instant, `broker.tests === broker.passes > 0`, `productHarness.tests === passes >= 154`, and every closed zero/true/pass/literal above. Evidence and acceptance validators plus JSON Schemas must agree and reject extra keys. The acceptance renderer must map every field from evidence: `productMutations`, `purchases`, `unknownRoutesAllowed`, `writeRequestsAllowed`, and `forbiddenLeaks` come only from `liveSmoke`; no zero/true/pass/count may be synthesized.
+Require 40-lowercase-hex commits/trees/SHA, 64-lowercase-hex I0/manifest digests, canonical UTC instant, `broker.tests === broker.passes > 0`, `productHarness.tests === passes >= 154`, and every closed zero/true/pass/literal above. Evidence and acceptance validators plus JSON Schemas must agree and reject extra keys. The acceptance renderer maps every field from evidence: `i0RecordSha256` is recomputed from the exact I0 file and must equal evidence; `productMutations`, `purchases`, `unknownRoutesAllowed`, `writeRequestsAllowed`, and `forbiddenLeaks` come only from `liveSmoke`; no digest/zero/true/pass/count is synthesized.
 
-Collector tests inject a no-shell process runner, filesystem, git inspector, clock, temporary-root allocator, and smoke runners. Require exact argv/environment allowlists, bounded stdout/stderr/TAP parsing, fixed I0/manifest/product tuple, and clean `HEAD/index/worktree` checks before and after every deterministic, product, local-security, and live lane plus immediately before evidence write. Parameterize any mutation still present at a checkpoint, staged mutation, untracked file, HEAD movement, truncated/duplicate TAP summaries, lane nonzero exit, invalid smoke JSON, wrong stage SHA, product tree drift, manifest drift, and payment-patchset drift; every case writes no evidence/acceptance and emits no captured output. A valid fixture writes one canonical evidence file atomically. Per Global Constraint 24, local implementation/test processes are trusted; the checkpoint model does not claim to detect a cooperating same-UID process that mutates and perfectly restores bytes entirely between two checks.
+Collector tests inject a no-shell process runner, filesystem, git inspector, clock, temporary-root allocator, and smoke runners. Require exact argv/environment allowlists, bounded stdout/stderr/TAP parsing, fixed I0/manifest/product tuple, recomputed exact-byte I0 digest, and clean `HEAD/index/worktree` checks before and after every deterministic, product, local-security, and live lane plus immediately before evidence write. Parameterize I0 byte drift, any mutation still present at a checkpoint, staged mutation, untracked file, HEAD movement, truncated/duplicate TAP summaries, lane nonzero exit, invalid smoke JSON, wrong stage SHA, product tree drift, manifest drift, and payment-patchset drift; every case writes no evidence/acceptance and emits no captured output. A valid fixture writes one canonical evidence file atomically. Per Global Constraint 24, local implementation/test processes are trusted; the checkpoint model does not claim to detect a cooperating same-UID process that mutates and perfectly restores bytes entirely between two checks.
 
-Renderer/provenance tests require the fixed evidence path, fixed I0 path, and fixed active-manifest path and recompute their digests/tuples. Define three exclusive states: pre-write is clean with `HEAD === implementationCommit`; pre-commit check has the same HEAD and exactly the two generated acceptance paths as the only changes; post-commit check is clean with `HEAD` having exactly one parent equal to `implementationCommit` and exactly the two acceptance paths in that commit. Every other state is rejected.
+Renderer/provenance tests require the fixed evidence, I0, and active-manifest paths and recompute their digests/tuples. Define three exclusive states: pre-write is clean with `HEAD === implementationCommit`; pre-commit check has the same HEAD and exactly the two generated acceptance paths as the only changes; post-commit check is clean with `HEAD` having exactly one parent equal to `implementationCommit` and exactly the two acceptance paths in that commit. Every other state is rejected. The canonical acceptance JSON uses compact JSON plus one LF; its SHA-256 is later recomputed by the delivery collector.
 
 - [ ] **Step 2: Run the acceptance test and verify red**
 
@@ -3345,14 +3718,15 @@ export function validateCdpI1AcceptanceProvenance(input: {
   changedFiles: string[];
 }): void;
 export function renderCdpI1Acceptance(input: CdpI1Acceptance): string;
+export function encodeCdpI1Acceptance(input: unknown): Buffer;
 ```
 
 `collect-cdp-i1-evidence.ts` accepts only `--implementation-commit <40hex>`, `--expected-stage-sha <40hex>`, and optional `--write`; reject duplicates, unknown flags, positional values, or any path argument. It uses `spawn`/`execFile` with `shell:false`, exact executable/argv lists, minimal environment allowlists, decreasing per-lane deadlines, OS-temporary directories, bounded output, and abort/kill cleanup. It never evaluates shell, parses terminal paths, or trusts caller-supplied counts.
 
 The collector itself performs this one transaction:
 
-1. require current `HEAD` equals `implementationCommit`, `HEAD^{tree}` equals `git write-tree`, index/worktree/untracked status is empty, and entry parentage starts from fixed I0 `entryGateCommit`;
-2. read and validate only `coverage/bootstrap/cdp-i0-entry-gate.v1.json` and `patchsets/freeland/virtual-numbers-card-canary-20260801/manifest.yaml`; recompute the manifest SHA-256 and exact `baseCommit/baseTree/sourceHead/finalTree` tuple;
+1. require current `HEAD` equals `implementationCommit`, `HEAD^{tree}` equals `git write-tree`, index/worktree/untracked status is empty, evidence `entryGateCommit` equals parsed I0 `entryCommit`, and repository parentage starts from that fixed entry commit;
+2. read and validate only `coverage/bootstrap/cdp-i0-entry-gate.v1.json` and `patchsets/freeland/virtual-numbers-card-canary-20260801/manifest.yaml`; require the I0 bytes equal `encodeCdpEntryGate(parsedI0)`, compute `i0RecordSha256` over those exact bytes including LF, and recompute the manifest SHA-256 plus exact `baseCommit/baseTree/sourceHead/finalTree` tuple;
 3. run `npm run typecheck`, `npm run test:cdp-broker`, `npm run security:scan`, and `npm run verify:deterministic`; parse the last complete Node TAP summary and require positive tests, equal passes, and zero failed/cancelled/skipped/todo;
 4. verify the implementation diff from `entryGateCommit` changes no `patchsets/` path and cannot change product payment harness bytes; clone committed objects only from the validated product object source into an OS-temporary detached checkout, apply only `patchset:verify --mode immutable-base --leave-applied`, install with frozen lockfile, run `test:staging-cdp-harness`, require at least 154 complete passes, and prove exact base HEAD/final index tree/status are unchanged before/after;
 5. run `cdp:local-security-smoke`, validate the complete exact-Chrome closed result including mock-Keychain/local-discovery/browser-writer fields, then run `cdp:live-smoke` and validate the complete closed result before exposing any stdout; require its candidate SHA equals `--expected-stage-sha`;
@@ -3361,7 +3735,7 @@ The collector itself performs this one transaction:
 
 The collector deletes its owned temporary checkouts/logs under bounded cleanup and excludes their locations, product source path, ports, certificates, headers, bodies, browser/process/profile identifiers, raw TAP, and browser output from evidence/errors. Only after full validation may stdout contain `cdp-i1-evidence=pass mode=check|write`.
 
-`render-cdp-i1-acceptance.ts` accepts only optional `--write`. It reads only the fixed evidence/I0/manifest paths, validates and binds all three, recognizes exactly the pre-write, pre-commit-check, or post-commit-check repository state defined in Step 1, calls `projectCdpI1Acceptance`, validates the projection, and writes/checks only the two canonical acceptance files. `--write` is legal only in the clean pre-write state; plain check is legal in either exact check state. It must not execute tests/smokes, accept raw JSON/flags/counts, or supply defaults. Its only stdout is `cdp-i1-acceptance=pass mode=check|write` after validation.
+`render-cdp-i1-acceptance.ts` accepts only optional `--write`. It reads only the fixed evidence/I0/manifest paths, validates and binds all three, recomputes the exact I0 digest, recognizes exactly the pre-write, pre-commit-check, or post-commit-check repository state defined in Step 1, calls `projectCdpI1Acceptance`, validates the projection, and writes/checks only the two canonical acceptance files. `--write` is legal only in the clean pre-write state; plain check is legal in either exact check state. It must not execute tests/smokes, accept raw JSON/flags/counts, or supply defaults. Its only stdout is `cdp-i1-acceptance=pass mode=check|write` after validation.
 
 - [ ] **Step 4: Run focused implementation tests**
 
@@ -3376,34 +3750,258 @@ git diff --check
 
 Expected: all exit 0 without starting Chrome or contacting staging.
 
-- [ ] **Step 5: Commit the complete implementation before collecting evidence**
+- [ ] **Step 5: Write the failing closed delivery-receipt and state-machine tests**
+
+Create `tests/acceptance/cdp-i1-delivery-receipt.test.ts` against these exact contracts, reusing Task 2's snapshot/base types:
+
+```ts
+export interface FreePlanDeliveryRunSelectionOperation<
+  TOperation extends 'baseline-pr-run-selection' | 'patchset-pr-run-selection',
+  TWorkflow extends 'baseline.yml' | 'patchset.yml',
+  TJob extends 'deterministic' | 'immutable-base',
+> extends FreePlanOperationAttestation<TOperation> {
+  workflowFile: TWorkflow;
+  event: 'pull_request';
+  preWindowMaxRunId: number;
+  windowOpenedAt: string;
+  exactlyOneMatch: true;
+  runId: number;
+  createdAt: string;
+  expectedHeadRole: 'acceptedFeatureHead';
+  expectedHeadSha: string;
+  headSha: string;
+  headMatchesExpected: true;
+  conclusion: 'success';
+  requiredJob: TJob;
+  requiredJobConclusion: 'success';
+}
+
+export interface FreePlanFeaturePushOperation
+  extends FreePlanOperationAttestation<'feature-branch-push'> {
+  branch: 'codex/freeland-agent-first-cdp-i1';
+  acceptedFeatureHead: string;
+  pushedHeadSha: string;
+  headMatchesAcceptedFeatureHead: true;
+  baselinePreWindowMaxRunId: number;
+  patchsetPreWindowMaxRunId: number;
+  windowOpenedAt: string;
+}
+
+export interface CdpI1DeliveryReceipt {
+  schemaVersion: 1;
+  mode: 'detect-and-refuse';
+  serverSidePushPrevention: false;
+  automaticMerge: false;
+  harnessMayUpdateMain: false;
+  ownerAcceptedResidualRisk: true;
+  i0RecordSha256: string;
+  i1AcceptanceRecordSha256: string;
+  i1AcceptanceCommit: string;
+  acceptedFeatureHead: string;
+  i0: CdpEntryGate;
+  deliveryOperations: [
+    FreePlanOperationAttestation<'acceptance-record-commit'>,
+    FreePlanFeaturePushOperation,
+    FreePlanOperationAttestation<'pull-request-create'>,
+    FreePlanDeliveryRunSelectionOperation<'baseline-pr-run-selection', 'baseline.yml', 'deterministic'>,
+    FreePlanDeliveryRunSelectionOperation<'patchset-pr-run-selection', 'patchset.yml', 'immutable-base'>,
+    FreePlanOperationAttestation<'pull-request-comment'>,
+  ];
+}
+```
+
+Contract tests require exact keys, tuple order, canonical compact JSON plus LF, exact snapshots equal the embedded I0 entry commit, canonical instants, non-negative safe maxima/IDs, each PR selection maximum/window equal its corresponding field in the feature-push operation, selected IDs greater than their maxima, `createdAt >= windowOpenedAt`, exact workflow/event/job/head-role combinations, `acceptedFeatureHead === pushedHeadSha === i1AcceptanceCommit`, and both PR selection heads equal that accepted head. Re-encode embedded I0 and require its digest equals receipt `i0RecordSha256`; parse the canonical I1 record and require its stored `i0RecordSha256` equals the same value and its exact-byte digest equals `i1AcceptanceRecordSha256`.
+
+State-machine tests inject ordered Git/GitHub/filesystem adapters and require the exact events `acceptance-record-commit`, `feature-branch-push`, `pull-request-create`, `baseline-pr-run-selection`, `patchset-pr-run-selection`, `pull-request-comment`, then `receipt-write`. Every operation has one immediate before/after snapshot. Parameterize main drift, repository replacement, automatic merge enabled, wrong branch, dirty/unreviewed path, wrong direct parent, force/main push argv, existing PR, duplicate/old/wrong-event/wrong-head run, wrong job/conclusion, an individual request that never settles, absolute monotonic deadline exhaustion, comment failure, digest mismatch, and any post-receipt adapter call. Every failure writes no receipt and does not begin the next operation; a failure after an external write remains partial and is not retried or rolled back.
+
+- [ ] **Step 6: Run the delivery test and verify red**
+
+```bash
+set -euo pipefail
+node --import tsx --test tests/acceptance/cdp-i1-delivery-receipt.test.ts
+```
+
+Expected: FAIL because the delivery contract and collector do not exist.
+
+- [ ] **Step 7: Implement the closed receipt validator and single delivery collector**
+
+Export from `packages/contracts/src/cdp-i1-delivery-receipt.ts` and `packages/contracts/src/index.ts`:
+
+```ts
+export function validateCdpI1DeliveryReceipt(
+  input: unknown,
+  i1AcceptanceBytes: Uint8Array,
+): asserts input is CdpI1DeliveryReceipt;
+
+export function encodeCdpI1DeliveryReceipt(
+  input: CdpI1DeliveryReceipt,
+): Buffer;
+```
+
+The validator and JSON Schema are recursively closed and enforce every Step 5 literal/cross-field rule. `validateCdpI1DeliveryReceipt` validates embedded I0, computes `sha256CdpEntryGateBytes(encodeCdpEntryGate(input.i0))`, validates the exact canonical I1 bytes with `validateCdpI1Acceptance`, and requires:
+
+```ts
+i1.i0RecordSha256 === input.i0RecordSha256;
+sha256CdpEntryGateBytes(encodeCdpEntryGate(input.i0)) === input.i0RecordSha256;
+createHash('sha256').update(i1AcceptanceBytes).digest('hex') === input.i1AcceptanceRecordSha256;
+input.i1AcceptanceCommit === input.acceptedFeatureHead;
+```
+
+Create `tools/acceptance/collect-cdp-i1-delivery-receipt.ts`. Its CLI accepts exactly `--write`, no paths, SHA/count flags, check mode, or positional values. Export these closed test seams:
+
+```ts
+export interface DeliveryGitState {
+  branch: 'codex/freeland-agent-first-cdp-i1';
+  head: string;
+  headTree: string;
+  indexTree: string;
+  stagedPaths: string[];
+  unstagedPaths: string[];
+  untrackedPaths: string[];
+}
+
+export interface DeliveryGitAdapter {
+  inspect(): Promise<DeliveryGitState>;
+  commitAcceptancePaths(): Promise<string>;
+  acceptanceProvenance(commit: string): Promise<{
+    parentCommits: string[];
+    changedFiles: string[];
+  }>;
+  pushAcceptedFeatureHead(commit: string): Promise<string>;
+}
+
+export interface DeliveryGitHubAdapter {
+  repositoryState(): Promise<{
+    snapshot: FreePlanRepositorySnapshot;
+    automaticMergeAllowed: boolean;
+  }>;
+  workflowMaxima(): Promise<{
+    baseline: number;
+    patchset: number;
+  }>;
+  openPullRequestsForExactHead(): Promise<number[]>;
+  createPullRequest(): Promise<{ number: number; url: string }>;
+  selectBaselineRun(input: {
+    preWindowMaxRunId: number;
+    windowOpenedAt: string;
+    acceptedFeatureHead: string;
+    timeoutMs: 600000;
+  }): Promise<{
+    operation: Omit<
+      FreePlanDeliveryRunSelectionOperation<
+        'baseline-pr-run-selection', 'baseline.yml', 'deterministic'
+      >,
+      'before' | 'after' | 'result'
+    >;
+    url: string;
+  }>;
+  selectPatchsetRun(input: {
+    preWindowMaxRunId: number;
+    windowOpenedAt: string;
+    acceptedFeatureHead: string;
+    timeoutMs: 600000;
+  }): Promise<{
+    operation: Omit<
+      FreePlanDeliveryRunSelectionOperation<
+        'patchset-pr-run-selection', 'patchset.yml', 'immutable-base'
+      >,
+      'before' | 'after' | 'result'
+    >;
+    url: string;
+  }>;
+  comment(input: {
+    pullRequestNumber: number;
+    acceptedFeatureHead: string;
+    baseline: { runId: number; url: string };
+    patchset: { runId: number; url: string };
+  }): Promise<void>;
+  remoteFeatureHead(): Promise<string>;
+}
+
+export interface DeliveryFileAdapter {
+  readI0Bytes(): Promise<Buffer>;
+  readI1AcceptanceBytes(): Promise<Buffer>;
+  preparePrivateReceiptDirectory(): Promise<void>;
+  writeReceiptLast(bytes: Buffer): Promise<void>;
+}
+
+export interface CollectCdpI1DeliveryReceiptOptions {
+  git: DeliveryGitAdapter;
+  github: DeliveryGitHubAdapter;
+  files: DeliveryFileAdapter;
+  now(): string;
+}
+
+export async function collectCdpI1DeliveryReceipt(
+  options: CollectCdpI1DeliveryReceiptOptions,
+): Promise<CdpI1DeliveryReceipt>;
+```
+
+Production adapters use `execFile`/`spawn` with `shell:false` and fixed repository, branch, workflow, job, title, body, comment, file-path, and command allowlists. `workflowMaxima` exhaustively paginates both workflow histories. `selectBaselineRun` and `selectPatchsetRun` own exhaustive REST pagination, one absolute monotonic 600,000 ms deadline, per-request timeout/cancellation capped at the remaining deadline, bounded status polling, post-completion uniqueness re-query, job validation, and safe GitHub-owned run URL capture; they return only the displayed closed fields.
+
+The collector performs this exact one-way transaction:
+
+1. Read and validate canonical I0/I1 bytes, recompute both digests, require I1 `implementationCommit` equals clean current `HEAD`, require exactly the two reviewed untracked acceptance paths and no staged/other change, pre-create only the private mode-`0700` receipt directory/temp target, and require current branch `codex/freeland-agent-first-cdp-i1`.
+2. For every repository snapshot, execute one closed GraphQL read, require repository ID `1319799876`, `PRIVATE`, default `main`, exact embedded-I0 entry SHA, and `autoMergeAllowed:false`, then return only the four-field `FreePlanRepositorySnapshot`.
+3. Snapshot; stage exactly `coverage/bootstrap/cdp-i1-acceptance.v1.json` and `docs/history/2026-08-02-cdp-i1-acceptance.md`; commit with fixed message `docs: record Freeland CDP I1 acceptance`; prove clean state, exactly one parent equal to I1 `implementationCommit`, and exactly those two changed paths; snapshot; record `acceptance-record-commit`.
+4. Snapshot; read both workflow pre-window maxima, open one canonical UTC window normalized to whole-second `.000Z` precision, run only `git push --set-upstream origin codex/freeland-agent-first-cdp-i1`, read the remote feature head and require it equals the acceptance commit; snapshot; record `feature-branch-push` with both maxima/window and exact head equality.
+5. Snapshot; require zero open PRs for the exact head/base pair, create one PR with title `Add read-only agent-first Freeland CDP broker` and body `Implements FL-CDP-I0/I1: typed public-staging observation only; no auth, mutations, Nuanu writes, or payments. Human review is required; this automation never merges or updates main.`, resolve its numeric ID, snapshot, and record `pull-request-create`.
+6. Snapshot; exhaustively paginate every Baseline REST run page by exact file `baseline.yml`, branch, event `pull_request`, accepted head, ID greater than its stored maximum, and `createdAt >= windowOpenedAt`; require exactly one match, poll it for at most ten minutes, then exhaustively re-query and require the same sole ID, overall success, and exactly one successful `deterministic` job; snapshot; record `baseline-pr-run-selection`.
+7. Snapshot; perform the same independently exhaustive, ten-minute-bounded Patchset selection/re-query for `patchset.yml` and exactly one successful `immutable-base` job; snapshot; record `patchset-pr-run-selection`.
+8. Construct the sanitized comment entirely from the accepted 40-hex head, the two numeric run IDs, and their GitHub-owned run URLs; snapshot; create exactly one comment; snapshot; record `pull-request-comment`. The comment never claims to contain or validate the future receipt.
+9. Re-prove in memory the acceptance direct-parent/two-path provenance, all tuple/digest/head invariants, and `acceptedFeatureHead === i1AcceptanceCommit`; validate and encode the complete receipt. Atomically write canonical compact JSON plus one LF to `.work/cdp-i1-delivery/receipt.v1.json`. The final rename is the last event: return without stdout or any adapter call.
+
+The exact Git allowlist excludes `push origin main`, refspecs targeting `refs/heads/main`, `--force`, merge, reset, deletion, and tag writes. The GitHub allowlist excludes protection/settings writes, merge/auto-merge endpoints, close/update PR, and a second comment. If any post-operation snapshot fails, retain the partial branch/PR/comment and stop for human reconstruction; never retry automatically.
+
+- [ ] **Step 8: Run all focused, deterministic, and security checks**
+
+```bash
+set -euo pipefail
+node --import tsx --test tests/acceptance/cdp-i1-acceptance.test.ts
+node --import tsx --test tests/acceptance/cdp-i1-delivery-receipt.test.ts
+npm run test:cdp-broker
+npm run typecheck
+npm run security:scan
+git diff --check
+```
+
+Expected: all exit 0 without contacting GitHub/staging or starting real Chrome; fake event logs prove receipt write is terminal.
+
+- [ ] **Step 9: Commit the complete implementation before collecting evidence**
 
 ```bash
 set -euo pipefail
 git add packages/contracts/schemas/cdp-i1-evidence.v1.schema.json \
   packages/contracts/schemas/cdp-i1-acceptance.v1.schema.json \
+  packages/contracts/schemas/cdp-i1-delivery-receipt.v1.schema.json \
   packages/contracts/src/cdp-i1-evidence.ts \
-  packages/contracts/src/cdp-acceptance.ts packages/contracts/src/index.ts \
+  packages/contracts/src/cdp-acceptance.ts \
+  packages/contracts/src/cdp-i1-delivery-receipt.ts \
+  packages/contracts/src/index.ts \
   tools/acceptance/collect-cdp-i1-evidence.ts \
   tools/acceptance/render-cdp-i1-acceptance.ts \
-  tests/acceptance/cdp-i1-acceptance.test.ts
+  tools/acceptance/collect-cdp-i1-delivery-receipt.ts \
+  tests/acceptance/cdp-i1-acceptance.test.ts \
+  tests/acceptance/cdp-i1-delivery-receipt.test.ts
 test "$(git diff --cached --name-only | sort)" = "$(printf '%s\n' \
   packages/contracts/schemas/cdp-i1-evidence.v1.schema.json \
   packages/contracts/schemas/cdp-i1-acceptance.v1.schema.json \
+  packages/contracts/schemas/cdp-i1-delivery-receipt.v1.schema.json \
   packages/contracts/src/cdp-i1-evidence.ts \
-  packages/contracts/src/cdp-acceptance.ts packages/contracts/src/index.ts \
+  packages/contracts/src/cdp-acceptance.ts \
+  packages/contracts/src/cdp-i1-delivery-receipt.ts \
+  packages/contracts/src/index.ts \
   tools/acceptance/collect-cdp-i1-evidence.ts \
   tools/acceptance/render-cdp-i1-acceptance.ts \
-  tests/acceptance/cdp-i1-acceptance.test.ts | sort)"
+  tools/acceptance/collect-cdp-i1-delivery-receipt.ts \
+  tests/acceptance/cdp-i1-acceptance.test.ts \
+  tests/acceptance/cdp-i1-delivery-receipt.test.ts | sort)"
 git commit -m "test: define Freeland CDP I1 acceptance"
-IMPLEMENTATION_STATUS="$(git status --porcelain)"
-test -z "$IMPLEMENTATION_STATUS"
-IMPLEMENTATION_HEAD_TREE="$(git rev-parse 'HEAD^{tree}')"
-IMPLEMENTATION_INDEX_TREE="$(git write-tree)"
-test "$IMPLEMENTATION_HEAD_TREE" = "$IMPLEMENTATION_INDEX_TREE"
+test -z "$(git status --porcelain)"
+test "$(git rev-parse 'HEAD^{tree}')" = "$(git write-tree)"
 ```
 
-- [ ] **Step 6: Collect every lane into one commit-bound private evidence object**
+- [ ] **Step 10: Collect every lane into one commit-bound private evidence object**
 
 ```bash
 set -euo pipefail
@@ -3429,7 +4027,7 @@ This is the only evidence-collection command. The expected live result validated
 
 The SHA/time above are shape examples only. The local result must include exact browser/product/protocol/viewport, twelve positive controls, the Direct Sockets literal, and every local counter—HTTP, speculative, DNS, local discovery, all transports, browser writers, cookies, downloads, Crashpad, targets/popups, pixels, watchdog, and survivors—at literal zero. The current machine's unchanged exact codesign preflight is a hard external blocker until an official clean Chrome reinstall passes; never strip xattrs or weaken signature verification.
 
-- [ ] **Step 7: Project the fixed evidence into canonical acceptance files**
+- [ ] **Step 11: Project and locally verify the canonical acceptance files**
 
 ```bash
 set -euo pipefail
@@ -3440,99 +4038,23 @@ test "$(git status --porcelain | awk '{print $2}' | sort)" = "$(printf '%s\n' \
   coverage/bootstrap/cdp-i1-acceptance.v1.json \
   docs/history/2026-08-02-cdp-i1-acceptance.md | sort)"
 node --import tsx tools/acceptance/render-cdp-i1-acceptance.ts
-```
-
-Expected: write and check modes agree byte-for-byte. Renderer revalidates evidence and maps every claim; it never reruns, defaults, or fabricates a passing field.
-
-- [ ] **Step 8: Reverify and commit only the two acceptance records**
-
-```bash
-set -euo pipefail
 npm run verify:deterministic
 git diff --check
-git add coverage/bootstrap/cdp-i1-acceptance.v1.json \
-  docs/history/2026-08-02-cdp-i1-acceptance.md
-test "$(git diff --cached --name-only | sort)" = "$(printf '%s\n' \
+test "$(git status --porcelain | awk '{print $2}' | sort)" = "$(printf '%s\n' \
   coverage/bootstrap/cdp-i1-acceptance.v1.json \
   docs/history/2026-08-02-cdp-i1-acceptance.md | sort)"
-IMPLEMENTATION_COMMIT="$(node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(".work/cdp-i1-acceptance/evidence.v1.json","utf8"));process.stdout.write(v.implementationCommit)')"
-test "$(git rev-parse HEAD)" = "$IMPLEMENTATION_COMMIT"
-git commit -m "docs: record Freeland CDP I1 acceptance"
 ```
 
-- [ ] **Step 9: Prove direct-child provenance and final cleanliness**
+Expected: write/check modes agree byte-for-byte, I1 stores the recomputed I0 digest, deterministic verification remains green, and the two acceptance paths are the only local changes. Do not stage or commit them manually; the terminal collector owns that guarded operation.
+
+- [ ] **Step 12: Run the one-way terminal delivery transaction**
 
 ```bash
 set -euo pipefail
-IMPLEMENTATION_COMMIT="$(node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(".work/cdp-i1-acceptance/evidence.v1.json","utf8"));process.stdout.write(v.implementationCommit)')"
-test "$(git rev-list --parents -n 1 HEAD)" = "$(printf '%s %s' "$(git rev-parse HEAD)" "$IMPLEMENTATION_COMMIT")"
-test "$(git diff --name-only HEAD^ HEAD | sort)" = "$(printf '%s\n' \
-  coverage/bootstrap/cdp-i1-acceptance.v1.json \
-  docs/history/2026-08-02-cdp-i1-acceptance.md | sort)"
-node --import tsx tools/acceptance/render-cdp-i1-acceptance.ts
-npm run verify:deterministic
-FINAL_STATUS="$(git status --porcelain)"
-test -z "$FINAL_STATUS"
+node --import tsx tools/acceptance/collect-cdp-i1-delivery-receipt.ts --write
 ```
 
-- [ ] **Step 10: Push the exact accepted head, open a PR, and bind both required remote checks**
-
-```bash
-set -euo pipefail
-BRANCH="codex/freeland-agent-first-cdp-i1"
-test "$(git branch --show-current)" = "$BRANCH"
-FINAL_HEAD="$(git rev-parse HEAD)"
-PUSH_STATUS="$(git status --porcelain)"
-test -z "$PUSH_STATUS"
-BASELINE_MAX_BEFORE="$(gh run list --repo nuanu-ai/FreelandQA --workflow baseline.yml --limit 100 --json databaseId --jq 'map(.databaseId) | max // 0')"
-PATCHSET_MAX_BEFORE="$(gh run list --repo nuanu-ai/FreelandQA --workflow patchset.yml --limit 100 --json databaseId --jq 'map(.databaseId) | max // 0')"
-git push --set-upstream origin "$BRANCH"
-PR_URL="$(gh pr create --repo nuanu-ai/FreelandQA --base main --head "$BRANCH" \
-  --title "Add read-only agent-first Freeland CDP broker" \
-  --body "Implements FL-CDP-I0/I1: typed public-staging observation only; no auth, mutations, Nuanu writes, or payments.")"
-PR_NUMBER="$(gh pr view "$PR_URL" --repo nuanu-ai/FreelandQA --json number --jq .number)"
-
-for ATTEMPT in $(seq 1 36); do
-  BASELINE_RUN_IDS="$(gh run list --repo nuanu-ai/FreelandQA --workflow baseline.yml \
-    --branch "$BRANCH" --event pull_request --limit 100 \
-    --json databaseId,headSha \
-    --jq "map(select(.headSha == \"$FINAL_HEAD\" and .databaseId > $BASELINE_MAX_BEFORE)) | .[].databaseId")"
-  BASELINE_RUN_COUNT="$(printf '%s\n' "$BASELINE_RUN_IDS" | awk 'NF { n += 1 } END { print n + 0 }')"
-  test "$BASELINE_RUN_COUNT" -le 1
-  test "$BASELINE_RUN_COUNT" = 1 && break
-  sleep 5
-done
-test "$BASELINE_RUN_COUNT" = 1
-BASELINE_RUN_ID="$BASELINE_RUN_IDS"
-
-for ATTEMPT in $(seq 1 36); do
-  PATCHSET_RUN_IDS="$(gh run list --repo nuanu-ai/FreelandQA --workflow patchset.yml \
-    --branch "$BRANCH" --event pull_request --limit 100 \
-    --json databaseId,headSha \
-    --jq "map(select(.headSha == \"$FINAL_HEAD\" and .databaseId > $PATCHSET_MAX_BEFORE)) | .[].databaseId")"
-  PATCHSET_RUN_COUNT="$(printf '%s\n' "$PATCHSET_RUN_IDS" | awk 'NF { n += 1 } END { print n + 0 }')"
-  test "$PATCHSET_RUN_COUNT" -le 1
-  test "$PATCHSET_RUN_COUNT" = 1 && break
-  sleep 5
-done
-test "$PATCHSET_RUN_COUNT" = 1
-PATCHSET_RUN_ID="$PATCHSET_RUN_IDS"
-
-gh run watch "$BASELINE_RUN_ID" --repo nuanu-ai/FreelandQA --exit-status
-gh run watch "$PATCHSET_RUN_ID" --repo nuanu-ai/FreelandQA --exit-status
-test "$(gh run view "$BASELINE_RUN_ID" --repo nuanu-ai/FreelandQA --json headSha --jq .headSha)" = "$FINAL_HEAD"
-test "$(gh run view "$BASELINE_RUN_ID" --repo nuanu-ai/FreelandQA --json conclusion --jq .conclusion)" = "success"
-test "$(gh run view "$BASELINE_RUN_ID" --repo nuanu-ai/FreelandQA --json jobs --jq '[.jobs[] | select(.name == "deterministic" and .conclusion == "success")] | length')" = "1"
-test "$(gh run view "$PATCHSET_RUN_ID" --repo nuanu-ai/FreelandQA --json headSha --jq .headSha)" = "$FINAL_HEAD"
-test "$(gh run view "$PATCHSET_RUN_ID" --repo nuanu-ai/FreelandQA --json conclusion --jq .conclusion)" = "success"
-test "$(gh run view "$PATCHSET_RUN_ID" --repo nuanu-ai/FreelandQA --json jobs --jq '[.jobs[] | select(.name == "immutable-base" and .conclusion == "success")] | length')" = "1"
-BASELINE_RUN_URL="$(gh run view "$BASELINE_RUN_ID" --repo nuanu-ai/FreelandQA --json url --jq .url)"
-PATCHSET_RUN_URL="$(gh run view "$PATCHSET_RUN_ID" --repo nuanu-ai/FreelandQA --json url --jq .url)"
-gh pr comment "$PR_NUMBER" --repo nuanu-ai/FreelandQA \
-  --body "FL-CDP-I1 remote acceptance: head $FINAL_HEAD; Baseline $BASELINE_RUN_ID succeeded ($BASELINE_RUN_URL); Patchset $PATCHSET_RUN_ID succeeded ($PATCHSET_RUN_URL)."
-```
-
-Expected: exactly one pull-request run per required workflow on `FINAL_HEAD`, both exact jobs successful. Do not merge automatically. GitHub retains the remote run IDs/URLs and sanitized PR comment without changing the accepted commit.
+Expected: exit 0 with no stdout. The collector has committed only the two acceptance paths, pushed only the exact feature branch, opened one unmerged PR, selected exactly one successful run/job for each workflow, created one sanitized comment, and atomically written `.work/cdp-i1-delivery/receipt.v1.json` last. **This is the final command in the plan. Do not run a status/read-back/network/Git command afterward in this execution.** GitHub retains the accepted head, run IDs/URLs, and comment; only a human may review and integrate the PR later.
 
 ---
 
@@ -3540,7 +4062,7 @@ Expected: exactly one pull-request run per required workflow on `FINAL_HEAD`, bo
 
 | Criterion | Required evidence |
 |---|---|
-| I0 remote gate | Private repo, exact successful Baseline/Patchset runs, read-only source access, protected `main` |
+| I0 remote gate | Private repo ID `1319799876`; exact six-operation detect-and-refuse record; byte-stable read-only source access; exact successful Baseline/Patchset runs; automatic merge disabled; unchanged entry `main` in every snapshot; exact-byte I0 digest |
 | Typed surface | Closed command/result schemas; no URL/selector/expression/CDP escape hatch |
 | Browser ownership | Fresh profile, inherited daemon-only CDP pipe, allow-one egress proxy, parent-loss watchdog, birth-token/direct-handle cleanup, short private command socket |
 | Candidate identity | Exact staging origin/appEnv/deployTarget/Supabase/full SHA before and after |
@@ -3551,13 +4073,15 @@ Expected: exactly one pull-request run per required workflow on `FINAL_HEAD`, bo
 | Stable replay | Four bounded synthetic transcripts replay twice with identical safe results |
 | Real-Chrome isolation | Twelve paired positive/guarded controls prove canonical-header rebuilding, zero HTTP/browser-writer/speculative/DNS/local-discovery/transport egress, nested-target/popup escape, delayed pixels, and lifecycle survivors; exact mock-Keychain argv semantics and macOS Direct Sockets absence+lockdown are recorded without probing the user's Keychain |
 | Artifact proof | Exactly three validated observation JSON artifacts and one validated PNG, with matching index digests |
-| Deterministic CI | `test:unit` merge-gates all `tests/cdp/*.test.ts`; live smoke absent from CI |
+| Deterministic CI | `test:unit` runs all `tests/cdp/*.test.ts` as retained, human-reviewed pre-integration evidence; live smoke absent from CI |
 | Live staging | One exact-SHA unauthenticated `landing` smoke, stable candidate, zero writes |
-| Product harness | I0 manifest digest plus exact base/source/final-tree tuple recorded; at least 154 existing product CDP tests pass in a verifier-built disposable checkout; source worktree and verified tree remain unchanged |
+| Product harness | I0 entry commit pins the active manifest; its exact digest plus base/source/final-tree tuple are recorded in I1; at least 154 existing product CDP tests pass in a verifier-built disposable checkout; source worktree and verified tree remain unchanged |
 | Payment isolation | No product payment file changed; no payment capability in observation broker |
 | Tracker isolation | Nuanu writes exactly zero |
-| Repository state | Canonical I1 acceptance direct child, clean feature branch, both PR checks green, run IDs retained on PR |
+| Repository state | Canonical I1 acceptance is the sole direct child of the implementation commit and changes only two reviewed paths; clean exact feature head; both exact PR checks green; no `main` update or merge |
+| Delivery integrity | Terminal ignored receipt binds canonical I0/I1 digests, embedded I0, accepted head, and exact six-operation delivery tuple; receipt write is the collector's final action |
+| Integration authority | Automation never merges, auto-merges, force-pushes, deletes, or updates `main`; a human alone reviews and integrates the PR |
 
 ## Execution Handoff
 
-Implement Tasks 1–16 in order. Task 1 is a hard external gate: while the read-only deploy key/attestation is absent or Patchset remains red, do not create the implementation branch and do not begin Task 2. Once I1 is accepted, write separate designs/plans for I2 and later iterations rather than extending this plan in place.
+Implement Tasks 1–16 in order with `superpowers:subagent-driven-development` (the owner's selected option 1) and a fresh implementation/review gate per task. Task 1 is a hard external gate: while organization plan is not exact `free`, repository permission is not `ADMIN`, automatic merge is not disabled, the exact read-only deploy key/attestation is absent, either workflow is not the sole exact successful run/job in its stored window, any before/after repository snapshot drifts, or the complete six-operation/source-revalidation bundle is absent, do not begin Task 2. Task 2 must commit and recheck the canonical I0 record before Task 3. Task 16's terminal delivery command is the last automated action; automation must not inspect, update, or merge afterward. Human PR review/integration is outside this plan. Once I1 is accepted, write separate designs/plans for I2 and later iterations rather than extending this plan in place.

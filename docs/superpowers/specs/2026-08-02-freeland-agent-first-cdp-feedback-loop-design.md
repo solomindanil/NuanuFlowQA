@@ -1,7 +1,7 @@
 # Freeland Agent-First CDP Feedback Loop — Design
 
 **Status:** Approved in conversation on 2026-08-02; private GitHub Free-safe
-amendment approved in conversation on 2026-08-02; pending written-spec review
+amendment and written specification approved by the owner on 2026-08-02
 
 **Program:** Freeland autonomous QA harness
 

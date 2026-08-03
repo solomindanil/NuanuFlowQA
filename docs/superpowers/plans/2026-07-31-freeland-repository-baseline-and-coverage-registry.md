@@ -3983,152 +3983,60 @@ Repeat Steps 1-5 against this final local commit.
 
 ---
 
-### Task 11: Publish Privately, Configure Read-Only Product Access, and Protect `main`
+### Task 11: Publish Privately and Configure Read-Only Product Access
+
+> **Approved GitHub Free-safe supersession (2026-08-02):** Tasks 1–10 and
+> this task's credential/exact-workflow requirements remain authoritative.
+> The paid private-branch-protection requirement is superseded. Do not execute
+> the historical protection operations; complete Task 11 through the exact
+> detect-and-refuse I0 record in the sibling
+> [Freeland Agent-First CDP Feedback Loop plan](./2026-08-02-freeland-agent-first-cdp-feedback-loop.md#task-1-collect-the-github-free-safe-remote-entry-gate-fl-cdp-i0).
 
 **Files:**
 
-- Read: `/Users/danilsolomin/projectsnew/FreelandQA/.github/branch-protection.json`
-- Modify only if check names require correction before the first push: `/Users/danilsolomin/projectsnew/FreelandQA/.github/workflows/baseline.yml`
-- Modify only if check names require correction before the first push: `/Users/danilsolomin/projectsnew/FreelandQA/.github/workflows/patchset.yml`
+- Read: `.github/workflows/baseline.yml`
+- Read: `.github/workflows/patchset.yml`
+- Read: `docs/superpowers/plans/2026-08-02-freeland-agent-first-cdp-feedback-loop.md`
 
 **Interfaces:**
 
-- **Consumes:** the accepted local `main`, authenticated `gh`, the tracked
-  branch-protection payload, and either product-repository admin permission or
-  an administrator-provided read-only credential.
-- **Produces:** `$GITHUB_OWNER/FreelandQA` as a private repository, two passing
-  exact required checks, read-only product checkout access, and protected
-  `main`.
-- **Remote contract:** visibility `PRIVATE`, default branch `main`, no force
-  push, no deletion.
+- **Consumes:** the accepted local `main`, authenticated `gh`, and either
+  product-repository admin permission or an administrator-provided read-only
+  credential.
+- **Produces:** `nuanu-ai/FreelandQA` as a private repository, two passing
+  exact required checks, read-only product checkout access, and the sibling
+  plan's canonical Free-safe I0 integrity record.
+- **Remote contract:** visibility `PRIVATE`, immutable repository ID
+  `1319799876`, default branch `main`, automatic merge disabled, and exact
+  before/after `main` snapshots around every permitted operation. GitHub Free
+  does not provide server-side private-branch push prevention.
 - **Credential contract:** deploy key or repository-scoped GitHub App with
   `contents:read`; never a broad personal token.
 
-- [ ] **Step 1: Resolve the GitHub owner and re-check repository absence**
+**Historical publication state — do not execute the superseded creation path:**
 
-Use `gh auth status` and set `GITHUB_OWNER` from `gh api user --jq .login`. If `$GITHUB_OWNER/FreelandQA` already exists, inspect and stop instead of creating or force-pushing.
+- The private repository already exists as `nuanu-ai/FreelandQA`, immutable
+  REST repository ID `1319799876`, with canonical
+  `main@a4df0c5e4b57dfda3ed658171452cccda6095d52`.
+- The transfer from the personal namespace was explicitly approved and is
+  complete. Never recreate the repository, change its namespace/visibility,
+  force-push, or repush `main` from this baseline plan.
+- Product deploy-key creation/installation is an out-of-band administrator
+  prerequisite. The administrator supplies the exact read-only attestation
+  and matching protected private key; this plan never generates, uploads, or
+  deletes key material.
+- The repository Actions-secret write and both workflow dispatches have not
+  been accepted as completion evidence. They are performed exactly once only
+  inside the sibling Task 1 six-operation ledger, with before/after snapshots
+  and bounded exact-run selection.
 
-```bash
-gh auth status
-GITHUB_OWNER="$(gh api user --jq .login)"
-gh repo view "$GITHUB_OWNER/FreelandQA" --json name,visibility,defaultBranchRef,isArchived
-```
+Resume directly at Step 5. No GitHub mutation in the removed historical path
+is authorized.
 
-The last command must return a not-found error before creation; an
-authentication or network error is not equivalent to absence.
+- [ ] **Step 5: Hand off to the canonical GitHub Free-safe I0 gate**
 
-- [ ] **Step 2: Create and push the private repository**
-
-Create `FreelandQA` with private visibility from the existing local repository, set `origin`, and push `main`.
-
-Read back:
-
-```text
-name = FreelandQA
-visibility = PRIVATE
-default branch = main
-archived = false
-```
-
-Execute as individual checkpoints:
-
-- [ ] run `git status --short` and require an empty local tree;
-- [ ] run `git branch --show-current` and require `main`;
-- [ ] create without push:
-      `gh repo create "$GITHUB_OWNER/FreelandQA" --private --source=.
-      --remote=origin`;
-- [ ] assert the local `origin` URL resolves to that exact repository;
-- [ ] push only `main` with `git push --set-upstream origin main`;
-- [ ] read `name,visibility,defaultBranchRef,isArchived` with `gh repo view`
-      and compare the four exact values above.
-
-- [ ] **Step 3: Configure least-privileged product checkout access**
-
-First check whether the authenticated user has admin permission on `nuanu-ai/freeland_app`.
-
-If yes:
-
-1. generate a dedicated Ed25519 deploy key in an explicit temporary directory;
-2. add the public key to `nuanu-ai/freeland_app` as read-only;
-3. store the private key as the `FREELAND_SOURCE_DEPLOY_KEY` secret in `FreelandQA`;
-4. configure the product `actions/checkout` step to use only that key;
-5. delete the explicit temporary private-key files after the GitHub secret read-back succeeds.
-
-If no, stop this task and request a repository-scoped `contents:read` GitHub App installation or read-only deploy key from the product administrator. Do not store the user's broad personal token as a CI secret and do not weaken patch verification.
-
-Use one verified checkpoint per external mutation:
-
-- [ ] read `viewerPermission` for `nuanu-ai/freeland_app`; proceed only for
-      `ADMIN`;
-- [ ] create an explicit `mktemp -d` directory and generate exactly one
-      Ed25519 keypair with empty local passphrase and comment
-      `FreelandQA read-only source checkout`;
-- [ ] add only the `.pub` file with
-      `gh repo deploy-key add "$DEPLOY_KEY_DIR/freeland-source.pub" --repo
-      nuanu-ai/freeland_app --title "FreelandQA read-only source checkout"`
-      and no `--allow-write`;
-- [ ] read back the product deploy-key metadata and require
-      `"read_only": true`;
-- [ ] set `FREELAND_SOURCE_DEPLOY_KEY` in the QA repository from the private
-      file via `gh secret set`;
-- [ ] list Actions secret metadata and require that exact secret name;
-- [ ] update only the product checkout step to:
-
-```yaml
-- uses: actions/checkout@v4
-  with:
-    repository: nuanu-ai/freeland_app
-    ref: c702465facd4971eb456ce8efe92dd9a3d694139
-    path: .product/freeland
-    ssh-key: ${{ secrets.FREELAND_SOURCE_DEPLOY_KEY }}
-    persist-credentials: false
-```
-
-- [ ] delete only the validated explicit temporary key directory after the
-      remote key and secret metadata checks succeed;
-- [ ] rerun `npm run security:scan` and prove no private/public key material
-      entered Git.
-
-The command boundary is exact; `DEPLOY_KEY_DIR` must equal the explicit path
-printed by `mktemp -d` before any deletion:
-
-```bash
-gh repo view nuanu-ai/freeland_app --json viewerPermission
-DEPLOY_KEY_DIR="$(mktemp -d)"
-ssh-keygen -t ed25519 -N "" -C "FreelandQA read-only source checkout" -f "$DEPLOY_KEY_DIR/freeland-source"
-gh repo deploy-key add "$DEPLOY_KEY_DIR/freeland-source.pub" --repo nuanu-ai/freeland_app --title "FreelandQA read-only source checkout"
-gh api repos/nuanu-ai/freeland_app/keys --jq '.[] | select(.title == "FreelandQA read-only source checkout") | {id,title,read_only}'
-gh secret set FREELAND_SOURCE_DEPLOY_KEY --repo "$GITHUB_OWNER/FreelandQA" < "$DEPLOY_KEY_DIR/freeland-source"
-gh secret list --repo "$GITHUB_OWNER/FreelandQA"
-```
-
-Do not print either key file. The final deletion command is issued separately
-against the previously displayed and validated `DEPLOY_KEY_DIR`, never against
-an empty variable, `$HOME`, `~`, or a wildcard.
-
-- [ ] **Step 4: Run both workflows before protection**
-
-Trigger and wait for:
-
-```text
-Baseline / deterministic
-Patchset / immutable-base
-```
-
-Both must pass on the exact pushed commit. The scheduled drift result is informational.
-
-```bash
-gh workflow run baseline.yml --repo "$GITHUB_OWNER/FreelandQA" --ref main
-gh workflow run patchset.yml --repo "$GITHUB_OWNER/FreelandQA" --ref main
-gh run list --repo "$GITHUB_OWNER/FreelandQA" --branch main --commit "$(git rev-parse HEAD)" --json databaseId,workflowName,headSha,status,conclusion
-```
-
-Watch the two returned run IDs individually with `gh run watch --exit-status`;
-do not accept a success from an older SHA.
-
-- [ ] **Step 5: Verify the exact tracked protection payload**
-
-Use:
+Task 9's already-tracked historical payload remains byte-exact so Tasks 1–10
+are not rewritten:
 
 ```json
 {
@@ -4152,57 +4060,40 @@ Use:
 }
 ```
 
-The tracked file must already be present in the pushed commit from Task 9. If
-the observed check contexts differ, correct the workflows and payload on a
-feature branch, wait for both corrected checks, and merge that branch before
-applying protection.
+It is a historical repository artifact only. Do not apply it, read it back as
+success evidence, or claim it protects private `main` on GitHub Free.
 
-- [ ] **Step 6: Apply and read back branch protection**
-
-Apply the tracked JSON to `main` through the GitHub API. Read back and require:
+Do not call a branch-protection, merge, auto-merge, force-push, deletion, or
+`main` update API. Continue with Tasks 1–2 in the sibling plan. They must prove
+and record:
 
 ```text
-strict required checks enabled
-both exact check contexts present
-admin enforcement enabled
-linear history required
-force pushes disabled
-deletions disabled
-conversation resolution required
+private nuanu-ai/FreelandQA repository ID 1319799876
+GitHub organization plan free
+repository ADMIN for the Actions-secret operation
+automatic merge disabled
+read-only source attestation and matching private-key fingerprint
+exact Baseline and Patchset workflow/run/job/head windows
+unchanged entry main before and after each of six ordered I0 operations
+mode detect-and-refuse and serverSidePushPrevention false
+canonical compact I0 JSON plus LF and its exact-byte SHA-256
 ```
 
-```bash
-gh api \
-  --method PUT \
-  -H "Accept: application/vnd.github+json" \
-  "repos/$GITHUB_OWNER/FreelandQA/branches/main/protection" \
-  --input .github/branch-protection.json
-gh api \
-  -H "Accept: application/vnd.github+json" \
-  "repos/$GITHUB_OWNER/FreelandQA/branches/main/protection"
-```
+The six operations are exactly repository secret write, Baseline dispatch,
+Patchset dispatch, Baseline run selection, Patchset run selection, and feature
+worktree creation. Any drift, failed read, duplicate/old run, or changed source
+attestation closes the gate without retry. The owner accepts the residual risk
+that GitHub Free cannot prevent a privileged direct push before observation.
 
-Compare the read-back with the tracked payload field by field; do not treat a
-successful HTTP status alone as proof.
+- [ ] **Step 6: Treat the sibling I0 record as Task 11 completion evidence**
 
-- [ ] **Step 7: Final remote verification**
-
-Clone from the private remote into a fresh temporary directory and repeat:
-
-```bash
-npm ci
-npm run verify:deterministic
-```
-
-Also verify:
-
-```text
-repository remains private
-main is protected
-latest Baseline check passed
-latest Patchset check passed
-no repository secrets are readable through logs or artifacts
-```
+Task 11 is complete only when
+`coverage/bootstrap/cdp-i0-entry-gate.v1.json` exists on the exact feature
+branch, validates against its closed schema, contains no protection-success
+field, and the sibling plan's history record identifies its exact-byte digest.
+No claim that `main` is protected is permitted. Final integration remains a
+human action after the sibling plan's complete I1 evidence and delivery
+receipt.
 
 ---
 
@@ -4212,7 +4103,7 @@ Before declaring subproject 1 complete, report evidence for every row:
 
 | Approved criterion | Required evidence |
 |---|---|
-| Private `FreelandQA` repo with branch protection | GitHub visibility and protection read-back |
+| Private `FreelandQA` repo with Free-safe integrity record | Repository ID/private/default-branch read-back; exact `main` before/after every permitted operation; automatic merge disabled; canonical detect-and-refuse I0 record |
 | Authoritative tests and safe docs tracked | 29 baseline files, promoted regressions, sanitized-doc allowlist, ignored-evidence denylist |
 | Clean clone installs, type-checks, and enumerates | Fresh remote clone; `npm ci`; typecheck; exact 164/24 list |
 | Zero tests cannot pass | Unit proof plus `capture-playwright --check` nonzero behavior |
@@ -4225,7 +4116,7 @@ Before declaring subproject 1 complete, report evidence for every row:
 | No live purchase | Command ledger showing discovery/unit/source-only execution |
 | No committed secrets or sensitive evidence | Current-tree and history scan pass |
 
-Subproject 1 is not complete if the private product checkout credential is unavailable, either required workflow is red, a QA issue is unrepresented, the clean clone selects zero tests, or a secret/evidence scan fails.
+Subproject 1 is not complete if the private product checkout credential is unavailable, either required workflow is red, the canonical Free-safe I0 record is absent/invalid, a QA issue is unrepresented, the clean clone selects zero tests, or a secret/evidence scan fails.
 
 ---
 
@@ -4240,4 +4131,4 @@ Do not combine this plan with subproject 2 until every row in the final acceptan
 
 ## Follow-on Plan
 
-To close the still-pending remote/publication gate and then implement the next capability slice, continue with [Freeland Agent-First CDP Feedback Loop I0/I1](./2026-08-02-freeland-agent-first-cdp-feedback-loop.md). Its Task 1 mirrors this plan's unfinished Task 11 as the hard `I0` entry gate; it preserves Tasks 1–11 here and forbids starting its Task 2 until that exact remote acceptance is green.
+To close the still-pending remote/publication gate and then implement the next capability slice, continue with [Freeland Agent-First CDP Feedback Loop I0/I1](./2026-08-02-freeland-agent-first-cdp-feedback-loop.md). Its Tasks 1–2 are the authoritative GitHub Free-safe completion of this plan's unfinished Task 11: Tasks 1–10 and the credential/exact-workflow requirements here remain unchanged, while paid private-branch protection is explicitly superseded. Its Task 2 cannot start until the exact Task 1 observation bundle is complete, and Task 3 cannot start until the canonical I0 record is committed.
