@@ -185,7 +185,7 @@ run_gh_until() {
   ' "$@"
 }
 
-READ_DEADLINE_MS=$(( $(monotonic_ms) + 180000 ))
+READ_DEADLINE_MS=$(( $(monotonic_ms) + 600000 ))
 test "$(run_gh_until "$READ_DEADLINE_MS" api user --jq .login)" = "solomindanil"
 test "$(run_gh_until "$READ_DEADLINE_MS" repo view "$PERSONAL_REPOSITORY" --json viewerPermission --jq .viewerPermission)" = "ADMIN"
 test "$(run_gh_until "$READ_DEADLINE_MS" repo view "$ORGANIZATION_REPOSITORY" --json viewerPermission --jq .viewerPermission)" = "WRITE"
