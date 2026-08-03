@@ -202,8 +202,16 @@ node -e '
   const organization=JSON.parse(process.env.ORGANIZATION_STATE);
   const expectedPersonal={repositoryId:1322022755,private:true,visibility:"private",defaultBranch:"main",automaticMerge:false};
   const expectedOrganization={repositoryId:1319799876,private:true,visibility:"private",defaultBranch:"main",automaticMerge:false};
-  if(JSON.stringify(personal)!==JSON.stringify(expectedPersonal)
-    ||JSON.stringify(organization)!==JSON.stringify(expectedOrganization)
+  const repositoryKeys=["automaticMerge","defaultBranch","private","repositoryId","visibility"];
+  const matchesRepository=(actual,expected)=>
+    JSON.stringify(Object.keys(actual).sort())===JSON.stringify(repositoryKeys)
+    &&actual.repositoryId===expected.repositoryId
+    &&actual.private===expected.private
+    &&actual.visibility===expected.visibility
+    &&actual.defaultBranch===expected.defaultBranch
+    &&actual.automaticMerge===expected.automaticMerge;
+  if(!matchesRepository(personal,expectedPersonal)
+    ||!matchesRepository(organization,expectedOrganization)
     ||process.env.PERSONAL_ACTIONS!=="false"
     ||process.env.PERSONAL_MAIN!==process.env.ENTRY_COMMIT
     ||process.env.ORGANIZATION_MAIN!==process.env.ENTRY_COMMIT)process.exit(1);
@@ -386,8 +394,16 @@ read_bridge_snapshot() {
     const organization=JSON.parse(process.env.ORGANIZATION_REPO);
     const expectedPersonal={repositoryId:1322022755,private:true,visibility:"private",defaultBranch:"main",automaticMerge:false};
     const expectedOrganization={repositoryId:1319799876,private:true,visibility:"private",defaultBranch:"main",automaticMerge:false};
-    if(JSON.stringify(personal)!==JSON.stringify(expectedPersonal)
-      ||JSON.stringify(organization)!==JSON.stringify(expectedOrganization)
+    const repositoryKeys=["automaticMerge","defaultBranch","private","repositoryId","visibility"];
+    const matchesRepository=(actual,expected)=>
+      JSON.stringify(Object.keys(actual).sort())===JSON.stringify(repositoryKeys)
+      &&actual.repositoryId===expected.repositoryId
+      &&actual.private===expected.private
+      &&actual.visibility===expected.visibility
+      &&actual.defaultBranch===expected.defaultBranch
+      &&actual.automaticMerge===expected.automaticMerge;
+    if(!matchesRepository(personal,expectedPersonal)
+      ||!matchesRepository(organization,expectedOrganization)
       ||process.env.PERSONAL_ACTIONS!==process.env.EXPECTED_ACTIONS
       ||process.env.PERSONAL_PERMISSION!=="ADMIN"||process.env.ORGANIZATION_PERMISSION!=="WRITE"
       ||process.env.PERSONAL_MAIN!==process.env.ENTRY_COMMIT||process.env.ORGANIZATION_MAIN!==process.env.ENTRY_COMMIT)process.exit(1);
