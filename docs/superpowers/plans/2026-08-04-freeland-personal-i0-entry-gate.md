@@ -185,6 +185,70 @@ run_gh_until() {
   ' "$@"
 }
 
+read_inventory_count() {
+  local kind deadline_ms endpoint
+  kind="$1"
+  deadline_ms="$2"
+  case "$kind" in
+    actions-runs) endpoint="repos/$PERSONAL_REPOSITORY/actions/runs?per_page=100" ;;
+    extra-branches) endpoint="repos/$PERSONAL_REPOSITORY/branches?per_page=100" ;;
+    tags) endpoint="repos/$PERSONAL_REPOSITORY/tags?per_page=100" ;;
+    pulls) endpoint="repos/$PERSONAL_REPOSITORY/pulls?state=all&per_page=100" ;;
+    deploy-keys) endpoint="repos/$PERSONAL_REPOSITORY/keys?per_page=100" ;;
+    *) return 1 ;;
+  esac
+  run_gh_until "$deadline_ms" api --paginate --slurp "$endpoint" |
+    INVENTORY_KIND="$kind" node -e '
+      let input="";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { input += chunk; });
+      process.stdin.on("end", () => {
+        try {
+          const pages=JSON.parse(input);
+          const kind=process.env.INVENTORY_KIND;
+          const isObject=(value)=>value!==null&&typeof value==="object"&&!Array.isArray(value);
+          const unique=(values)=>new Set(values).size===values.length;
+          if(!Array.isArray(pages)||pages.length===0)process.exit(1);
+          let count;
+          if(kind==="actions-runs"){
+            if(!pages.every((page)=>isObject(page)&&Number.isSafeInteger(page.total_count)&&page.total_count>=0&&Array.isArray(page.workflow_runs)))process.exit(1);
+            const entries=pages.flatMap((page)=>page.workflow_runs);
+            const ids=entries.map((entry)=>{
+              if(!isObject(entry)||!Number.isSafeInteger(entry.id)||entry.id<=0)process.exit(1);
+              return entry.id;
+            });
+            if(!unique(ids)||!pages.every((page)=>page.total_count===entries.length))process.exit(1);
+            count=entries.length;
+          }else{
+            if(!pages.every(Array.isArray))process.exit(1);
+            const entries=pages.flat();
+            if(kind==="extra-branches"||kind==="tags"){
+              const names=entries.map((entry)=>{
+                if(!isObject(entry)||typeof entry.name!=="string"||entry.name.length===0)process.exit(1);
+                return entry.name;
+              });
+              if(!unique(names))process.exit(1);
+              if(kind==="extra-branches"){
+                if(names.filter((name)=>name==="main").length!==1)process.exit(1);
+                count=names.filter((name)=>name!=="main").length;
+              }else count=names.length;
+            }else if(kind==="pulls"||kind==="deploy-keys"){
+              const identityField=kind==="pulls"?"number":"id";
+              const ids=entries.map((entry)=>{
+                if(!isObject(entry)||!Number.isSafeInteger(entry[identityField])||entry[identityField]<=0)process.exit(1);
+                return entry[identityField];
+              });
+              if(!unique(ids))process.exit(1);
+              count=ids.length;
+            }else process.exit(1);
+          }
+          if(!Number.isSafeInteger(count)||count<0)process.exit(1);
+          process.stdout.write(String(count));
+        } catch { process.exit(1); }
+      });
+    '
+}
+
 READ_DEADLINE_MS=$(( $(monotonic_ms) + 600000 ))
 test "$(run_gh_until "$READ_DEADLINE_MS" api user --jq .login)" = "solomindanil"
 test "$(run_gh_until "$READ_DEADLINE_MS" repo view "$PERSONAL_REPOSITORY" --json viewerPermission --jq .viewerPermission)" = "ADMIN"
@@ -218,11 +282,11 @@ node -e '
 '
 
 test "$(run_gh_until "$READ_DEADLINE_MS" secret list --repo "$PERSONAL_REPOSITORY" --json name --jq '[.[] | select(.name == "FREELAND_SOURCE_DEPLOY_KEY")] | length')" = "0"
-test "$(run_gh_until "$READ_DEADLINE_MS" api --paginate --slurp "repos/$PERSONAL_REPOSITORY/actions/runs?per_page=100" --jq '[.[].workflow_runs[]] | length')" = "0"
-test "$(run_gh_until "$READ_DEADLINE_MS" api --paginate --slurp "repos/$PERSONAL_REPOSITORY/branches?per_page=100" --jq '[.[][] | select(.name != "main")] | length')" = "0"
-test "$(run_gh_until "$READ_DEADLINE_MS" api --paginate --slurp "repos/$PERSONAL_REPOSITORY/tags?per_page=100" --jq '[.[][]] | length')" = "0"
-test "$(run_gh_until "$READ_DEADLINE_MS" api --paginate --slurp "repos/$PERSONAL_REPOSITORY/pulls?state=all&per_page=100" --jq '[.[][]] | length')" = "0"
-test "$(run_gh_until "$READ_DEADLINE_MS" api --paginate --slurp "repos/$PERSONAL_REPOSITORY/keys?per_page=100" --jq '[.[][]] | length')" = "0"
+test "$(read_inventory_count actions-runs "$READ_DEADLINE_MS")" = "0"
+test "$(read_inventory_count extra-branches "$READ_DEADLINE_MS")" = "0"
+test "$(read_inventory_count tags "$READ_DEADLINE_MS")" = "0"
+test "$(read_inventory_count pulls "$READ_DEADLINE_MS")" = "0"
+test "$(read_inventory_count deploy-keys "$READ_DEADLINE_MS")" = "0"
 test "$(run_gh_until "$READ_DEADLINE_MS" repo view solomindanil/FreelandQA --json nameWithOwner --jq .nameWithOwner)" = "nuanu-ai/FreelandQA"
 test "$(shasum -a 256 "$BOOTSTRAP_RECEIPT_DURABLE" | awk '{print $1}')" = "$BOOTSTRAP_RECEIPT_SHA256"
 test -z "$(git -C "$PERSONAL_PUBLICATION_ROOT" status --porcelain)"
@@ -308,13 +372,40 @@ run_gh_until() {
   ' "$@"
 }
 
+read_actions_run_count() {
+  local deadline_ms
+  deadline_ms="$1"
+  run_gh_until "$deadline_ms" api --paginate --slurp "repos/$PERSONAL_REPOSITORY/actions/runs?per_page=100" |
+    node -e '
+      let input="";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { input += chunk; });
+      process.stdin.on("end", () => {
+        try {
+          const pages=JSON.parse(input);
+          const isObject=(value)=>value!==null&&typeof value==="object"&&!Array.isArray(value);
+          const unique=(values)=>new Set(values).size===values.length;
+          if(!Array.isArray(pages)||pages.length===0)process.exit(1);
+          if(!pages.every((page)=>isObject(page)&&Number.isSafeInteger(page.total_count)&&page.total_count>=0&&Array.isArray(page.workflow_runs)))process.exit(1);
+          const entries=pages.flatMap((page)=>page.workflow_runs);
+          const ids=entries.map((entry)=>{
+            if(!isObject(entry)||!Number.isSafeInteger(entry.id)||entry.id<=0)process.exit(1);
+            return entry.id;
+          });
+          if(!unique(ids)||!pages.every((page)=>page.total_count===entries.length))process.exit(1);
+          process.stdout.write(String(entries.length));
+        } catch { process.exit(1); }
+      });
+    '
+}
+
 PREFLIGHT_DEADLINE_MS=$(( $(monotonic_ms) + 180000 ))
 test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" api user --jq .login)" = "solomindanil"
 test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" repo view "$PERSONAL_REPOSITORY" --json viewerPermission --jq .viewerPermission)" = "ADMIN"
 test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" repo view "$ORGANIZATION_REPOSITORY" --json viewerPermission --jq .viewerPermission)" = "WRITE"
 test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" api "repos/$PERSONAL_REPOSITORY/actions/permissions" --jq .enabled)" = "false"
 test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" secret list --repo "$PERSONAL_REPOSITORY" --json name --jq '[.[] | select(.name == "FREELAND_SOURCE_DEPLOY_KEY")] | length')" = "0"
-test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" api --paginate --slurp "repos/$PERSONAL_REPOSITORY/actions/runs?per_page=100" --jq '[.[].workflow_runs[]] | length')" = "0"
+test "$(read_actions_run_count "$PREFLIGHT_DEADLINE_MS")" = "0"
 ```
 
 Expected: the personal remote remains in exact post-bootstrap state immediately before source-access validation.
@@ -486,7 +577,7 @@ ACTIONS_BEFORE="$(read_bridge_snapshot false)"
 ACTIONS_DEADLINE_MS=$(( $(monotonic_ms) + 120000 ))
 run_gh_until "$ACTIONS_DEADLINE_MS" api --method PUT "repos/$PERSONAL_REPOSITORY/actions/permissions" -F enabled=true -f allowed_actions=all
 test "$(run_gh_until "$ACTIONS_DEADLINE_MS" api "repos/$PERSONAL_REPOSITORY/actions/permissions" --jq .enabled)" = "true"
-test "$(run_gh_until "$ACTIONS_DEADLINE_MS" api --paginate --slurp "repos/$PERSONAL_REPOSITORY/actions/runs?per_page=100" --jq '[.[].workflow_runs[]] | length')" = "0"
+test "$(read_actions_run_count "$ACTIONS_DEADLINE_MS")" = "0"
 ACTIONS_AFTER="$(read_bridge_snapshot true)"
 ACTIONS_OPERATION="$(BEFORE="$ACTIONS_BEFORE" AFTER="$ACTIONS_AFTER" node -e 'process.stdout.write(JSON.stringify({operation:"actions-enable",before:JSON.parse(process.env.BEFORE),after:JSON.parse(process.env.AFTER),result:"enabled_after_secret_readback",unexpectedRunCount:0}))')"
 append_i0_operation "$ACTIONS_OPERATION"
