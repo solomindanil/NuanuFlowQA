@@ -163,10 +163,10 @@ git cat-file -e "$ENTRY_COMMIT:patchsets/freeland/virtual-numbers-card-canary-20
 PREFLIGHT_DEADLINE_MS=$(( $(monotonic_ms) + 120000 ))
 test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" api user --jq .login)" = "solomindanil"
 test "$(run_gh_until "$PREFLIGHT_DEADLINE_MS" repo view solomindanil/FreelandQA --json nameWithOwner --jq .nameWithOwner)" = "nuanu-ai/FreelandQA"
-PERSONAL_OWNER_REPOSITORIES="$(run_gh_until "$PREFLIGHT_DEADLINE_MS" api \
-  --paginate --slurp 'users/solomindanil/repos?per_page=100&type=owner')"
-PERSONAL_OWNER_REPOSITORIES="$PERSONAL_OWNER_REPOSITORIES" node -e '
-  const pages=JSON.parse(process.env.PERSONAL_OWNER_REPOSITORIES);
+PERSONAL_AUTHENTICATED_REPOSITORIES="$(run_gh_until "$PREFLIGHT_DEADLINE_MS" api \
+  --paginate --slurp 'user/repos?per_page=100&affiliation=owner&visibility=all')"
+PERSONAL_AUTHENTICATED_REPOSITORIES="$PERSONAL_AUTHENTICATED_REPOSITORIES" node -e '
+  const pages=JSON.parse(process.env.PERSONAL_AUTHENTICATED_REPOSITORIES);
   if(!Array.isArray(pages)||pages.some((page)=>!Array.isArray(page)))process.exit(1);
   const matches=pages.flat().filter((repository)=>
     repository&&repository.full_name===process.env.PERSONAL_REPOSITORY);
@@ -180,10 +180,10 @@ test -z "$(git status --porcelain)"
 test "$(read_organization_snapshot)" = "$ORGANIZATION_BEFORE"
 ```
 
-Expected: every exact local/GitHub assertion passes, the exhaustive authenticated REST
-owner-list contains zero exact target matches, `npm run verify:deterministic` exits 0,
-and the legacy personal URL still resolves to the organization repository. Stop before
-Step 2 on any failure.
+Expected: every exact local/GitHub assertion passes, the paginated authenticated-user
+REST inventory (including private owner repositories) contains zero exact target
+matches, `npm run verify:deterministic` exits 0, and the legacy personal URL still
+resolves to the organization repository. Stop before Step 2 on any failure.
 
 - [ ] **Step 2: Initialize the private receipt before the first mutation**
 
@@ -509,7 +509,7 @@ compliance and task quality must both be approved before this task is marked com
 
 | Requirement | Proof |
 |---|---|
-| Personal name was absent | Exhaustive authenticated REST owner-list has zero exact target matches |
+| Personal name was absent | Paginated authenticated-user REST inventory, `GET /user/repos?per_page=100&affiliation=owner&visibility=all`, has zero exact target matches |
 | Organization source unchanged | Exact source snapshot before/after every remote operation |
 | Repository private from creation | Create response plus GraphQL read-back |
 | Actual repository ID captured | Positive safe integer in receipt/report and independent review |
