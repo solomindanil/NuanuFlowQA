@@ -1,6 +1,6 @@
 # Freeland Personal Staging Repository Bridge Design
 
-**Status:** Approved direction; written specification awaiting final user review
+**Status:** Approved by the owner on 2026-08-04
 **Date:** 2026-08-03
 **Scope:** Repository bootstrap and delivery routing for the existing Freeland CDP I0/I1 plan
 
