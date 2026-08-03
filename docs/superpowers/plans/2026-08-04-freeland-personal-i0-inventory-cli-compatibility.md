@@ -2,19 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Use `superpowers:test-driven-development` for the RED/GREEN cycle and `superpowers:verification-before-completion` before any completion claim.
 
-**Goal:** Replace the five GitHub CLI-incompatible personal-I0 inventory checks with bounded, fail-closed paginated parsers and produce one complete observable `RECONCILIATION_OK` proof.
+**Goal:** Replace all seven GitHub CLI-incompatible personal-I0 inventory checks with bounded, fail-closed paginated parsers and produce one complete observable `RECONCILIATION_OK` proof for the read-only Task 1 gate.
 
-**Architecture:** Keep `gh api --paginate --slurp` as the sole pagination transport and remove GitHub CLI formatting from those requests. A closed Bash helper selects one of five exact endpoints, while one in-memory Node parser validates endpoint-specific page shapes and returns only a non-negative integer count. The existing read-only checker and tracked I0 plan use the same helper contract; no remote mutation is permitted.
+**Architecture:** Keep `gh api --paginate --slurp` as the sole pagination transport and remove GitHub CLI formatting from those requests. Task 1 uses a closed Bash helper that selects one of five exact endpoints, while Task 2 defines a same-shell Actions-only counter for its pre/post mutation guards. In-memory Node parsers validate endpoint-specific page shapes and return only a non-negative integer count. The existing read-only checker and tracked I0 plan use the same Task 1 helper contract; no remote mutation is permitted.
 
 **Tech Stack:** Bash, GitHub CLI 2.x, Node.js, Git, macOS Keychain authentication.
 
 ## Global Constraints
 
-1. Start from parent repository `HEAD` `4a25124e26c14ce701b57d7acd0f0f1e71ab5f96`. Preserve every unrelated tracked/untracked user change.
+1. Start from the isolated corrective branch whose pre-plan parent is `4a25124e26c14ce701b57d7acd0f0f1e71ab5f96`; record the controller-approved implementation base in the SDD ledger before production edits. Preserve every unrelated tracked/untracked user change.
 2. Modify only tracked `docs/superpowers/plans/2026-08-04-freeland-personal-i0-entry-gate.md`. The checker, reports, briefs, ledgers, and parser test harness remain gitignored SDD artifacts.
 3. Personal repository is exactly `solomindanil/FreelandQA-I1`, database ID `1322022755`; organization target is exactly `nuanu-ai/FreelandQA`, database ID `1319799876`; entry commit is exactly `a4df0c5e4b57dfda3ed658171452cccda6095d52`.
 4. This plan performs GitHub reads only. Remote write count must remain `0`: no secret write, Actions enablement, workflow dispatch, branch/ref write, settings mutation, PR, merge, rerun, cancellation, deletion, or Task 2 operation.
-5. The five incompatible Task 1 calls are Actions runs, non-`main` branches, tags, all-state pull requests, and deploy keys. Remove `--jq` from each paginated request; never combine `--slurp` with `--jq` or `--template`.
+5. The seven incompatible calls are the five Task 1 inventories (Actions runs, non-`main` branches, tags, all-state pull requests, and deploy keys) plus the two Task 2 Actions-run guards. Remove `--jq` from each paginated request; never combine `--slurp` with `--jq` or `--template` anywhere in the tracked plan or checker.
 6. Preserve the audited `run_gh_until` per-request ceiling of `30000` ms, global read envelope of `600000` ms, 16 MiB stdout cap, suppressed `gh` stderr, `set -euo pipefail`, and no automatic retry.
 7. The helper accepts only `actions-runs`, `extra-branches`, `tags`, `pulls`, or `deploy-keys`; it derives the endpoint internally and rejects every other value before invoking `gh`.
 8. Raw paginated JSON stays in memory and is never printed or persisted. The parser emits only one canonical decimal count without whitespace other than its final process flush.
@@ -38,7 +38,7 @@
 
 **Files:**
 
-- Modify: `docs/superpowers/plans/2026-08-04-freeland-personal-i0-entry-gate.md` Task 1 Step 3 only
+- Modify: `docs/superpowers/plans/2026-08-04-freeland-personal-i0-entry-gate.md` Task 1 Step 3 and Task 2 Steps 1/4 only
 - Modify ignored: `.superpowers/sdd/2026-08-04-freeland-personal-i0-entry-gate/task-1-readonly-reconcile.sh`
 - Create ignored: this corrective plan's `inventory-parser-tests.mjs`
 - Append ignored: original `task-1-report.md`
@@ -47,7 +47,7 @@
 **Interfaces:**
 
 - **Consumes:** exact Task 1 repository/source state already validated through S10, audited `run_gh_until(deadline, ...args)`, and the five fixed endpoint identities.
-- **Produces:** `read_inventory_count(kind, deadline_ms) -> stdout decimal count`, tracked executable plan text, fixed ignored checker, and one exact successful full reconciliation.
+- **Produces:** `read_inventory_count(kind, deadline_ms) -> stdout decimal count`, `read_actions_run_count(deadline_ms) -> stdout decimal count`, tracked executable plan text, fixed ignored checker, and one exact successful full reconciliation.
 - **Safety boundary:** every `gh` call is GET/read-only; any helper/parser/checker failure stops without retry or external cleanup.
 
 - [ ] **Step 1: Record the exact RED evidence and write parser fixture tests first**
@@ -143,6 +143,9 @@ for (const file of implementationFiles) {
   const text = fs.readFileSync(file, 'utf8');
   assert.equal((text.match(incompatible) ?? []).length, 0);
   assert.ok(text.includes('read_inventory_count()'));
+  if (file.endsWith('personal-i0-entry-gate.md')) {
+    assert.ok(text.includes('read_actions_run_count()'));
+  }
 }
 process.stdout.write('INVENTORY_PARSER_FIXTURES_OK\n');
 ```
@@ -153,7 +156,7 @@ Run before production changes:
 node .superpowers/sdd/2026-08-04-freeland-personal-i0-inventory-cli-compatibility/inventory-parser-tests.mjs
 ```
 
-Expected RED: the fixture process fails at the compatibility assertion because each implementation file still contains exactly five incompatible calls and lacks `read_inventory_count()`. Confirm the failure is `actual: 5, expected: 0`, not a syntax/path error. Do not edit the test to make it pass.
+Expected RED: the fixture process fails at the compatibility assertion because the tracked plan contains exactly seven incompatible calls and the ignored checker contains exactly five; both lack `read_inventory_count()`, and the plan lacks `read_actions_run_count()`. Confirm the first failure is `actual: 7, expected: 0`, not a syntax/path error. Do not edit the test to make it pass.
 
 - [ ] **Step 2: Add the closed parser helper to the tracked plan**
 
@@ -235,7 +238,47 @@ test "$(read_inventory_count pulls "$READ_DEADLINE_MS")" = "0"
 test "$(read_inventory_count deploy-keys "$READ_DEADLINE_MS")" = "0"
 ```
 
-Do not modify Task 2 or any other Task 1 assertion.
+Do not modify any other Task 1 assertion.
+
+In the separate persistent Task 2 shell, insert this Actions-only helper after Task 2's `run_gh_until()` definition:
+
+```bash
+read_actions_run_count() {
+  local deadline_ms
+  deadline_ms="$1"
+  run_gh_until "$deadline_ms" api --paginate --slurp "repos/$PERSONAL_REPOSITORY/actions/runs?per_page=100" |
+    node -e '
+      let input="";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { input += chunk; });
+      process.stdin.on("end", () => {
+        try {
+          const pages=JSON.parse(input);
+          const isObject=(value)=>value!==null&&typeof value==="object"&&!Array.isArray(value);
+          const unique=(values)=>new Set(values).size===values.length;
+          if(!Array.isArray(pages)||pages.length===0)process.exit(1);
+          if(!pages.every((page)=>isObject(page)&&Number.isSafeInteger(page.total_count)&&page.total_count>=0&&Array.isArray(page.workflow_runs)))process.exit(1);
+          const entries=pages.flatMap((page)=>page.workflow_runs);
+          const ids=entries.map((entry)=>{
+            if(!isObject(entry)||!Number.isSafeInteger(entry.id)||entry.id<=0)process.exit(1);
+            return entry.id;
+          });
+          if(!unique(ids)||!pages.every((page)=>page.total_count===entries.length))process.exit(1);
+          process.stdout.write(String(entries.length));
+        } catch { process.exit(1); }
+      });
+    '
+}
+```
+
+Replace only the two Task 2 Actions-run guards with:
+
+```bash
+test "$(read_actions_run_count "$PREFLIGHT_DEADLINE_MS")" = "0"
+test "$(read_actions_run_count "$ACTIONS_DEADLINE_MS")" = "0"
+```
+
+Task 2 Steps 1–9 are explicitly one persistent shell, so the helper defined in Step 1 remains available in Step 4. This corrective task changes executable plan text only: do not execute Task 2, write a secret, enable Actions, or dispatch a workflow.
 
 - [ ] **Step 3: Apply the identical helper contract to the ignored checker**
 
@@ -245,10 +288,12 @@ Regenerate the original Task 1 brief:
 
 ```bash
 /Users/danilsolomin/.codex/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/task-brief \
-  /Users/danilsolomin/projectsnew/NuanuFlowQA/docs/superpowers/plans/2026-08-04-freeland-personal-i0-entry-gate.md 1
+  /Users/danilsolomin/projectsnew/NuanuFlowQA/.worktrees/freeland-personal-i0-inventory-fix/docs/superpowers/plans/2026-08-04-freeland-personal-i0-entry-gate.md \
+  1 \
+  /Users/danilsolomin/projectsnew/NuanuFlowQA/.superpowers/sdd/2026-08-04-freeland-personal-i0-entry-gate/task-1-brief.md
 ```
 
-Expected: the regenerated brief contains the helper and no invalid five-call forms.
+Expected: the regenerated Task 1 brief contains `read_inventory_count()` and no invalid Task 1 forms. The full-plan compatibility fixture independently covers both repaired Task 2 forms.
 
 - [ ] **Step 4: Run GREEN parser, compatibility, and syntax gates**
 
@@ -308,7 +353,7 @@ test "$(shasum -a 256 /Users/danilsolomin/projectsnew/NuanuFlowQA/.worktrees/fre
 test -z "$(git -C /Users/danilsolomin/projectsnew/NuanuFlowQA/.worktrees/freelandqa-personal-publication status --porcelain)"
 ```
 
-Append a corrective closure section to the original Task 1 report with RED, fixture/static GREEN, exact checker exit/marker, receipt custody, remote writes `0`, and Task 2 untouched. Write this corrective plan's full task report in its own SDD workspace.
+Append a corrective closure section to the original Task 1 report with RED, fixture/static GREEN, exact checker exit/marker, receipt custody, remote writes `0`, and explicit confirmation that Task 2 was text-repaired but not executed. Write this corrective plan's full task report in its own SDD workspace.
 
 Stage and commit only the tracked entry-gate plan:
 
@@ -319,16 +364,16 @@ git diff --cached --check
 git commit -m "docs: fix personal I0 paginated inventories"
 ```
 
-Expected: one commit containing only the helper insertion and five call replacements. The task report returns `DONE`, `BOOTSTRAP_CUSTODY_READY`, full commit SHA, exact local/remote verification summary, and no concerns.
+Expected: one implementation commit containing only the two helper insertions and seven call replacements in the original tracked entry-gate plan. The task report returns `DONE`, `BOOTSTRAP_CUSTODY_READY`, full commit SHA, exact local/remote verification summary, and no concerns.
 
 ## Acceptance
 
-1. Original Task 1 plan/brief/checker contain no `--slurp` combined with `--jq` or `--template`.
+1. The complete original tracked plan and checker contain no `--slurp` combined with `--jq` or `--template`; the regenerated Task 1 brief contains none in Task 1.
 2. Parser fixtures prove five zero inventories, two positive inventories, malformed-shape rejection, duplicate rejection, Actions total mismatch rejection, missing-main rejection, and unknown-kind rejection.
 3. The helper endpoint is derived from a five-value closed kind allowlist.
 4. Raw JSON is bounded, kept in memory, validated by endpoint type, and never printed/persisted.
 5. One full checker exits `0` with exact `RECONCILIATION_OK`; no other execution is used as completion evidence.
 6. Receipt custody and personal publication cleanliness remain exact.
-7. Remote writes remain `0`; Task 2 remains untouched.
+7. Remote writes remain `0`; Task 2 executable text is repaired, but no Task 2 operation is executed.
 8. The tracked commit contains only the original entry-gate plan amendment.
 9. Original Task 1 blocker may be marked resolved only after clean task review and final corrective-plan review.
