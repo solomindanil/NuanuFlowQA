@@ -299,8 +299,7 @@ async function runVerificationCommand(runner, invocation) {
   let result;
   try {
     result = await runner(invocation);
-  } catch (error) {
-    if (error instanceof SourceAccessError) throw error;
+  } catch {
     reason('SOURCE_ACCESS_RUNNER_FAILED');
   }
   validateVerifyRunnerResult(result);
@@ -355,7 +354,7 @@ export async function verifySourceAccess(options = {}) {
   if (initial.status !== 'AWAITING_ADMIN') reason('SOURCE_ACCESS_CUSTODY_NOT_READY');
   if (typeof options.runner !== 'function') reason('SOURCE_ACCESS_RUNNER_UNAVAILABLE');
 
-  const gitSshCommand = `ssh -i ${initial.paths.privateKey} -o BatchMode=yes -o IdentitiesOnly=yes -o ForwardAgent=no -o StrictHostKeyChecking=yes`;
+  const gitSshCommand = `ssh -F /dev/null -i ${initial.paths.privateKey} -o BatchMode=yes -o IdentitiesOnly=yes -o ForwardAgent=no -o StrictHostKeyChecking=yes`;
   const remoteOptions = {
     shell: false,
     timeoutMs: SOURCE_ACCESS.networkTimeoutMs,

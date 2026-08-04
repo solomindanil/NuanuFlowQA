@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   buildPaths,
   classifyWriteDenial,
+  SourceAccessError,
   verifySourceAccess,
 } from '../../scripts/freeland-source-access/lib.mjs';
 
@@ -123,6 +124,13 @@ function assertNoDisclosure(values) {
   assert.equal(text.includes(sourceRefCanary), false);
 }
 
+async function rejectionOf(promise) {
+  let rejected;
+  await promise.catch((error) => { rejected = error; });
+  assert.ok(rejected, 'expected a rejection');
+  return rejected;
+}
+
 describe('classifyWriteDenial', () => {
   test('accepts only exact deploy-key and write-access denials', () => {
     for (const denial of [
@@ -200,7 +208,7 @@ describe('verifySourceAccess', () => {
         gitSshCommand: safeCalls[5].gitSshCommand,
       });
       assert.match(safeCalls[5].args[3], /^HEAD:refs\/heads\/freelandqa-readonly-probe-[0-9a-f]{24}$/);
-      const expectedSsh = `ssh -i ${fixture.paths.privateKey} -o BatchMode=yes -o IdentitiesOnly=yes -o ForwardAgent=no -o StrictHostKeyChecking=yes`;
+      const expectedSsh = `ssh -F /dev/null -i ${fixture.paths.privateKey} -o BatchMode=yes -o IdentitiesOnly=yes -o ForwardAgent=no -o StrictHostKeyChecking=yes`;
       assert.equal(safeCalls[0].gitSshCommand, expectedSsh);
       assert.equal(safeCalls[5].gitSshCommand, expectedSsh);
       for (const call of safeCalls.slice(1, -1)) assert.equal(call.gitSshCommand, undefined);
@@ -270,6 +278,26 @@ describe('verifySourceAccess', () => {
         assert.equal(calls.length, 1);
         await assert.rejects(fs.lstat(fixture.paths.attestation), { code: 'ENOENT' });
         assertNoDisclosure(calls.map(safeInvocation));
+      } finally {
+        await cleanFixture(fixture);
+      }
+    }
+  });
+
+  test('collapses every runner-thrown error without disclosing private-key or source-ref canaries', async () => {
+    for (const canary of [privateCanary, sourceRefCanary]) {
+      const fixture = await makeFixture();
+      try {
+        await writeValidAwaiting(fixture.paths);
+        const error = await rejectionOf(verifySourceAccess({
+          baseDir: fixture.baseDir,
+          runner: async () => { throw new SourceAccessError(canary); },
+        }));
+        if (error.message !== 'SOURCE_ACCESS_RUNNER_FAILED') {
+          throw new Error('runner error was not collapsed');
+        }
+        assertNoDisclosure([error.message, error.stack]);
+        await assert.rejects(fs.lstat(fixture.paths.attestation), { code: 'ENOENT' });
       } finally {
         await cleanFixture(fixture);
       }
