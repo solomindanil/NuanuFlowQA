@@ -327,6 +327,48 @@ describe('prepareSourceAccess', () => {
     }
   });
 
+  test('never overwrites a destination created after the preflight check', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+    const fixture = await makeFixture();
+    try {
+      await assert.rejects(prepareSourceAccess({
+        baseDir: fixture.baseDir,
+        runner: fakeRunner(),
+        hooks: {
+          afterDestinationCheck: async ({ paths, index }) => {
+            if (index === 0) await writePlaceholder(paths.privateKey);
+          },
+        },
+      }), { message: 'SOURCE_ACCESS_DESTINATION_COLLISION' });
+      assert.deepEqual(await fs.readFile(fixture.paths.privateKey, 'utf8'), 'placeholder');
+      await assert.rejects(fs.lstat(fixture.paths.publicKey), { code: 'ENOENT' });
+      await assert.rejects(fs.lstat(fixture.paths.handoff), { code: 'ENOENT' });
+    } finally {
+      await cleanFixture(fixture);
+    }
+  });
+
+  test('preserves post-link pre-unlink ambiguity for review', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+    const fixture = await makeFixture();
+    try {
+      await assert.rejects(prepareSourceAccess({
+        baseDir: fixture.baseDir,
+        runner: fakeRunner(),
+        hooks: {
+          afterLinkBeforeUnlink: async ({ index }) => {
+            if (index === 0) throw new Error('test interruption');
+          },
+        },
+      }), { message: 'SOURCE_ACCESS_PREPARE_FAILED' });
+      const promoted = await fs.lstat(fixture.paths.privateKey);
+      assert.equal(promoted.isFile(), true);
+      assert.equal(promoted.nlink, 2);
+      const entries = await fs.readdir(fixture.baseDir);
+      assert.equal(entries.some((entry) => entry.startsWith('.prepare-')), true);
+    } finally {
+      await cleanFixture(fixture);
+    }
+  });
+
   test('uses real ssh-keygen only inside a test temporary directory', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
     const fixture = await makeFixture();
     try {

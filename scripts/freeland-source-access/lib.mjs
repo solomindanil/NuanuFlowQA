@@ -235,6 +235,21 @@ async function destinationIsAbsent(path) {
   if (await lstatOrNull(path)) reason('SOURCE_ACCESS_DESTINATION_COLLISION');
 }
 
+async function promoteNoClobber(from, to, paths, index, hooks, uid, onLinked) {
+  await destinationIsAbsent(to);
+  await hooks?.afterDestinationCheck?.({ paths, index, from, to });
+  try {
+    await fs.link(from, to);
+  } catch (error) {
+    if (error?.code === 'EEXIST') reason('SOURCE_ACCESS_DESTINATION_COLLISION');
+    throw error;
+  }
+  onLinked();
+  await hooks?.afterLinkBeforeUnlink?.({ paths, index, from, to });
+  await fs.unlink(from);
+  validateFileStat(await lstatOrNull(to), uid);
+}
+
 function closedResult(paths, fingerprint) {
   return {
     schemaVersion: SOURCE_ACCESS.schemaVersion,
@@ -302,9 +317,7 @@ export async function prepareSourceAccess(options = {}) {
     for (let index = 0; index < promotionsToMake.length; index += 1) {
       const [from, to] = promotionsToMake[index];
       await options.hooks?.beforePromote?.({ paths, index });
-      await destinationIsAbsent(to);
-      await fs.rename(from, to);
-      promotions += 1;
+      await promoteNoClobber(from, to, paths, index, options.hooks, uid, () => { promotions += 1; });
     }
     return closedResult(paths, fingerprint);
   } catch (error) {
