@@ -464,6 +464,29 @@ describe('prepareSourceAccess', () => {
     }
   });
 
+  test('preserves an identity-swapped owned temporary directory rather than removing its contents', async () => {
+    const fixture = await makeFixture();
+    let swappedPath;
+    try {
+      await assert.rejects(prepareSourceAccess({
+        baseDir: fixture.baseDir,
+        runner: fakeRunner({ behavior: 'exit' }),
+        hooks: {
+          beforeTemporaryCleanup: async ({ temporaryDir }) => {
+            swappedPath = temporaryDir;
+            await fs.rm(temporaryDir, { recursive: true, force: true });
+            await fs.mkdir(temporaryDir, { mode: 0o700 });
+            await fs.chmod(temporaryDir, 0o700);
+            await fs.writeFile(join(temporaryDir, 'sentinel'), 'preserve');
+          },
+        },
+      }), { message: 'SOURCE_ACCESS_TEMPORARY_DIRECTORY_INVALID' });
+      assert.equal(await fs.readFile(join(swappedPath, 'sentinel'), 'utf8'), 'preserve');
+    } finally {
+      await cleanFixture(fixture);
+    }
+  });
+
   test('uses real ssh-keygen only inside a test temporary directory', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
     const fixture = await makeFixture();
     try {

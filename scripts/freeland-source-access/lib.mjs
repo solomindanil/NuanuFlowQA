@@ -273,10 +273,38 @@ async function promoteNoClobber(from, to, paths, index, hooks, uid, onLinked) {
   validateFileStat(await lstatOrNull(to), uid);
 }
 
-async function removeOwnedTemporaryDir(temporaryDir, uid, hooks) {
+function directoryIdentity(stat) {
+  return { dev: stat.dev, ino: stat.ino };
+}
+
+function validateTemporaryDirectory(stat, uid, identity) {
+  validateDirectoryStat(stat, uid);
+  if (stat.dev !== identity.dev || stat.ino !== identity.ino) {
+    reason('SOURCE_ACCESS_TEMPORARY_DIRECTORY_INVALID');
+  }
+}
+
+async function removeOwnedTemporaryDir(temporaryDir, temporaryIdentity, temporaryFiles, uid, hooks) {
   await hooks?.beforeTemporaryCleanup?.({ temporaryDir });
-  validateDirectoryStat(await lstatOrNull(temporaryDir), uid);
-  await fs.rm(temporaryDir, { recursive: true, force: false });
+  validateTemporaryDirectory(await lstatOrNull(temporaryDir), uid, temporaryIdentity);
+  for (const temporaryFile of temporaryFiles) {
+    validateTemporaryDirectory(await lstatOrNull(temporaryDir), uid, temporaryIdentity);
+    const stat = await lstatOrNull(temporaryFile);
+    if (!stat) continue;
+    validateGeneratedFileStat(stat, uid);
+    validateTemporaryDirectory(await lstatOrNull(temporaryDir), uid, temporaryIdentity);
+    try {
+      await fs.unlink(temporaryFile);
+    } catch {
+      reason('SOURCE_ACCESS_TEMPORARY_DIRECTORY_INVALID');
+    }
+  }
+  validateTemporaryDirectory(await lstatOrNull(temporaryDir), uid, temporaryIdentity);
+  try {
+    await fs.rmdir(temporaryDir);
+  } catch {
+    reason('SOURCE_ACCESS_TEMPORARY_DIRECTORY_INVALID');
+  }
 }
 
 function closedResult(paths, fingerprint) {
@@ -301,12 +329,19 @@ export async function prepareSourceAccess(options = {}) {
   await ensureBaseDir(baseDir, uid);
   const paths = buildPaths(baseDir);
   let temporaryDir;
+  let temporaryIdentity;
+  let temporaryFiles = [];
   let promotions = 0;
   try {
     temporaryDir = await fs.mkdtemp(join(baseDir, '.prepare-'));
     await fs.chmod(temporaryDir, SOURCE_ACCESS.directoryMode);
-    validateDirectoryStat(await lstatOrNull(temporaryDir), uid);
+    const temporaryStat = await lstatOrNull(temporaryDir);
+    validateDirectoryStat(temporaryStat, uid);
+    temporaryIdentity = directoryIdentity(temporaryStat);
     const temporaryPrivate = join(temporaryDir, SOURCE_ACCESS.privateBasename);
+    const temporaryPublic = `${temporaryPrivate}.pub`;
+    const temporaryHandoff = join(temporaryDir, SOURCE_ACCESS.handoffBasename);
+    temporaryFiles = [temporaryPrivate, temporaryPublic, temporaryHandoff];
     const invocation = {
       command: 'ssh-keygen',
       args: ['-q', '-t', 'ed25519', '-N', '', '-C', SOURCE_ACCESS.title, '-f', temporaryPrivate],
@@ -323,7 +358,6 @@ export async function prepareSourceAccess(options = {}) {
     }
     validateRunnerResult(runnerResult);
 
-    const temporaryPublic = `${temporaryPrivate}.pub`;
     validateGeneratedFileStat(await lstatOrNull(temporaryPrivate), uid);
     validateGeneratedFileStat(await lstatOrNull(temporaryPublic), uid);
     const privateContent = await fs.readFile(temporaryPrivate);
@@ -333,7 +367,6 @@ export async function prepareSourceAccess(options = {}) {
     await fs.chmod(temporaryPublic, SOURCE_ACCESS.fileMode);
     validateFileStat(await lstatOrNull(temporaryPrivate), uid);
     validateFileStat(await lstatOrNull(temporaryPublic), uid);
-    const temporaryHandoff = join(temporaryDir, SOURCE_ACCESS.handoffBasename);
     await fs.writeFile(temporaryHandoff, handoffBytes(fingerprint, publicLine), { mode: SOURCE_ACCESS.fileMode, flag: 'wx' });
     await fs.chmod(temporaryHandoff, SOURCE_ACCESS.fileMode);
     validateFileStat(await lstatOrNull(temporaryHandoff), uid);
@@ -353,6 +386,6 @@ export async function prepareSourceAccess(options = {}) {
     if (error instanceof SourceAccessError) throw error;
     reason('SOURCE_ACCESS_PREPARE_FAILED');
   } finally {
-    if (temporaryDir && promotions === 0) await removeOwnedTemporaryDir(temporaryDir, uid, options.hooks);
+    if (temporaryDir && temporaryIdentity && promotions === 0) await removeOwnedTemporaryDir(temporaryDir, temporaryIdentity, temporaryFiles, uid, options.hooks);
   }
 }
