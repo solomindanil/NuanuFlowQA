@@ -311,7 +311,7 @@ Expected: `BOOTSTRAP_CUSTODY_READY`; personal Actions are still off, the secret/
 - **Consumes:** `BOOTSTRAP_CUSTODY_READY`, exact bootstrap receipt/hash, closed source-access files, personal `ADMIN`, disabled Actions, zero personal runs, and exact entry `main`.
 - **Produces:** `PERSONAL_I0_READY`, exact seven-operation private bundle, two successful exact-SHA runs, Actions enabled, and isolated feature worktree.
 - **Ordered tuple:** `repository-secret-write`, `actions-enable`, `baseline-workflow-dispatch`, `patchset-workflow-dispatch`, `baseline-run-selection`, `patchset-run-selection`, `feature-worktree-create`.
-- **Missing-input result:** if either source-access file is absent, return `NEEDS_CONTEXT` naming only the two expected paths and proving Actions remain disabled, secret count remains zero, and run count remains zero. This is not permission to synthesize the key or attestation.
+- **Missing-input result:** if either source-access file is absent, return `NEEDS_CONTEXT` naming only the two expected paths and proving Actions remain disabled, secret count remains zero, and run count remains zero. Only the reviewed freeland-source-access utility may create the key or attestation under the owner's 2026-08-04 option-1 approval. Until it returns exact SOURCE_ACCESS_READY, Task 2 stops with NEEDS_CONTEXT and performs no mutation.
 
 Run Steps 1–9 below in one persistent elevated Bash shell. Exported variables, functions, private paths, and run windows must remain in that shell.
 
