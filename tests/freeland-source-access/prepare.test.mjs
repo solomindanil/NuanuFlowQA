@@ -1,37 +1,92 @@
 import { execFile as execFileCallback } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
-import { after, before, describe, test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildPaths, prepareSourceAccess } from '../../scripts/freeland-source-access/lib.mjs';
 
 const execFile = promisify(execFileCallback);
-const fixtureRoot = await fs.mkdtemp(join(tmpdir(), 'freeland-source-access-test-'));
-const fixtureKey = join(fixtureRoot, 'fixture_ed25519');
-const otherFixtureKey = join(fixtureRoot, 'other_fixture_ed25519');
-let sshKeygenAvailable = true;
+const fixtureKey = makeRuntimeKeyFixture();
+const otherFixtureKey = makeRuntimeKeyFixture();
+const fixturePrivate = fixtureKey.private;
+const fixturePublic = fixtureKey.public;
+const otherFixturePublic = otherFixtureKey.public;
+const fixtureFingerprint = fixtureKey.fingerprint;
+const sshKeygenAvailable = await isExecutableAvailable('ssh-keygen');
 
-try {
-  await execFile('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'FreelandQA read-only source checkout', '-f', fixtureKey]);
-  await execFile('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'FreelandQA read-only source checkout', '-f', otherFixtureKey]);
-} catch (error) {
-  if (error.code === 'ENOENT') sshKeygenAvailable = false;
-  else throw error;
+function u32(value) {
+  const output = Buffer.alloc(4);
+  output.writeUInt32BE(value);
+  return output;
 }
 
-const fixturePrivate = sshKeygenAvailable ? await fs.readFile(fixtureKey) : Buffer.alloc(0);
-const fixturePublic = sshKeygenAvailable ? await fs.readFile(`${fixtureKey}.pub`, 'utf8') : '';
-const otherFixturePublic = sshKeygenAvailable ? await fs.readFile(`${otherFixtureKey}.pub`, 'utf8') : '';
-const fixtureFingerprint = sshKeygenAvailable ? fingerprintOf(fixturePublic) : '';
+function sshString(value) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value, 'utf8');
+  return Buffer.concat([u32(bytes.length), bytes]);
+}
 
-after(async () => fs.rm(fixtureRoot, { recursive: true, force: true }));
+function encodeOpenSshPrivate(seed, publicKey) {
+  const check = Buffer.from([0x51, 0x62, 0x73, 0x84]);
+  const body = Buffer.concat([
+    check,
+    check,
+    sshString('ssh-ed25519'),
+    sshString(publicKey),
+    sshString(Buffer.concat([seed, publicKey])),
+    sshString('FreelandQA read-only source checkout'),
+  ]);
+  const paddingLength = 8 - (body.length % 8);
+  const privateBlock = Buffer.concat([body, Buffer.from(Array.from({ length: paddingLength }, (_, index) => index + 1))]);
+  const publicBlob = Buffer.concat([sshString('ssh-ed25519'), sshString(publicKey)]);
+  const bytes = Buffer.concat([
+    Buffer.from('openssh-key-v1\0', 'utf8'),
+    sshString('none'),
+    sshString('none'),
+    sshString(Buffer.alloc(0)),
+    u32(1),
+    sshString(publicBlob),
+    sshString(privateBlock),
+  ]);
+  const encoded = bytes.toString('base64').match(/.{1,70}/g).join('\n');
+  return Buffer.from(`-----BEGIN OPENSSH PRIVATE KEY-----\n${encoded}\n-----END OPENSSH PRIVATE KEY-----\n`, 'utf8');
+}
+
+function makeRuntimeKeyFixture() {
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const seed = Buffer.from(privateKey.export({ format: 'der', type: 'pkcs8' })).subarray(-32);
+  const rawPublic = Buffer.from(publicKey.export({ format: 'der', type: 'spki' })).subarray(-32);
+  const blob = Buffer.concat([sshString('ssh-ed25519'), sshString(rawPublic)]);
+  const publicMaterial = `ssh-ed25519 ${blob.toString('base64')} FreelandQA read-only source checkout\n`;
+  return {
+    seed,
+    publicKey: rawPublic,
+    private: encodeOpenSshPrivate(seed, rawPublic),
+    public: publicMaterial,
+    fingerprint: fingerprintOf(publicMaterial),
+  };
+}
+
+async function isExecutableAvailable(command) {
+  try {
+    await execFile(command, ['-V']);
+    return true;
+  } catch (error) {
+    return error?.code !== 'ENOENT';
+  }
+}
 
 function fingerprintOf(publicMaterial) {
   const encoded = publicMaterial.trim().split(/\s+/)[1];
   return `SHA256:${createHash('sha256').update(Buffer.from(encoded, 'base64')).digest('base64').replace(/=$/, '')}`;
+}
+
+function corruptFixtureSeed() {
+  const seed = Buffer.from(fixtureKey.seed);
+  seed[0] ^= 0x01;
+  return encodeOpenSshPrivate(seed, fixtureKey.publicKey);
 }
 
 async function makeFixture() {
@@ -60,6 +115,9 @@ function fakeRunner({ behavior = 'success', calls = [] } = {}) {
     } else if (behavior === 'mismatch') {
       await fs.writeFile(outputPath, fixturePrivate, { mode: 0o600 });
       await fs.writeFile(`${outputPath}.pub`, otherFixturePublic, { mode: 0o600 });
+    } else if (behavior === 'seed-corruption') {
+      await fs.writeFile(outputPath, corruptFixtureSeed(), { mode: 0o600 });
+      await fs.writeFile(`${outputPath}.pub`, fixturePublic, { mode: 0o600 });
     } else if (behavior === 'non-ed25519') {
       await fs.writeFile(outputPath, fixturePrivate, { mode: 0o600 });
       await fs.writeFile(`${outputPath}.pub`, publicWithKeyLength('ssh-rsa', 32), { mode: 0o600 });
@@ -116,9 +174,21 @@ async function writeValidAwaiting(paths) {
 async function snapshot(paths) {
   const names = ['privateKey', 'publicKey', 'handoff'];
   return Object.fromEntries(await Promise.all(names.map(async (name) => [name, {
-    content: await fs.readFile(paths[name]),
-    stat: await fs.lstat(paths[name]),
+    digest: createHash('sha256').update(await fs.readFile(paths[name])).digest('hex'),
+    stat: statMetadata(await fs.lstat(paths[name])),
   }])));
+}
+
+function statMetadata(stat) {
+  return {
+    mode: stat.mode,
+    nlink: stat.nlink,
+    uid: stat.uid,
+    gid: stat.gid,
+    size: stat.size,
+    ino: stat.ino,
+    mtimeMs: stat.mtimeMs,
+  };
 }
 
 async function writePlaceholder(path) {
@@ -136,7 +206,7 @@ describe('prepareSourceAccess', () => {
     });
   });
 
-  test('promotes an absent fixture to the closed administrator handoff state', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+  test('promotes an absent fixture to the closed administrator handoff state', async () => {
     const fixture = await makeFixture();
     const calls = [];
     try {
@@ -171,7 +241,7 @@ describe('prepareSourceAccess', () => {
     }
   });
 
-  test('rejects every non-empty partial subset without running a key generator', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+  test('rejects every non-empty partial subset without running a key generator', async () => {
     const names = ['privateKey', 'publicKey', 'handoff', 'attestation'];
     for (let bits = 1; bits < 16; bits += 1) {
       if (bits === 7) continue;
@@ -192,7 +262,7 @@ describe('prepareSourceAccess', () => {
     }
   });
 
-  test('replays an exact awaiting state byte-for-byte without running a key generator', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+  test('replays an exact awaiting state byte-for-byte without running a key generator', async () => {
     const fixture = await makeFixture();
     try {
       await writeValidAwaiting(fixture.paths);
@@ -208,7 +278,7 @@ describe('prepareSourceAccess', () => {
     }
   });
 
-  test('replays exact awaiting custody without requiring a generator runner', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+  test('replays exact awaiting custody without requiring a generator runner', async () => {
     const fixture = await makeFixture();
     try {
       await writeValidAwaiting(fixture.paths);
@@ -218,7 +288,7 @@ describe('prepareSourceAccess', () => {
     }
   });
 
-  test('rejects unsafe existing custody entries before running a key generator', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+  test('rejects unsafe existing custody entries before running a key generator', async () => {
     for (const scenario of ['symlink-directory', 'symlink-file', 'hard-link', 'wrong-mode', 'non-regular', 'wrong-uid']) {
       const fixture = await makeFixture();
       let calls = 0;
@@ -262,8 +332,8 @@ describe('prepareSourceAccess', () => {
     }
   });
 
-  test('rejects failing or unexpected generator outcomes and generated key material', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
-    for (const behavior of ['timeout', 'overflow', 'signal', 'exit', 'wrong-executable', 'throw', 'malformed', 'mismatch', 'non-ed25519', '384-bit', '512-bit']) {
+  test('rejects failing or unexpected generator outcomes and generated key material', async () => {
+    for (const behavior of ['timeout', 'overflow', 'signal', 'exit', 'wrong-executable', 'throw', 'malformed', 'mismatch', 'seed-corruption', 'non-ed25519', '384-bit', '512-bit']) {
       const fixture = await makeFixture();
       try {
         await assert.rejects(
@@ -280,7 +350,7 @@ describe('prepareSourceAccess', () => {
     }
   });
 
-  test('rejects an awaiting handoff with a malformed fingerprint or extra field', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+  test('rejects an awaiting handoff with a malformed fingerprint or extra field', async () => {
     for (const replacement of ['fingerprint=SHA256:invalid', 'unexpected=true']) {
       const fixture = await makeFixture();
       try {
@@ -298,7 +368,7 @@ describe('prepareSourceAccess', () => {
     }
   });
 
-  test('fails closed when a destination appears before promotion and preserves a partial promotion for review', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+  test('fails closed when a destination appears before promotion and preserves a partial promotion for review', async () => {
     const collision = await makeFixture();
     try {
       await assert.rejects(prepareSourceAccess({
@@ -327,7 +397,7 @@ describe('prepareSourceAccess', () => {
     }
   });
 
-  test('never overwrites a destination created after the preflight check', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+  test('never overwrites a destination created after the preflight check', async () => {
     const fixture = await makeFixture();
     try {
       await assert.rejects(prepareSourceAccess({
@@ -347,7 +417,7 @@ describe('prepareSourceAccess', () => {
     }
   });
 
-  test('preserves post-link pre-unlink ambiguity for review', { skip: !sshKeygenAvailable && 'ssh-keygen is unavailable locally' }, async () => {
+  test('preserves post-link pre-unlink ambiguity for review', async () => {
     const fixture = await makeFixture();
     try {
       await assert.rejects(prepareSourceAccess({
@@ -366,6 +436,31 @@ describe('prepareSourceAccess', () => {
       assert.equal(entries.some((entry) => entry.startsWith('.prepare-')), true);
     } finally {
       await cleanFixture(fixture);
+    }
+  });
+
+  test('preserves a swapped temporary directory rather than recursively cleaning it', async () => {
+    const fixture = await makeFixture();
+    const outside = await fs.mkdtemp(join(tmpdir(), 'freeland-source-access-outside-'));
+    let swappedPath;
+    try {
+      await fs.writeFile(join(outside, 'sentinel'), 'preserve');
+      await assert.rejects(prepareSourceAccess({
+        baseDir: fixture.baseDir,
+        runner: fakeRunner({ behavior: 'exit' }),
+        hooks: {
+          beforeTemporaryCleanup: async ({ temporaryDir }) => {
+            swappedPath = temporaryDir;
+            await fs.rm(temporaryDir, { recursive: true, force: true });
+            await fs.symlink(outside, temporaryDir);
+          },
+        },
+      }), { message: 'SOURCE_ACCESS_DIRECTORY_INVALID' });
+      assert.equal((await fs.lstat(swappedPath)).isSymbolicLink(), true);
+      assert.equal(await fs.readFile(join(outside, 'sentinel'), 'utf8'), 'preserve');
+    } finally {
+      await cleanFixture(fixture);
+      await fs.rm(outside, { recursive: true, force: true });
     }
   });
 

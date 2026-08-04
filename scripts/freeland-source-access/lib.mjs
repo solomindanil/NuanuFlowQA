@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { SOURCE_ACCESS } from './constants.mjs';
@@ -116,6 +116,28 @@ function parsePublicMaterial(content) {
   return { line: text.slice(0, -1), blob, key: parsePublicBlob(blob) };
 }
 
+function deriveEd25519PublicKey(seed) {
+  try {
+    const privateKeyDer = Buffer.concat([
+      Buffer.from('302e020100300506032b657004220420', 'hex'),
+      seed,
+    ]);
+    const publicKeyDer = createPublicKey(createPrivateKey({
+      key: privateKeyDer,
+      format: 'der',
+      type: 'pkcs8',
+    })).export({ format: 'der', type: 'spki' });
+    const prefix = Buffer.from('302a300506032b6570032100', 'hex');
+    if (publicKeyDer.length !== prefix.length + 32 || !publicKeyDer.subarray(0, prefix.length).equals(prefix)) {
+      reason('SOURCE_ACCESS_KEY_INVALID');
+    }
+    return publicKeyDer.subarray(prefix.length);
+  } catch (error) {
+    if (error instanceof SourceAccessError) throw error;
+    reason('SOURCE_ACCESS_KEY_INVALID');
+  }
+}
+
 function parsePrivateMaterial(content) {
   const text = content.toString('utf8');
   const match = /^-----BEGIN OPENSSH PRIVATE KEY-----\n([A-Za-z0-9+/=\n]+)-----END OPENSSH PRIVATE KEY-----\n$/.exec(text);
@@ -152,7 +174,8 @@ function parsePrivateMaterial(content) {
   parsed = readString(privateBlock, parsed.offset);
   const privateBytes = parsed.value;
   parsed = readString(privateBlock, parsed.offset);
-  if (!equalsAscii(parsed.value, SOURCE_ACCESS.title) || embeddedPublic.length !== 32 || privateBytes.length !== 64 || !privateBytes.subarray(32).equals(embeddedPublic) || !embeddedPublic.equals(outerKey)) {
+  const derivedPublic = privateBytes.length === 64 ? deriveEd25519PublicKey(privateBytes.subarray(0, 32)) : null;
+  if (!equalsAscii(parsed.value, SOURCE_ACCESS.title) || embeddedPublic.length !== 32 || privateBytes.length !== 64 || !privateBytes.subarray(32).equals(embeddedPublic) || !derivedPublic?.equals(embeddedPublic) || !embeddedPublic.equals(outerKey)) {
     reason('SOURCE_ACCESS_KEY_INVALID');
   }
   for (let pad = 1; parsed.offset < privateBlock.length; pad += 1, parsed.offset += 1) {
@@ -250,6 +273,12 @@ async function promoteNoClobber(from, to, paths, index, hooks, uid, onLinked) {
   validateFileStat(await lstatOrNull(to), uid);
 }
 
+async function removeOwnedTemporaryDir(temporaryDir, uid, hooks) {
+  await hooks?.beforeTemporaryCleanup?.({ temporaryDir });
+  validateDirectoryStat(await lstatOrNull(temporaryDir), uid);
+  await fs.rm(temporaryDir, { recursive: true, force: false });
+}
+
 function closedResult(paths, fingerprint) {
   return {
     schemaVersion: SOURCE_ACCESS.schemaVersion,
@@ -324,6 +353,6 @@ export async function prepareSourceAccess(options = {}) {
     if (error instanceof SourceAccessError) throw error;
     reason('SOURCE_ACCESS_PREPARE_FAILED');
   } finally {
-    if (temporaryDir && promotions === 0) await fs.rm(temporaryDir, { recursive: true, force: true });
+    if (temporaryDir && promotions === 0) await removeOwnedTemporaryDir(temporaryDir, uid, options.hooks);
   }
 }
