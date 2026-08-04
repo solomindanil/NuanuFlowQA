@@ -27,7 +27,7 @@
 
 - Modify tracked: `docs/superpowers/plans/2026-08-04-freeland-personal-i0-entry-gate.md`
 - Modify ignored checker: `.superpowers/sdd/2026-08-04-freeland-personal-i0-entry-gate/task-1-readonly-reconcile.sh`
-- Create ignored fixtures: `.superpowers/sdd/2026-08-04-freeland-personal-i0-inventory-cli-compatibility/inventory-parser-tests.mjs`
+- Create/update ignored fixtures: `.superpowers/sdd/2026-08-04-freeland-personal-i0-inventory-cli-compatibility/inventory-parser-tests.mjs`
 - Append ignored history: `.superpowers/sdd/2026-08-04-freeland-personal-i0-entry-gate/task-1-report.md`
 - Regenerate ignored brief: `.superpowers/sdd/2026-08-04-freeland-personal-i0-entry-gate/task-1-brief.md`
 - Create this plan's SDD task report/reviews in its own workspace
@@ -366,10 +366,60 @@ git commit -m "docs: fix personal I0 paginated inventories"
 
 Expected: one implementation commit containing only the two helper insertions and seven call replacements in the original tracked entry-gate plan. The task report returns `DONE`, `BOOTSTRAP_CUSTODY_READY`, full commit SHA, exact local/remote verification summary, and no concerns.
 
+#### Fix Round 1 — execute the embedded production parsers
+
+This section is a binding controller-approved correction to Step 1 and Step 4. It supersedes the duplicate `countInventory()` fixture shown above for all final parser-behavior evidence. The historical fixture remains in the plan only to preserve the original RED/GREEN execution record; it must not be used to claim parser behavior coverage.
+
+Update the ignored `inventory-parser-tests.mjs` under this corrective task so it has no test-local inventory parser and instead does all of the following:
+
+1. Read the tracked original entry-gate plan from the corrective worktree and the single authoritative ignored checker at `/Users/danilsolomin/projectsnew/NuanuFlowQA/.superpowers/sdd/2026-08-04-freeland-personal-i0-entry-gate/task-1-readonly-reconcile.sh`. Do not create a checker copy or symlink.
+2. Extract exactly one named `read_inventory_count()` function from the tracked plan, exactly one from the authoritative checker, and exactly one named `read_actions_run_count()` function from the tracked plan. Extraction must fail closed when a named function is missing or ambiguous.
+3. Extract exactly one single-quoted `node -e` program from each selected function. Extraction must fail closed when the embedded program is missing or ambiguous.
+4. Assert that the extracted Task 1 Node programs from the tracked plan and authoritative checker are byte-identical so checker/plan drift fails the fixture.
+5. Spawn each extracted program directly with `process.execPath -e <exact-program>`, controlled JSON stdin, controlled `INVENTORY_KIND` only for Task 1, a five-second timeout, and a 1 MiB test-process output cap. Assert literal exit status, stdout count, and empty stderr. No shell helper, `run_gh_until`, `gh`, source key, or remote resource may be invoked.
+6. Run the complete Task 1 matrix against both Task 1 production programs: five zero inventories; positive paginated Actions and positive extra branches; empty/malformed page envelopes and malformed JSON; wrong endpoint shape; duplicate Actions/tag/pull/deploy-key identities and duplicate `main`; Actions total mismatch; missing `main`; and unknown kind.
+7. Run the applicable Actions matrix against the Task 2 production program: zero and positive paginated Actions; empty/malformed envelopes and malformed JSON; duplicate run identity; and total mismatch. Unknown-kind and branch/list cases are not applicable because Task 2's production parser is Actions-only and has no kind input.
+8. Retain the incompatible `--slurp` plus `--jq`/`--template` static assertion for the complete tracked plan and authoritative checker.
+
+Before the fixture rewrite, record this focused local RED for the review defect:
+
+```bash
+node -e '
+const fs=require("node:fs");
+const path=".superpowers/sdd/2026-08-04-freeland-personal-i0-inventory-cli-compatibility/inventory-parser-tests.mjs";
+const text=fs.readFileSync(path,"utf8");
+if(/(?:export\s+)?function\s+countInventory\s*\(/.test(text)||!text.includes("spawnSync")){
+  process.stderr.write("FIXTURE_EXECUTES_TEST_DOUBLE_NOT_PRODUCTION_PARSERS\n");
+  process.exit(1);
+}
+process.stdout.write("FIXTURE_EXECUTES_PRODUCTION_PARSERS_OK\n");
+'
+```
+
+Expected RED: exit `1` with `FIXTURE_EXECUTES_TEST_DOUBLE_NOT_PRODUCTION_PARSERS`.
+
+After the rewrite, run:
+
+```bash
+node .superpowers/sdd/2026-08-04-freeland-personal-i0-inventory-cli-compatibility/inventory-parser-tests.mjs
+```
+
+Expected GREEN:
+
+```text
+PRODUCTION_INVENTORY_PARSER_FIXTURES_OK task1_targets=2 task1_cases=19 task2_targets=1 task2_cases=7
+```
+
+Also rerun the focused architecture assertion above and require `FIXTURE_EXECUTES_PRODUCTION_PARSERS_OK`, the checker `bash -n` gate, every Bash fence from the original tracked entry-gate plan through `bash -n`, compatibility scanning, and `git diff --check` for this amended corrective plan.
+
+Regenerate this corrective Task 1 brief from the amended corrective plan into the existing ignored corrective-task brief. Do not regenerate it from the original entry-gate plan.
+
+Do not change a runtime production parser unless the real-program fixture first proves that change necessary. Do not rerun the live checker in this review fix: cell `17` from the original task remains the sole authoritative live execution. Make no GitHub call, remote write, Task 2 operation, or source-key access. Append Fix Round 1 evidence to the existing corrective report. Commit only this tracked corrective-plan amendment; the fixture, brief, review, and report remain ignored.
+
 ## Acceptance
 
 1. The complete original tracked plan and checker contain no `--slurp` combined with `--jq` or `--template`; the regenerated Task 1 brief contains none in Task 1.
-2. Parser fixtures prove five zero inventories, two positive inventories, malformed-shape rejection, duplicate rejection, Actions total mismatch rejection, missing-main rejection, and unknown-kind rejection.
+2. Parser fixtures spawn the exact embedded Node programs from tracked Task 1, authoritative-checker Task 1, and tracked Task 2; they prove the applicable zero, positive, malformed-shape, duplicate, Actions total-mismatch, missing-main, and unknown-kind behavior without a test-local parser.
 3. The helper endpoint is derived from a five-value closed kind allowlist.
 4. Raw JSON is bounded, kept in memory, validated by endpoint type, and never printed/persisted.
 5. One full checker exits `0` with exact `RECONCILIATION_OK`; no other execution is used as completion evidence.
@@ -377,3 +427,4 @@ Expected: one implementation commit containing only the two helper insertions an
 7. Remote writes remain `0`; Task 2 executable text is repaired, but no Task 2 operation is executed.
 8. The tracked commit contains only the original entry-gate plan amendment.
 9. Original Task 1 blocker may be marked resolved only after clean task review and final corrective-plan review.
+10. Fix Round 1 detects missing/ambiguous extraction and Task 1 plan/checker parser drift, does not rerun the live checker, and commits only the tracked corrective-plan amendment.
