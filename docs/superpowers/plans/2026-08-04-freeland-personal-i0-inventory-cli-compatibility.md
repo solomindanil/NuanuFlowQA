@@ -377,9 +377,9 @@ Update the ignored `inventory-parser-tests.mjs` under this corrective task so it
 3. Extract exactly one single-quoted `node -e` program from each selected function. Extraction must fail closed when the embedded program is missing or ambiguous.
 4. Assert that the extracted Task 1 Node programs from the tracked plan and authoritative checker are byte-identical so checker/plan drift fails the fixture.
 5. Spawn each extracted program directly with `process.execPath -e <exact-program>`, controlled JSON stdin, controlled `INVENTORY_KIND` only for Task 1, a five-second timeout, and a 1 MiB test-process output cap. Assert literal exit status, stdout count, and empty stderr. No shell helper, `run_gh_until`, `gh`, source key, or remote resource may be invoked.
-6. Run the complete Task 1 matrix against both Task 1 production programs: five zero inventories; positive paginated Actions and positive extra branches; empty/malformed page envelopes and malformed JSON; wrong endpoint shape; duplicate Actions/tag/pull/deploy-key identities and duplicate `main`; Actions total mismatch; missing `main`; and unknown kind.
-7. Run the applicable Actions matrix against the Task 2 production program: zero and positive paginated Actions; empty/malformed envelopes and malformed JSON; duplicate run identity; and total mismatch. Unknown-kind and branch/list cases are not applicable because Task 2's production parser is Actions-only and has no kind input.
-8. Retain the incompatible `--slurp` plus `--jq`/`--template` static assertion for the complete tracked plan and authoritative checker.
+6. Run the complete 38-case Task 1 matrix against both Task 1 production programs: five zero inventories; positive paginated Actions and positive extra branches; empty/malformed page envelopes and malformed JSON; wrong endpoint shape; duplicate identities and duplicate `main`; Actions total mismatch; missing `main`; unknown kind; non-object or field-missing entries; zero, negative, and unsafe Actions/deploy-key IDs and pull numbers; and empty branch/tag names.
+7. Run the applicable 12-case Actions matrix against the Task 2 production program: zero and positive paginated Actions; empty/malformed envelopes and malformed JSON; duplicate run identity; total mismatch; non-object and missing-ID entries; and zero, negative, and unsafe run IDs. Unknown-kind and branch/list cases are not applicable because Task 2's production parser is Actions-only and has no kind input.
+8. Retain the incompatible `--slurp` plus `--jq`/`--template` static assertion for the complete tracked plan and authoritative checker, but normalize every backslash-newline continuation before applying the line-local option-order regex. Include a deliberate wrapped-command canary whose physical lines evade the raw regex and whose normalized logical command is rejected exactly once.
 
 Before the fixture rewrite, record this focused local RED for the review defect:
 
@@ -407,7 +407,7 @@ node .superpowers/sdd/2026-08-04-freeland-personal-i0-inventory-cli-compatibilit
 Expected GREEN:
 
 ```text
-PRODUCTION_INVENTORY_PARSER_FIXTURES_OK task1_targets=2 task1_cases=19 task2_targets=1 task2_cases=7
+PRODUCTION_INVENTORY_PARSER_FIXTURES_OK task1_targets=2 task1_cases=38 task2_targets=1 task2_cases=12 logical_line_canary=1
 ```
 
 Also rerun the focused architecture assertion above and require `FIXTURE_EXECUTES_PRODUCTION_PARSERS_OK`, the checker `bash -n` gate, every Bash fence from the original tracked entry-gate plan through `bash -n`, compatibility scanning, and `git diff --check` for this amended corrective plan.
@@ -415,6 +415,18 @@ Also rerun the focused architecture assertion above and require `FIXTURE_EXECUTE
 Regenerate this corrective Task 1 brief from the amended corrective plan into the existing ignored corrective-task brief. Do not regenerate it from the original entry-gate plan.
 
 Do not change a runtime production parser unless the real-program fixture first proves that change necessary. Do not rerun the live checker in this review fix: cell `17` from the original task remains the sole authoritative live execution. Make no GitHub call, remote write, Task 2 operation, or source-key access. Append Fix Round 1 evidence to the existing corrective report. Commit only this tracked corrective-plan amendment; the fixture, brief, review, and report remain ignored.
+
+#### Final Review Fix Wave — malformed entries and logical commands
+
+Before extending the real-program fixture, run a focused local source/canary gate against the ignored fixture. It must fail with:
+
+```text
+FINAL_REVIEW_COVERAGE_RED missing_case_labels=19 wrapped_canary_missed=true
+```
+
+The 19 required labels correspond to non-object or field-missing entries, zero/negative/unsafe numeric identities, and empty names added to the Task 1 matrix above. The five applicable Actions cases are also added to Task 2. This source gate is RED evidence for missing coverage only; final behavior evidence must come from spawning the exact embedded programs.
+
+For GREEN, require the exact 38/12/logical-canary fixture marker above, `node --check` on the fixture, Bash syntax for the amended corrective plan, `git diff --check`, and exact one-file commit scope. If all exact-program cases pass, leave the original entry-gate runtime plan and authoritative checker unchanged. Regenerate this corrective brief, append `Final Review Fix Wave` to the same corrective report, and do not rerun the live checker or perform any network, source-key, Task 2, or remote-write operation.
 
 ## Acceptance
 
@@ -428,3 +440,4 @@ Do not change a runtime production parser unless the real-program fixture first 
 8. The tracked commit contains only the original entry-gate plan amendment.
 9. Original Task 1 blocker may be marked resolved only after clean task review and final corrective-plan review.
 10. Fix Round 1 detects missing/ambiguous extraction and Task 1 plan/checker parser drift, does not rerun the live checker, and commits only the tracked corrective-plan amendment.
+11. The final review fixture rejects malformed/non-object entries, zero/negative/unsafe identities, and empty names through the exact production programs, and its normalized logical-command scan rejects the wrapped incompatibility canary.
