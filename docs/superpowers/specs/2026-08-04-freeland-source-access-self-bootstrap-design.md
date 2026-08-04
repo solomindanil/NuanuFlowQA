@@ -1,6 +1,6 @@
 # Freeland Source-Access Self-Bootstrap Design
 
-**Status:** Owner-selected design option 1 on 2026-08-04; written specification awaiting final owner review
+**Status:** Approved by the owner on 2026-08-04
 **Date:** 2026-08-04
 **Scope:** Least-privilege creation and validation of the source-access package required by the Freeland personal I0 gate
 
