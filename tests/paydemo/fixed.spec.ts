@@ -1,6 +1,4 @@
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 import { expect, test, type Request } from '@playwright/test';
 
 const runId = 'fixed-api-amount';
@@ -23,18 +21,19 @@ test('build info identifies the exact fixed build', async ({ request }) => {
   const info = await response.json();
 
   expect(info.app).toBe('PayDemo');
+  expect(Object.keys(info).sort()).toEqual([
+    'app',
+    'commit',
+    'contentHash',
+    'environmentId',
+    'instanceNonce',
+    'variant',
+  ]);
   expect(info.variant).toBe('fixed-v2');
   expect(info.commit).toBe(execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim());
-  expect(info.sourceFiles).toContain('apps/paydemo/server.mjs');
-
-  const hash = createHash('sha256');
-  for (const sourceFile of [...info.sourceFiles].sort()) {
-    hash.update(sourceFile);
-    hash.update('\0');
-    hash.update(await readFile(sourceFile));
-    hash.update('\0');
-  }
-  expect(info.contentHash).toBe(`sha256:${hash.digest('hex')}`);
+  expect(info.contentHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+  expect(info.environmentId).toMatch(/^[a-z0-9][a-z0-9-]{0,63}$/);
+  expect(info.instanceNonce).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
 test('reset rejects a request without its own run id', async ({ request }) => {

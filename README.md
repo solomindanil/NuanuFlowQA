@@ -68,12 +68,15 @@ PayDemo is a self-contained, simulated checkout used to exercise the QA harness.
 ```bash
 npm run build:paydemo       # writes ignored dist/paydemo/build-manifest.json
 npm run start:paydemo       # build and serve fixed-v2 on http://127.0.0.1:4173
+npm run test:paydemo:harness    # deterministic probe, synthesis, and environment contracts
+npm run test:paydemo:provenance # clean Git source and served-byte provenance
+npm run test:paydemo:identity   # runtime identity and immutable served-byte checks
 npm run test:paydemo        # fixed-v2: 6 normal Playwright checks
 npm run test:paydemo:bugs   # buggy-v1: 3 intentional expected failures
-npm run verify:paydemo      # build plus both suites
+npm run verify:paydemo      # all harness, provenance, identity, fixed, and defect checks
 ```
 
-`/build-info` exposes the exact Git commit, source content SHA-256, source-file list, and variant used to produce the local build. `POST /api/reset` accepts only a bounded `runId` and clears only that in-memory run; it cannot clear another run or persistent data.
+`dist/paydemo/build-manifest.json` pins the exact Git commit, source hash/file set, and hash/file set of the bytes actually served. The server verifies both sets before listening and snapshots verified public bytes in memory. `/build-info` exposes only the closed six-field runtime identity needed by remote probes: app, variant, commit, served-content hash, environment id, and instance nonce. `POST /api/reset` accepts only a bounded `runId` and clears only that in-memory run; it cannot clear another run or persistent data.
 
 The default `fixed-v2` rejects forged client amounts, sends the selected payment method, disables duplicate submission, and reuses a payment for the same idempotency key. `buggy-v1` is deliberately isolated to the three corresponding defects so the controlled suite can demonstrate their detection.
 
