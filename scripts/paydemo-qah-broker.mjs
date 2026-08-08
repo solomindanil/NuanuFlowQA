@@ -34,6 +34,10 @@ const SHA_256 = /^sha256:[a-f0-9]{64}$/;
 const IDENTIFIER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,128}$/;
 const ALLOWED_VARIANTS = new Set(['buggy-v1', 'fixed-v2']);
+const ALLOWED_CLEANUP_ITEM_KEYS = new Set([
+  'cleanup_clean_environment',
+  'cleanup_risk_environment',
+]);
 const CHILD_ENV_ALLOWLIST = [
   'PATH',
   'LANG',
@@ -154,6 +158,9 @@ function validateConfiguration(input, { allowEphemeralBrokerPort = true } = {}) 
     configurationError('commit must be an exact 40-character lowercase Git SHA');
   }
   if (!ALLOWED_VARIANTS.has(input.variant)) configurationError('variant is not supported');
+  if (!ALLOWED_CLEANUP_ITEM_KEYS.has(input.cleanupItemKey)) {
+    configurationError('cleanup item key is not one of the two closed Process steps');
+  }
   const stateRoot = normalizeAbsolutePath(input.stateRoot, 'state root');
   const tokenFile = normalizeAbsolutePath(input.tokenFile, 'token file');
   const curlConfig = normalizeAbsolutePath(input.curlConfig, 'curl config');
@@ -167,6 +174,7 @@ function validateConfiguration(input, { allowEphemeralBrokerPort = true } = {}) 
     commit: input.commit,
     variant: input.variant,
     productPort,
+    cleanupItemKey: input.cleanupItemKey,
     stateRoot,
     tokenFile,
     curlConfig,
@@ -204,6 +212,7 @@ export function configurationFromEnvironment(environment = process.env, argv = [
     commit: environment.PAYDEMO_QAH_BROKER_COMMIT,
     variant: environment.PAYDEMO_QAH_BROKER_VARIANT ?? 'buggy-v1',
     productPort: environment.PAYDEMO_QAH_BROKER_PRODUCT_PORT ?? DEFAULT_PRODUCT_PORT,
+    cleanupItemKey: environment.PAYDEMO_QAH_BROKER_CLEANUP_ITEM_KEY,
     stateRoot,
     tokenFile: flags.get('--token-file')
       ?? environment.PAYDEMO_QAH_BROKER_TOKEN_FILE
@@ -310,7 +319,7 @@ function cleanupArguments(configuration, pidFile) {
     '--environment-id', configuration.environmentId,
     '--state-root', configuration.stateRoot,
     '--pid-file', pidFile,
-    '--item-key', 'cleanup_environment',
+    '--item-key', configuration.cleanupItemKey,
   ];
 }
 
@@ -422,7 +431,7 @@ function validatePrepareEnvelope(envelope, configuration) {
 }
 
 function validateCleanupEnvelope(envelope, configuration, pidFile) {
-  validateCommonEnvelope(envelope, 'cleanup_environment');
+  validateCommonEnvelope(envelope, configuration.cleanupItemKey);
   const data = envelope.item.data;
   if (
     !exactKeys(data, ['environment_id', 'environment_status', 'pid_file'])
@@ -526,6 +535,7 @@ export async function createPayDemoBroker({ configuration: rawConfiguration, exe
     campaign_id: configuration.campaignId,
     commit: configuration.commit,
     environment_id: configuration.environmentId,
+    cleanup_item_key: configuration.cleanupItemKey,
     port: configuration.productPort,
     repository: configuration.repository,
     state_root: configuration.stateRoot,

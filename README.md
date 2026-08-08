@@ -92,6 +92,7 @@ export PAYDEMO_QAH_BROKER_REPOSITORY=https://github.com/solomindanil/NuanuFlowQA
 export PAYDEMO_QAH_BROKER_COMMIT=<exact-40-character-commit>
 export PAYDEMO_QAH_BROKER_VARIANT=buggy-v1
 export PAYDEMO_QAH_BROKER_PRODUCT_PORT=4173
+export PAYDEMO_QAH_BROKER_CLEANUP_ITEM_KEY=cleanup_risk_environment
 export PAYDEMO_QAH_BROKER_STATE_ROOT=/absolute/operator-owned/paydemo-state
 node scripts/paydemo-qah-broker.mjs \
   --token-file /absolute/scoped-capability/broker.token \

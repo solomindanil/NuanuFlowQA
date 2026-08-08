@@ -56,7 +56,7 @@ function prepareEnvelope(configuration, instanceNonce, pidFile) {
 function cleanupEnvelope(configuration, pidFile, status = 'STOPPED') {
   return {
     item: {
-      key: 'cleanup_environment',
+      key: configuration.cleanupItemKey,
       description: status === 'STOPPED'
         ? 'Изолированное окружение PayDemo остановлено.'
         : 'Изолированное окружение PayDemo уже отсутствует.',
@@ -171,6 +171,7 @@ test('broker owns one exact campaign tuple and hardens HTTP parsing and credenti
     commit: exactCommit,
     variant: 'buggy-v1',
     productPort: 41731,
+    cleanupItemKey: 'cleanup_risk_environment',
     stateRoot: join(root, 'state'),
     tokenFile,
     curlConfig,
@@ -467,8 +468,15 @@ test('broker owns one exact campaign tuple and hardens HTTP parsing and credenti
     '--environment-id', environmentId,
     '--state-root', configuration.stateRoot,
     '--pid-file', join(configuration.stateRoot, environmentId, 'server.pid'),
-    '--item-key', 'cleanup_environment',
+    '--item-key', 'cleanup_risk_environment',
   ]);
+  await assert.rejects(
+    createPayDemoBroker({
+      configuration: { ...configuration, cleanupItemKey: 'caller_selected_cleanup' },
+      executeEnvironment,
+    }),
+    /cleanup item key/i,
+  );
   const invocationText = JSON.stringify(invocations);
   assert.equal(invocationText.includes(token), false);
   assert.equal(invocationText.includes('NUANU_QA_ALLOW_FILE_REPO'), false);
@@ -505,6 +513,7 @@ test('broker rejects noisy, malformed, oversized, and tuple-mismatched CLI outpu
     commit: exactCommit,
     variant: 'buggy-v1',
     productPort: 41732,
+    cleanupItemKey: 'cleanup_risk_environment',
     stateRoot: join(root, 'state'),
     tokenFile: join(root, 'credentials', 'token'),
     curlConfig: join(root, 'credentials', 'curl.conf'),
@@ -624,6 +633,7 @@ test('failed prepare compensation quarantines ownership uncertainty and blocks a
     commit: exactCommit,
     variant: 'buggy-v1',
     productPort: 41734,
+    cleanupItemKey: 'cleanup_risk_environment',
     stateRoot: join(root, 'state'),
     tokenFile: join(root, 'credentials', 'token'),
     curlConfig: join(root, 'credentials', 'curl.conf'),
@@ -685,6 +695,7 @@ test('shutdown stops admission but waits for a disconnected in-flight operation 
     commit: exactCommit,
     variant: 'buggy-v1',
     productPort: 41733,
+    cleanupItemKey: 'cleanup_risk_environment',
     stateRoot: join(root, 'state'),
     tokenFile: join(root, 'credentials', 'token'),
     curlConfig: join(root, 'credentials', 'curl.conf'),
