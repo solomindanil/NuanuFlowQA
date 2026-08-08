@@ -61,6 +61,22 @@ CLAUDE.local.md     private product context for the agent (gitignored)
 
 Local-only by design: product credentials (`.env`), real test cases, per-product specs and agent context never leave your machine.
 
+## PayDemo
+
+PayDemo is a self-contained, simulated checkout used to exercise the QA harness. It uses only a local Node HTTP server and a browser page; it has no provider, credentials, network calls, or real money movement.
+
+```bash
+npm run build:paydemo       # writes ignored dist/paydemo/build-manifest.json
+npm run start:paydemo       # build and serve fixed-v2 on http://127.0.0.1:4173
+npm run test:paydemo        # fixed-v2: 6 normal Playwright checks
+npm run test:paydemo:bugs   # buggy-v1: 3 intentional expected failures
+npm run verify:paydemo      # build plus both suites
+```
+
+`/build-info` exposes the exact Git commit, source content SHA-256, source-file list, and variant used to produce the local build. `POST /api/reset` accepts only a bounded `runId` and clears only that in-memory run; it cannot clear another run or persistent data.
+
+The default `fixed-v2` rejects forged client amounts, sends the selected payment method, disables duplicate submission, and reuses a payment for the same idempotency key. `buggy-v1` is deliberately isolated to the three corresponding defects so the controlled suite can demonstrate their detection.
+
 ## Scaling to large products
 
 Templates and config are ready for big suites: Page Objects + fixtures (`tests/_template/pages/`, `tests/_template/fixtures.ts`), an API-layer spec template, a cross-browser matrix per product (`browsers` option in `playwright.config.ts`), one-login-per-run auth via storageState (`authSetup` option), and a ready CI pipeline (`.github/workflows/e2e.yml`: manual + nightly, JUnit + HTML artifacts, sharding hint). Details in the `/qa-check` skill, section "Scaling to large products".
