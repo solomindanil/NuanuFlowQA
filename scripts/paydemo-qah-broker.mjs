@@ -313,22 +313,22 @@ function prepareArguments(configuration) {
   ];
 }
 
-function cleanupArguments(configuration, pidFile) {
+function cleanupArguments(configuration, pidFile, itemKey = configuration.cleanupItemKey) {
   return [
     'cleanup',
     '--environment-id', configuration.environmentId,
     '--state-root', configuration.stateRoot,
     '--pid-file', pidFile,
-    '--item-key', configuration.cleanupItemKey,
+    '--item-key', itemKey,
   ];
 }
 
-async function makeInvocation(configuration, mode, pidFile) {
+async function makeInvocation(configuration, mode, pidFile, itemKey) {
   const script = await realpath(ENVIRONMENT_SCRIPT);
   const command = await realpath(process.execPath);
   const args = mode === 'prepare'
     ? prepareArguments(configuration)
-    : cleanupArguments(configuration, pidFile);
+    : cleanupArguments(configuration, pidFile, itemKey);
   return {
     mode,
     command,
@@ -430,8 +430,13 @@ function validatePrepareEnvelope(envelope, configuration) {
   return envelope;
 }
 
-function validateCleanupEnvelope(envelope, configuration, pidFile) {
-  validateCommonEnvelope(envelope, configuration.cleanupItemKey);
+function validateCleanupEnvelope(
+  envelope,
+  configuration,
+  pidFile,
+  itemKey = configuration.cleanupItemKey,
+) {
+  validateCommonEnvelope(envelope, itemKey);
   const data = envelope.item.data;
   if (
     !exactKeys(data, ['environment_id', 'environment_status', 'pid_file'])
@@ -507,15 +512,17 @@ async function readJsonBody(request, declaredLength) {
 
 function parseRequest(path, value) {
   const prepare = path === '/v1/prepare';
-  const keys = prepare
-    ? ['campaign_id', 'environment_id', 'idempotency_key']
-    : ['campaign_id', 'environment_id', 'idempotency_key', 'lease'];
+  const keysAreExact = prepare
+    ? exactKeys(value, ['campaign_id', 'environment_id', 'idempotency_key'])
+    : exactKeys(value, ['campaign_id', 'environment_id', 'idempotency_key', 'lease'])
+      || exactKeys(value, ['campaign_id', 'environment_id', 'idempotency_key', 'item_key', 'lease']);
   if (
-    !exactKeys(value, keys)
+    !keysAreExact
     || !IDENTIFIER.test(value.campaign_id ?? '')
     || !IDENTIFIER.test(value.environment_id ?? '')
     || !IDEMPOTENCY_KEY.test(value.idempotency_key ?? '')
     || (!prepare && !UUID_V4.test(value.lease ?? ''))
+    || (!prepare && value.item_key !== undefined && !ALLOWED_CLEANUP_ITEM_KEYS.has(value.item_key))
   ) {
     throw new PublicError(400, 'INVALID_REQUEST');
   }
@@ -563,8 +570,8 @@ export async function createPayDemoBroker({ configuration: rawConfiguration, exe
     auditEvent('state_transition', { from, to, request_hash: requestHash });
   }
 
-  async function invoke(mode, pidFile) {
-    const invocation = await makeInvocation(configuration, mode, pidFile);
+  async function invoke(mode, pidFile, itemKey) {
+    const invocation = await makeInvocation(configuration, mode, pidFile, itemKey);
     return parseEnvironmentOutput(await executor(invocation));
   }
 
@@ -616,11 +623,13 @@ export async function createPayDemoBroker({ configuration: rawConfiguration, exe
     if (!safeEqual(request.lease, instanceNonce)) return errorResult(403, 'INVALID_LEASE');
     transition('CLEANING', requestHash);
     const cleanupPidFile = ownedPidFile;
+    const cleanupItemKey = request.item_key ?? configuration.cleanupItemKey;
     try {
       const envelope = validateCleanupEnvelope(
-        await invoke('cleanup', cleanupPidFile),
+        await invoke('cleanup', cleanupPidFile, cleanupItemKey),
         configuration,
         cleanupPidFile,
+        cleanupItemKey,
       );
       ownedPidFile = undefined;
       instanceNonce = undefined;

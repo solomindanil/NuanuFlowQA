@@ -53,10 +53,10 @@ function prepareEnvelope(configuration, instanceNonce, pidFile) {
   };
 }
 
-function cleanupEnvelope(configuration, pidFile, status = 'STOPPED') {
+function cleanupEnvelope(configuration, pidFile, status = 'STOPPED', itemKey = configuration.cleanupItemKey) {
   return {
     item: {
-      key: configuration.cleanupItemKey,
+      key: itemKey,
       description: status === 'STOPPED'
         ? 'Изолированное окружение PayDemo остановлено.'
         : 'Изолированное окружение PayDemo уже отсутствует.',
@@ -72,6 +72,80 @@ function cleanupEnvelope(configuration, pidFile, status = 'STOPPED') {
     },
   };
 }
+
+test('cleanup accepts only an explicitly selected closed Process step key', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'paydemo-broker-cleanup-key-test-'));
+  const configuration = {
+    host: '127.0.0.1',
+    port: 0,
+    campaignId,
+    environmentId,
+    repository: trustedRepository,
+    commit: exactCommit,
+    variant: 'buggy-v1',
+    productPort: 41739,
+    cleanupItemKey: 'cleanup_risk_environment',
+    stateRoot: join(root, 'state'),
+    tokenFile: join(root, 'credentials', 'broker.token'),
+    curlConfig: join(root, 'credentials', 'broker.curlrc'),
+  };
+  await mkdir(join(root, 'credentials'), { recursive: true, mode: 0o700 });
+  const pidFile = join(configuration.stateRoot, environmentId, 'server.pid');
+  const invocations = [];
+  const broker = await createPayDemoBroker({
+    configuration,
+    executeEnvironment: async (invocation) => {
+      invocations.push(invocation);
+      if (invocation.mode === 'prepare') return prepareEnvelope(configuration, firstNonce, pidFile);
+      const itemKey = invocation.args.at(-1);
+      return cleanupEnvelope(configuration, pidFile, 'STOPPED', itemKey);
+    },
+  });
+  t.after(async () => {
+    await broker.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  await broker.listen();
+  const address = broker.address();
+  const origin = `http://127.0.0.1:${address.port}`;
+  const token = (await readFile(configuration.tokenFile, 'utf8')).trim();
+  const prepared = await postJson(origin, '/v1/prepare', {
+    token,
+    body: {
+      campaign_id: campaignId,
+      environment_id: environmentId,
+      idempotency_key: 'prepare-cleanup-key-test-01',
+    },
+  });
+  assert.equal(prepared.status, 200, prepared.text);
+
+  const rejected = await postJson(origin, '/v1/cleanup', {
+    token,
+    body: {
+      campaign_id: campaignId,
+      environment_id: environmentId,
+      idempotency_key: 'cleanup-key-rejected-0001',
+      lease: firstNonce,
+      item_key: 'caller_selected_cleanup',
+    },
+  });
+  assert.equal(rejected.status, 400, rejected.text);
+  assert.deepEqual(rejected.json, errorEnvelope('INVALID_REQUEST'));
+
+  const cleaned = await postJson(origin, '/v1/cleanup', {
+    token,
+    body: {
+      campaign_id: campaignId,
+      environment_id: environmentId,
+      idempotency_key: 'cleanup-clean-step-000001',
+      lease: firstNonce,
+      item_key: 'cleanup_clean_environment',
+    },
+  });
+  assert.equal(cleaned.status, 200, cleaned.text);
+  assert.equal(cleaned.json.item.key, 'cleanup_clean_environment');
+  assert.deepEqual(invocations.at(-1).args.slice(-2), ['--item-key', 'cleanup_clean_environment']);
+});
 
 function errorEnvelope(code) {
   return { error: { code } };
