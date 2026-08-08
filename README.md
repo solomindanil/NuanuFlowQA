@@ -69,6 +69,7 @@ PayDemo is a self-contained, simulated checkout used to exercise the QA harness.
 npm run build:paydemo       # writes ignored dist/paydemo/build-manifest.json
 npm run start:paydemo       # build and serve fixed-v2 on http://127.0.0.1:4173
 npm run test:paydemo:harness    # deterministic probe, synthesis, and environment contracts
+npm run test:paydemo:broker     # loopback broker security, replay, lifecycle, and fail-closed checks
 npm run test:paydemo:provenance # clean Git source and served-byte provenance
 npm run test:paydemo:identity   # runtime identity and immutable served-byte checks
 npm run test:paydemo        # fixed-v2: 6 normal Playwright checks
@@ -79,6 +80,27 @@ npm run verify:paydemo      # all harness, provenance, identity, fixed, and defe
 `dist/paydemo/build-manifest.json` pins the exact Git commit, source hash/file set, and hash/file set of the bytes actually served. The server verifies both sets before listening and snapshots verified public bytes in memory. `/build-info` exposes only the closed six-field runtime identity needed by remote probes: app, variant, commit, served-content hash, environment id, and instance nonce. `POST /api/reset` accepts only a bounded `runId` and clears only that in-memory run; it cannot clear another run or persistent data.
 
 The default `fixed-v2` rejects forged client amounts, sends the selected payment method, disables duplicate submission, and reuses a payment for the same idempotency key. `buggy-v1` is deliberately isolated to the three corresponding defects so the controlled suite can demonstrate their detection.
+
+### Nuanu Flow environment broker
+
+The broker gives sandboxed Nuanu Flow tasks a narrow loopback capability without giving them repository, process, or filesystem choices. An operator fixes one campaign profile at broker startup; an agent request contains only `campaign_id`, `environment_id`, and `idempotency_key`. Cleanup additionally supplies the `instance_nonce` emitted by prepare as `lease`. HTTP responses remain the exact `{item, artifact_outputs}` Agent Task envelope.
+
+```bash
+export PAYDEMO_QAH_BROKER_CAMPAIGN_ID=paydemo-demo
+export PAYDEMO_QAH_BROKER_ENVIRONMENT_ID=paydemo-buggy
+export PAYDEMO_QAH_BROKER_REPOSITORY=https://github.com/solomindanil/NuanuFlowQA.git
+export PAYDEMO_QAH_BROKER_COMMIT=<exact-40-character-commit>
+export PAYDEMO_QAH_BROKER_VARIANT=buggy-v1
+export PAYDEMO_QAH_BROKER_PRODUCT_PORT=4173
+export PAYDEMO_QAH_BROKER_STATE_ROOT=/absolute/operator-owned/paydemo-state
+node scripts/paydemo-qah-broker.mjs \
+  --token-file /absolute/scoped-capability/broker.token \
+  --curl-config /absolute/scoped-capability/broker.curl.conf
+```
+
+The broker binds only literal `127.0.0.1`, generates owner-only (`0600`) credential files, accepts only the configured exact HTTPS repository/commit/variant/port/state-root tuple, and invokes the environment CLI with absolute executable paths, explicit arguments, `shell:false`, and a minimal environment. The agent uses `curl --config /absolute/scoped-capability/broker.curl.conf`; no bearer token is placed in its prompt, command arguments, standard output, or BPMN fields. That readable config is a scoped demo capability, not proof of per-task identity, so its directory must be exposed only to the intended worker account.
+
+State and the bounded idempotency replay window live for one broker process. Shutdown stops admission and drains in-flight CLI work but deliberately does not kill a ready product. Invalid or uncertain prepare/cleanup output moves the profile to `QUARANTINED`; stop the broker, reconcile through the ownership-checking `paydemo-qah-environment.mjs cleanup` command with the fixed profile paths, then restart it. The pilot does not yet persist broker state across host restarts or provide per-task attribution.
 
 ## Scaling to large products
 

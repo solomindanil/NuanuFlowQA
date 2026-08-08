@@ -7,7 +7,8 @@
   "scripts": {
     "build:paydemo": "PAYDEMO_VARIANT=fixed-v2 node scripts/build-paydemo.mjs",
     "start:paydemo": "npm run build:paydemo && PAYDEMO_VARIANT=fixed-v2 node apps/paydemo/server.mjs",
-    "test:paydemo:harness": "node --test tests/paydemo-probe/*.mjs tests/paydemo-synthesize/*.mjs tests/paydemo-environment/*.mjs",
+    "test:paydemo:harness": "node --test tests/paydemo-probe/*.mjs tests/paydemo-synthesize/*.mjs tests/paydemo-environment/*.mjs tests/paydemo-broker/*.mjs",
+    "test:paydemo:broker": "node --test tests/paydemo-broker/*.mjs",
     "test:paydemo:provenance": "node --test tests/paydemo/build-provenance.test.mjs",
     "test:paydemo:identity": "node --test tests/paydemo/server-identity.test.mjs",
     "test:paydemo": "PAYDEMO_SUITE=fixed PAYDEMO_VARIANT=fixed-v2 playwright test --config=playwright.paydemo.config.ts",
