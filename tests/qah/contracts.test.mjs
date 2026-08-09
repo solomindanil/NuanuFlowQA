@@ -47,6 +47,12 @@ function profile(overrides = {}) {
       ui: ["node", "scripts/qah/adapters/paydemo.mjs", "ui"],
       domain: ["node", "scripts/qah/adapters/paydemo.mjs", "domain"],
     },
+    outcome_codes: {
+      code: { pass: ["COMMAND_PASSED"], fail: ["COMMAND_FAILED"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "TRANSPORT_FAILURE"], skipped: ["NOT_APPLICABLE"] },
+      api: { pass: ["API_CONTRACT_VERIFIED", "AMOUNT_REJECTED"], fail: ["API_CONTRACT_VIOLATION", "AMOUNT_MISMATCH_ACCEPTED"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "ADAPTER_EXIT_FAILURE", "INVALID_ADAPTER_OUTPUT", "TRANSPORT_FAILURE", "AMOUNT_PROBE_UNAVAILABLE"], skipped: ["NOT_APPLICABLE"] },
+      ui: { pass: ["UI_FLOW_VERIFIED", "BANK_TRANSFER_CONFIRMED"], fail: ["BANK_SHOWN_AS_CARD", "BANK_UI_CONTRACT_VIOLATION"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "ADAPTER_EXIT_FAILURE", "INVALID_ADAPTER_OUTPUT", "TRANSPORT_FAILURE", "UI_PROBE_UNAVAILABLE"], skipped: ["NOT_APPLICABLE"] },
+      domain: { pass: ["DOMAIN_RULE_VERIFIED", "IDEMPOTENT_REPLAY"], fail: ["DUPLICATE_PAYMENT_IDS", "IDEMPOTENCY_CONTRACT_VIOLATION"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "ADAPTER_EXIT_FAILURE", "INVALID_ADAPTER_OUTPUT", "TRANSPORT_FAILURE", "IDEMPOTENCY_PROBE_UNAVAILABLE"], skipped: ["NOT_APPLICABLE"] },
+    },
     safety: {
       mutation_mode: "sandbox_only",
       irreversible_actions: "deny",
@@ -162,6 +168,16 @@ test("profile rejects shell strings, secrets, and unknown keys", () => {
 
 test("profile accepts safe named command arrays", () => {
   assert.deepEqual(validateProfile(profile()), profile());
+});
+
+test("profile requires a closed per-branch outcome code mapping", async () => {
+  assert.deepEqual(validateProfile(profile()), profile());
+  const missing = profile();
+  delete missing.outcome_codes;
+  assert.throws(() => validateProfile(missing), /outcome_codes/);
+  assert.throws(() => validateProfile(profile({ outcome_codes: { ...profile().outcome_codes, api: { ...profile().outcome_codes.api, pass: ["BAD-CODE"] } } })), /outcome_codes/);
+  const schema = JSON.parse(await readFile(new URL("../../schemas/qah/project-profile.schema.json", import.meta.url), "utf8"));
+  assert.ok(schema.required.includes("outcome_codes"));
 });
 
 test("profile accepts only the exact lease-free environment none contract", () => {

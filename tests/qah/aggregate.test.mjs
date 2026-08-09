@@ -54,6 +54,12 @@ function profile(overrides = {}) {
     repository: { allowed_origin: repositoryOrigin },
     environment: { strategy: "managed_command", prepare_command: ["node", "prepare.mjs"], cleanup_command: ["node", "cleanup.mjs"], health_path: "/build-info" },
     checks: { code: ["npm", "run", "typecheck"], api: ["node", "adapter.mjs", "api"], ui: ["node", "adapter.mjs", "ui"], domain: ["node", "adapter.mjs", "domain"] },
+    outcome_codes: {
+      code: { pass: ["COMMAND_PASSED"], fail: ["COMMAND_FAILED"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "TRANSPORT_FAILURE"], skipped: ["NOT_APPLICABLE"] },
+      api: { pass: ["API_CONTRACT_VERIFIED"], fail: ["API_CONTRACT_VIOLATION"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "ADAPTER_EXIT_FAILURE", "INVALID_ADAPTER_OUTPUT", "TRANSPORT_FAILURE"], skipped: ["NOT_APPLICABLE"] },
+      ui: { pass: ["UI_FLOW_VERIFIED"], fail: ["UI_CONTRACT_VIOLATION"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "ADAPTER_EXIT_FAILURE", "INVALID_ADAPTER_OUTPUT", "TRANSPORT_FAILURE"], skipped: ["NOT_APPLICABLE"] },
+      domain: { pass: ["DOMAIN_RULE_VERIFIED"], fail: ["DOMAIN_CONTRACT_VIOLATION"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "ADAPTER_EXIT_FAILURE", "INVALID_ADAPTER_OUTPUT", "TRANSPORT_FAILURE"], skipped: ["NOT_APPLICABLE"] },
+    },
     safety: { mutation_mode: "sandbox_only", irreversible_actions: "deny", secret_output: "deny", allowed_origins: ["http://127.0.0.1:4173"] },
     execution: { shell: false, environment: "minimal", timeout_ms: 2_000, max_output_bytes: 32_768 },
     test_data: { profiles: ["default", "sandbox"] },
@@ -386,6 +392,26 @@ qtest("trusted resolver makes clean UI, API, mixed, and docs inputs deterministi
     assert.equal(first.confidence_threshold, fixture.profile.risk.confidence_threshold);
     assert.equal(canonicalJson(first), canonicalJson(second));
   }
+});
+
+qtest("aggregate accepts arbitrary project outcome codes only through the trusted profile mapping", async () => {
+  const outcome_codes = Object.fromEntries(BRANCHES.map((branch) => [branch, {
+    pass: [`${branch.toUpperCase()}_READY`],
+    fail: [`${branch.toUpperCase()}_FAILED`],
+    infra: [`${branch.toUpperCase()}_INFRA`],
+    skipped: [`${branch.toUpperCase()}_SKIPPED`],
+  }]));
+  const entryOverrides = Object.fromEntries(BRANCHES.map((branch) => [branch, { code: `${branch.toUpperCase()}_READY` }]));
+  const fixture = aggregateFixture({ profileOverrides: { outcome_codes }, entryOverrides });
+  const aggregate = await aggregateFixtureResult(fixture);
+  assert.equal(aggregate.invariants_passed, true);
+  assert.deepEqual(aggregate.reason_codes, []);
+  const undeclared = aggregateFixture({ profileOverrides: { outcome_codes }, entryOverrides: { ...entryOverrides, api: { code: "PRODUCT_MAGIC" } } });
+  assert.equal((await aggregateFixtureResult(undeclared)).reason_codes.includes("UNKNOWN_CODE"), true);
+  const skippedApplicability = Object.fromEntries(BRANCHES.map((branch) => [branch, "NOT_APPLICABLE"]));
+  const skippedOverrides = Object.fromEntries(BRANCHES.map((branch) => [branch, { code: `${branch.toUpperCase()}_SKIPPED` }]));
+  const skipped = aggregateFixture({ applicability: skippedApplicability, profileOverrides: { outcome_codes }, entryOverrides: skippedOverrides });
+  assert.equal((await aggregateFixtureResult(skipped)).invariants_passed, true);
 });
 
 qtest("trusted full TestPlan rejects consistently rehashed extra top-level and nested keys", async () => {

@@ -125,10 +125,15 @@ export function renderComment(input) {
   return { marker, comment_html: html, comment_html_sha256: sha256(html) };
 }
 
-function exactLinkSet(links, expected) {
-  if (!Array.isArray(links) || links.length !== expected.length) return false;
-  const normalize = (values) => values.map((link) => canonicalJson(link)).sort();
-  return same(normalize(links), normalize(expected));
+function validReviewLinks(links, expected, input) {
+  if (!Array.isArray(links) || links.length < expected.length || links.length > expected.length + 1) return false;
+  if (links.some((link) => !exactKeys(link, ["entity_type", "entity_id", "relation"]))) return false;
+  const normalized = links.map((link) => canonicalJson(link));
+  if (new Set(normalized).size !== normalized.length) return false;
+  const actual = new Set(normalized);
+  if (expected.some((link) => !actual.has(canonicalJson(link)))) return false;
+  const optional = canonicalJson({ entity_type: "work_item", entity_id: input.issue_id, relation: "about" });
+  return normalized.every((link) => expected.some((required) => canonicalJson(required) === link) || link === optional);
 }
 
 function expectedReviewLinks(input, runId) {
@@ -171,7 +176,7 @@ export async function resolveTrustedPublication(input, dependencies) {
     || !same(payload.source_artifact, input.source_artifact)
     || payload.aggregate?.workspace_id !== input.workspace_id || !same(payload.aggregate?.source_artifact, input.source_artifact)
     || !UUID.test(payload.aggregate?.run_id ?? "")
-    || !exactLinkSet(review.links, expectedReviewLinks(input, payload.aggregate.run_id))) throw new CommentPolicyError("REVIEW_BUNDLE_MISMATCH");
+    || !validReviewLinks(review.links, expectedReviewLinks(input, payload.aggregate.run_id), input)) throw new CommentPolicyError("REVIEW_BUNDLE_MISMATCH");
   const validated = await validateAggregateForDecision(payload.aggregate, dependencies);
   if (!validated.valid) throw new CommentPolicyError("INVALID_AGGREGATE");
   const decision = await decideRelease(validated.aggregate, {}, dependencies);

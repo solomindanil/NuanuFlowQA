@@ -1,17 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
-import { runBranch as productionRunBranch } from "../../scripts/qah/run-branch.mjs";
+import { materializeBranchFiles, runBranch as productionRunBranch } from "../../scripts/qah/run-branch.mjs";
 import { runPaydemoAdapter } from "../../scripts/qah/adapters/paydemo.mjs";
 import * as paydemoAdapterModule from "../../scripts/qah/adapters/paydemo.mjs";
 import { targetNamespace } from "../../scripts/qah/environment.mjs";
 import { validateProfile } from "../../scripts/qah/contracts.mjs";
 import YAML from "yaml";
 import { chromium as realChromium } from "@playwright/test";
+import { aggregateFixture, aggregateFixtureResult, rewriteMaterial } from "./aggregate.test.mjs?fixtures-only";
 
 const commit = "a".repeat(40);
 const contentHash = `sha256:${"c".repeat(64)}`;
@@ -34,6 +36,12 @@ function profile(overrides = {}) {
       api: ["node", "adapters/product.mjs", "api"],
       ui: ["node", "adapters/product.mjs", "ui"],
       domain: ["node", "adapters/product.mjs", "domain"],
+    },
+    outcome_codes: {
+      code: { pass: ["COMMAND_PASSED"], fail: ["COMMAND_FAILED"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "TRANSPORT_FAILURE"], skipped: ["NOT_APPLICABLE"] },
+      api: { pass: ["API_CONTRACT_VERIFIED"], fail: ["API_CONTRACT_VIOLATION"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "ADAPTER_EXIT_FAILURE", "INVALID_ADAPTER_OUTPUT", "TRANSPORT_FAILURE"], skipped: ["NOT_APPLICABLE"] },
+      ui: { pass: ["UI_FLOW_VERIFIED"], fail: ["UI_CONTRACT_VIOLATION"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "ADAPTER_EXIT_FAILURE", "INVALID_ADAPTER_OUTPUT", "TRANSPORT_FAILURE"], skipped: ["NOT_APPLICABLE"] },
+      domain: { pass: ["DOMAIN_RULE_VERIFIED"], fail: ["DOMAIN_CONTRACT_VIOLATION"], infra: ["ENVIRONMENT_NOT_READY", "ENVIRONMENT_VERIFICATION_FAILED", "ADAPTER_EXIT_FAILURE", "INVALID_ADAPTER_OUTPUT", "TRANSPORT_FAILURE"], skipped: ["NOT_APPLICABLE"] },
     },
     safety: {
       mutation_mode: "sandbox_only",
@@ -250,6 +258,101 @@ test("all four branches produce the closed fixture result and one evidence-repor
     assert.equal(result.envelope.artifact_outputs["item.artifacts.evidence_report"], null);
     assert.equal(result.envelope.item.data.evidence_sha256, sha256(result.envelope.item.data.evidence_candidate));
   }
+});
+
+test("profile-declared arbitrary outcome codes classify Task 4 without core product literals", async () => {
+  const outcome_codes = Object.fromEntries(["code", "api", "ui", "domain"].map((branch) => [branch, {
+    pass: [`${branch.toUpperCase()}_READY`],
+    fail: [`${branch.toUpperCase()}_FAILED`],
+    infra: [`${branch.toUpperCase()}_INFRA`],
+    skipped: [`${branch.toUpperCase()}_SKIPPED`],
+  }]));
+  const rawProfile = profile({ outcome_codes });
+  const rawPlan = plan(rawProfile);
+  const result = await runBranch({
+    branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+    execute: async () => ({ exitCode: 0, signal: null, stdout: canonicalJson(reviewAdapterResult("api", { code: "API_READY" })), stderr: "" }),
+  });
+  assert.equal(result.envelope.item.data.code, "API_READY");
+  const undeclared = await runBranch({
+    branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+    execute: async () => ({ exitCode: 0, signal: null, stdout: canonicalJson(reviewAdapterResult("api", { code: "PRODUCT_SPECIFIC_MAGIC" })), stderr: "" }),
+  });
+  assert.equal(undeclared.envelope.item.data.code, "API_INFRA");
+  const skippedPlan = plan(rawProfile, { code: "NOT_APPLICABLE", api: "NOT_APPLICABLE", ui: "NOT_APPLICABLE", domain: "NOT_APPLICABLE" });
+  const skipped = await runBranch({
+    branch: "api", plan: skippedPlan, profile: rawProfile,
+    environmentReceipt: { environment_status: "NOT_REQUIRED", run_id: "run-1", attempt_id: "attempt-1", environment_id: "generic-env", target_namespace: targetNamespace({ runId: "run-1", attemptId: "attempt-1", environmentId: "generic-env" }) },
+    runId: "run-1", attemptId: "attempt-1",
+  });
+  assert.equal(skipped.envelope.item.data.code, "API_SKIPPED");
+  const codeReady = await runBranch({
+    branch: "code", plan: rawPlan, profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+    execute: async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }),
+    dependencies: { verifyEnvironment: async ({ receipt }) => ({ receipt, checkout: "/tmp/qah/verified" }) },
+  });
+  assert.equal(codeReady.envelope.item.data.code, "CODE_READY");
+  const codeInfra = await runBranch({
+    branch: "code", plan: rawPlan, profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+    execute: async () => { throw new Error("transport"); },
+    dependencies: { verifyEnvironment: async ({ receipt }) => ({ receipt, checkout: "/tmp/qah/verified" }) },
+  });
+  assert.equal(codeInfra.envelope.item.data.code, "CODE_INFRA");
+});
+
+test("Task 4 materializes exactly three canonical files with digest and Artifact cross-links", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "qah-branch-material-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const rawProfile = profile();
+  const rawPlan = plan(rawProfile, { code: "NOT_APPLICABLE", api: "NOT_APPLICABLE", ui: "NOT_APPLICABLE", domain: "NOT_APPLICABLE" });
+  const receipt = { environment_status: "NOT_REQUIRED", run_id: "run-1", attempt_id: "attempt-1", environment_id: "generic-env", target_namespace: targetNamespace({ runId: "run-1", attemptId: "attempt-1", environmentId: "generic-env" }) };
+  const output = await runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: receipt, runId: "run-1", attemptId: "attempt-1" });
+  const refs = {
+    branch_payload: { artifact_id: "11111111-1111-4111-8111-111111111111", version_id: "22222222-2222-4222-8222-222222222222", kind: "document", role: "output" },
+    occurrence: { artifact_id: "33333333-3333-4333-8333-333333333333", version_id: "44444444-4444-4444-8444-444444444444", kind: "document", role: "evidence" },
+    evidence: { artifact_id: "55555555-5555-4555-8555-555555555555", version_id: "66666666-6666-4666-8666-666666666666", kind: "document", role: "evidence" },
+  };
+  const result = await materializeBranchFiles({ output, plan: rawPlan, environmentReceipt: receipt, repositoryOrigin: rawProfile.repository.allowed_origin, refs, outputDir: root });
+  assert.deepEqual((await readdir(root)).sort(), ["branch-payload.json", "evidence.json", "occurrence.json"]);
+  const payloadBytes = await readFile(join(root, "branch-payload.json"), "utf8");
+  const evidence = JSON.parse(await readFile(join(root, "evidence.json"), "utf8"));
+  const occurrence = JSON.parse(await readFile(join(root, "occurrence.json"), "utf8"));
+  assert.equal(evidence.branch_payload_sha256, `sha256:${createHash("sha256").update(payloadBytes).digest("hex")}`);
+  assert.deepEqual(occurrence.branch_payload_artifact, refs.branch_payload);
+  assert.deepEqual(occurrence.evidence_artifact, refs.evidence);
+  const { occurrence_key, ...unsigned } = occurrence;
+  assert.equal(occurrence_key, sha256(unsigned));
+  assert.deepEqual(result.refs, refs);
+});
+
+test("Task 4 files and actual refs form a complete branch-to-aggregate chain", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "qah-branch-chain-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = aggregateFixture();
+  for (const [index, entry] of fixture.input.branches.entries()) {
+    const directory = join(root, entry.output.branch_result.branch);
+    const pending = structuredClone(entry.output);
+    pending.envelope.item.artifacts = {};
+    pending.envelope.artifact_outputs = { "item.artifacts.evidence_report": null };
+    const materialized = await materializeBranchFiles({
+      output: pending,
+      plan: fixture.plan,
+      environmentReceipt: fixture.input.environment_receipt,
+      repositoryOrigin: fixture.input.repository_origin,
+      refs: entry.artifacts,
+      outputDir: directory,
+    });
+    for (const [slot, filename] of Object.entries({ branch_payload: "branch-payload.json", occurrence: "occurrence.json", evidence: "evidence.json" })) {
+      rewriteMaterial(fixture.store, materialized.refs[slot], JSON.parse(await readFile(join(directory, filename), "utf8")));
+    }
+    fixture.input.branches[index] = { output: materialized.output, artifacts: materialized.refs };
+  }
+  const aggregate = await aggregateFixtureResult(fixture);
+  assert.equal(aggregate.invariants_passed, true);
+  assert.deepEqual(aggregate.reason_codes, []);
+  assert.deepEqual(aggregate.branches.map(({ branch, validity }) => [branch, validity]), [
+    ["code", "VALID"], ["api", "VALID"], ["ui", "VALID"], ["domain", "VALID"],
+  ]);
 });
 
 test("NOT_APPLICABLE UI emits verified SKIPPED without executing Playwright", async () => {

@@ -27,12 +27,6 @@ const PROFILE_BINDING_KEYS = ["artifact", "profile_blob_sha256", "profile_digest
 const IDENTITY_KEYS = ["source_artifact", "plan_artifact", "profile_artifact", "plan_sha256", "profile_blob_sha256", "profile_digest", "project_key", "repository_origin", "commit", "content_hash", "environment_id", "target_namespace", "instance_nonce", "run_id", "attempt_id"];
 const SYSTEM_ROLES = new Set(["output", "implementation", "evidence", "source"]);
 const EXPLANATION_CODES = new Set(["EVIDENCE_VERIFIED", "EVIDENCE_INCOMPLETE", "POLICY_BLOCKED"]);
-const PASS_CODES = Object.freeze({
-  code: new Set(["COMMAND_PASSED"]),
-  api: new Set(["API_CONTRACT_VERIFIED", "AMOUNT_REJECTED"]),
-  ui: new Set(["UI_FLOW_VERIFIED", "BANK_TRANSFER_CONFIRMED"]),
-  domain: new Set(["DOMAIN_RULE_VERIFIED", "IDEMPOTENT_REPLAY"]),
-});
 const AUTHENTICATED_OUTCOME_REASONS = new Set([
   "CONFIRMED_FINDINGS", "EVIDENCE_NOT_VERIFIED", "INFRA_FAILURE", "LOW_CONFIDENCE",
   "PRODUCT_FAILURE", "REQUIRED_BRANCH_NOT_PASS",
@@ -181,9 +175,9 @@ function validateAggregate(aggregate) {
       || branch.confirmed_findings !== 0
       || !exactKeys(branch.identity, IDENTITY_KEYS) || !same(branch.identity, expectedIdentity);
     if (branch.applicability === "REQUIRED") {
-      invalidPolicy ||= branch.product_result !== "PASS" || !PASS_CODES[branch.branch]?.has(branch.code);
+      invalidPolicy ||= branch.product_result !== "PASS" || typeof branch.code !== "string" || branch.code.length < 1;
       invalidPolicy ||= branch.environment_status !== "HEALTHY";
-    } else invalidPolicy ||= branch.product_result !== "SKIPPED" || branch.code !== "NOT_APPLICABLE" || !["HEALTHY", "NOT_REQUIRED"].includes(branch.environment_status);
+    } else invalidPolicy ||= branch.product_result !== "SKIPPED" || typeof branch.code !== "string" || branch.code.length < 1 || !["HEALTHY", "NOT_REQUIRED"].includes(branch.environment_status);
     if (!exactKeys(branch.artifacts, ["branch_payload", "occurrence", "evidence"])) invalidPolicy = true;
     else for (const [slot, material] of Object.entries(branch.artifacts)) {
       if (!slotRef(material, slot)) invalidPolicy = true;
@@ -300,6 +294,7 @@ async function validateTrustedArtifactBindings(aggregate, dependencies) {
       planArtifactLink: aggregate?.plan_artifact,
       profileArtifactLink: aggregate?.profile_artifact,
       profileBlobSha256: aggregate?.profile_blob_sha256,
+      profile: commitProfile?.payload,
     }, materials);
     authoritativeBranches.push(normalized.record);
     for (const reason of normalized.reasons) authoritativeReasons.add(reason);

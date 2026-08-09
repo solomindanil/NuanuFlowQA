@@ -11,6 +11,7 @@ const profile = {
   repository: { allowed_origin: "https://github.com/solomindanil/NuanuFlowQA.git" },
   environment: { strategy: "managed_command", prepare_command: ["node", "prepare"], cleanup_command: ["node", "cleanup"], health_path: "/build-info" },
   checks: { code: ["npm", "run", "typecheck"], api: ["node", "api"], ui: ["node", "ui"], domain: ["node", "domain"] },
+  outcome_codes: Object.fromEntries(["code", "api", "ui", "domain"].map((branch) => [branch, { pass: [`${branch.toUpperCase()}_PASS`], fail: [`${branch.toUpperCase()}_FAIL`], infra: [`${branch.toUpperCase()}_INFRA`], skipped: [`${branch.toUpperCase()}_SKIPPED`] }])),
   safety: { mutation_mode: "sandbox_only", irreversible_actions: "deny", secret_output: "deny", allowed_origins: ["http://127.0.0.1"] },
   execution: { shell: false, environment: "minimal", timeout_ms: 300000, max_output_bytes: 1048576 },
   test_data: { profiles: ["default"] },

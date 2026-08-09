@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { canonicalJson, sha256 } from "./canonical.mjs";
-import { BRANCHES, validateBranchResult, validateTestPlan } from "./contracts.mjs";
+import { BRANCHES, validateBranchResult, validateOutcomeCode, validateTestPlan } from "./contracts.mjs";
 import { parseProfileBytes } from "./profile.mjs";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -53,20 +53,6 @@ export const ARTIFACT_SLOT_POLICY = Object.freeze({
   evidence: Object.freeze({ kind: "document", role: "evidence", name: "evidence.json", media_type: "application/json" }),
   review_bundle: Object.freeze({ kind: "document", role: "evidence", name: "review-bundle.json", media_type: "application/json" }),
 });
-const PASS_CODES = Object.freeze({
-  code: new Set(["COMMAND_PASSED"]),
-  api: new Set(["API_CONTRACT_VERIFIED", "AMOUNT_REJECTED"]),
-  ui: new Set(["UI_FLOW_VERIFIED", "BANK_TRANSFER_CONFIRMED"]),
-  domain: new Set(["DOMAIN_RULE_VERIFIED", "IDEMPOTENT_REPLAY"]),
-});
-const CLOSED_CODES = new Set([
-  "NOT_APPLICABLE", "COMMAND_PASSED", "COMMAND_FAILED", "API_CONTRACT_VERIFIED", "AMOUNT_REJECTED",
-  "UI_FLOW_VERIFIED", "BANK_TRANSFER_CONFIRMED", "DOMAIN_RULE_VERIFIED", "IDEMPOTENT_REPLAY",
-  "API_CONTRACT_VIOLATION", "AMOUNT_MISMATCH_ACCEPTED", "BANK_SHOWN_AS_CARD", "BANK_UI_CONTRACT_VIOLATION",
-  "DUPLICATE_PAYMENT_IDS", "IDEMPOTENCY_CONTRACT_VIOLATION", "TRANSPORT_FAILURE", "ENVIRONMENT_NOT_READY",
-  "ENVIRONMENT_VERIFICATION_FAILED", "ADAPTER_EXIT_FAILURE", "INVALID_ADAPTER_OUTPUT", "AMOUNT_PROBE_UNAVAILABLE",
-  "UI_PROBE_UNAVAILABLE", "IDEMPOTENCY_PROBE_UNAVAILABLE", "BUILD_IDENTITY_MISMATCH",
-]);
 
 class PolicyError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -331,7 +317,14 @@ function validateCandidate(candidate, context, reasons) {
     || !["HEALTHY", "INFRA_FAILURE", "NOT_REQUIRED"].includes(candidate.environment_status)
     || !["VERIFIED", "PARTIAL", "UNVERIFIED"].includes(candidate.evidence_status)
     || !Number.isFinite(candidate.confidence) || candidate.confidence < 0 || candidate.confidence > 1
-    || !CODE.test(candidate.code ?? "") || !CLOSED_CODES.has(candidate.code)) reasons.add("INVALID_EVIDENCE_CANDIDATE");
+    || !CODE.test(candidate.code ?? "")) reasons.add("INVALID_EVIDENCE_CANDIDATE");
+  try {
+    validateOutcomeCode(context.profile, context.branch, {
+      applicability: context.applicability,
+      product_result: candidate.product_result,
+      environment_status: candidate.environment_status,
+    }, candidate.code);
+  } catch { reasons.add("UNKNOWN_CODE"); }
   if (candidate.product_result === "PASS" && (candidate.environment_status !== "HEALTHY" || candidate.evidence_status !== "VERIFIED")) reasons.add("INVALID_EVIDENCE_CANDIDATE");
   if (candidate.product_result === "FAIL" && candidate.environment_status !== "HEALTHY") reasons.add("INVALID_EVIDENCE_CANDIDATE");
   if (candidate.environment_status === "INFRA_FAILURE" && candidate.product_result !== "INCONCLUSIVE") reasons.add("INVALID_EVIDENCE_CANDIDATE");
@@ -360,7 +353,7 @@ function validateCandidate(candidate, context, reasons) {
   if (context.applicability === "REQUIRED") {
     if (candidate.observations.length === 0 || candidate.candidates.length === 0 || !same(candidate.evidence_kinds, context.expectedEvidence)) reasons.add("EVIDENCE_KIND_MISMATCH");
     if (context.branch === "ui" && (!candidate.candidates.some(({ kind }) => kind === "screenshot") || !candidate.candidates.some(({ kind }) => kind === "trace"))) reasons.add("INVALID_EVIDENCE_CANDIDATE");
-  } else if (candidate.product_result !== "SKIPPED" || candidate.code !== "NOT_APPLICABLE"
+  } else if (candidate.product_result !== "SKIPPED"
     || candidate.environment_status !== (context.receipt.environment_status === "READY" ? "HEALTHY" : "NOT_REQUIRED")
     || candidate.evidence_status !== "VERIFIED" || candidate.confidence !== 1
     || candidate.evidence_kinds.length !== 0 || candidate.observations.length !== 0 || candidate.candidates.length !== 0) reasons.add("NOT_APPLICABLE_EVIDENCE_MISMATCH");
@@ -429,7 +422,7 @@ export async function validateMaterializedBranch(branch, entries, context, resol
     || data?.attempt_namespace !== expectedAttemptNamespace || data?.branch_namespace !== expectedBranchNamespace
     || !["HEALTHY", "INFRA_FAILURE", "NOT_REQUIRED"].includes(data?.environment_status)
     || !Number.isFinite(data?.confidence) || data.confidence < 0 || data.confidence > 1
-    || !CODE.test(data?.code ?? "") || !CLOSED_CODES.has(data.code)) reasons.add("INVALID_BRANCH_OUTPUT");
+    || !CODE.test(data?.code ?? "")) reasons.add("INVALID_BRANCH_OUTPUT");
   try { validateBranchResult(result); } catch { reasons.add("INVALID_BRANCH_OUTPUT"); }
   if (result?.branch !== branch || result?.project_key !== context.plan.project_key || result?.profile_digest !== context.plan.profile_digest) reasons.add("BRANCH_IDENTITY_MISMATCH");
   if (result?.commit !== context.plan.commit) reasons.add("COMMIT_MISMATCH");
@@ -443,7 +436,13 @@ export async function validateMaterializedBranch(branch, entries, context, resol
   if (data?.attempt_id !== context.attemptId) reasons.add("ATTEMPT_MISMATCH");
   if (data?.environment_status === "INFRA_FAILURE") reasons.add("INFRA_FAILURE");
   if (!Number.isFinite(data?.confidence) || data.confidence < context.confidenceThreshold) reasons.add("LOW_CONFIDENCE");
-  if (!CODE.test(data?.code ?? "") || !CLOSED_CODES.has(data.code) || (applicability === "REQUIRED" && result?.product_result === "PASS" && !PASS_CODES[branch].has(data.code)) || (applicability === "NOT_APPLICABLE" && data.code !== "NOT_APPLICABLE")) reasons.add("UNKNOWN_CODE");
+  try {
+    validateOutcomeCode(context.profile, branch, {
+      applicability,
+      product_result: result?.product_result,
+      environment_status: data?.environment_status,
+    }, data?.code);
+  } catch { reasons.add("UNKNOWN_CODE"); }
 
   const refs = entry?.artifacts ?? {};
   for (const role of ARTIFACT_ROLES) {
@@ -596,6 +595,7 @@ async function aggregateUnsafe(input, dependencies) {
       planArtifactLink,
       profileArtifactLink,
       profileBlobSha256: commitProfile.sha256,
+      profile: trustedProfile,
     });
     normalizedBranches.push(normalized.record);
     for (const reason of normalized.reasons) globalReasons.add(reason);

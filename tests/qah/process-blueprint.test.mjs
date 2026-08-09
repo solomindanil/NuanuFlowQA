@@ -3,19 +3,30 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { renderProcess, renderProcessJson } from "../../scripts/qah/render-process.mjs";
+import { sha256 } from "../../scripts/qah/canonical.mjs";
 
 const blueprintUrl = new URL("../../processes/universal-qa-flow.graph.json", import.meta.url);
 const blueprint = JSON.parse(await readFile(blueprintUrl, "utf8"));
+const liveStart = JSON.parse(await readFile(new URL("fixtures/live-column-start.json", import.meta.url), "utf8"));
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const bindings = Object.freeze({
-  project_process_binding_id: "11111111-1111-4111-8111-111111111111",
-  project_id: "22222222-2222-4222-8222-222222222222",
-  ready_for_qa_state_id: "33333333-3333-4333-8333-333333333333",
+  project_process_binding_id: liveStart.node.config.project_process_start.binding_id,
+  project_id: liveStart.node.config.project_process_start.project_id,
+  ready_for_qa_state_id: liveStart.node.config.project_process_start.state_id,
   in_progress_state_id: "44444444-4444-4444-8444-444444444444",
   ready_for_production_state_id: "55555555-5555-4555-8555-555555555555",
   qa_agent_employee_id: "66666666-6666-4666-8666-666666666666",
   qa_agent_version_id: "77777777-7777-4777-8777-777777777777",
+  decision_agent_employee_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  decision_agent_version_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  decision_agent_metadata: {
+    requested_model: "openai/gpt-5.6-sol-pro",
+    required_capabilities: ["git", "nuanu_mcp", "tool_execution"],
+  },
+  platform_start_node: liveStart.node,
+  platform_start_edge_id: liveStart.edge.id,
+  platform_start_fingerprint: sha256(liveStart.node),
   profile_artifact: {
     artifact_id: "88888888-8888-4888-8888-888888888888",
     version_id: "99999999-9999-4999-8999-999999999999",
@@ -89,6 +100,26 @@ test("renders the exact universal topology with structured parallel blocks", () 
     assert.ok(pairs.some(([from, to]) => from === source && to === target), `${source} -> ${target}`);
 });
 
+test("preserves the live generated Column Start byte-equivalently and authors no trigger", () => {
+  assert.equal(blueprint.graph.nodes.some((node) => node.type === "start"), false);
+  assert.equal(blueprint.graph.edges.some((edge) => edge.source === liveStart.node.id), false);
+  const graph = renderProcess(blueprint, bindings);
+  const renderedStart = graph.nodes.find((node) => node.type === "start");
+  assert.deepEqual(renderedStart, liveStart.node);
+  assert.equal(JSON.stringify(renderedStart), JSON.stringify(liveStart.node));
+  assert.deepEqual(graph.edges.find((edge) => edge.source === renderedStart.id), {
+    id: liveStart.edge.id,
+    source: renderedStart.id,
+    target: byKey(graph).get("resolve_flow_item").id,
+  });
+  for (const mutation of [
+    undefined,
+    { ...liveStart.node, type: "agent_task" },
+    { ...liveStart.node, id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+    { ...liveStart.node, config: { ...liveStart.node.config, project_process_start: { ...liveStart.node.config.project_process_start, state_id: bindings.in_progress_state_id } } },
+  ]) assert.throws(() => renderProcess(blueprint, { ...bindings, platform_start_node: mutation }), /platform_start_node|Column Start/);
+});
+
 test("carries only topology-local immediate inputs through declared ProcessItems", () => {
   const graph = renderProcess(blueprint, bindings);
   const nodes = byKey(graph);
@@ -134,10 +165,10 @@ test("uses closed Process v1 outputs and worker 0.3.13 Artifact contracts", () =
       assert.deepEqual(descriptor.restrictions, { media_types: ["application/json"] });
       assert.equal(typeof descriptor.description, "string");
     }
-    assert.match(node.config.instruction, /ровно один JSON-объект/i);
-    assert.match(node.config.instruction, /item и artifact_outputs/);
+    assert.match(node.config.instruction, /scripts\/qah\/task-runtime\.mjs/);
     assert.match(node.config.instruction, /artifact_id, version_id, kind, role/);
     assert.doesNotMatch(node.config.instruction, /artifact_id, version_id, kind, role, name|latest.version/i);
+    assert.doesNotMatch(node.config.instruction, /scripts\/qah\/(?:aggregate|context|decide|environment|finalize|plan|render-comment|run-branch)\.mjs/);
   }
 
   for (const key of ["verify_requirements_and_code", "verify_api_contracts", "verify_ui_with_playwright", "prepare_and_verify_domain_data"])
@@ -145,7 +176,7 @@ test("uses closed Process v1 outputs and worker 0.3.13 Artifact contracts", () =
   assert.deepEqual(Object.keys(byKey(graph).get("independent_release_decision").config.output.artifacts), []);
 });
 
-test("binds the immutable Column Start, profile ArtifactVersion, and pinned Agent versions", () => {
+test("binds the immutable Column Start, existing profile ArtifactVersion, and pinned Agent versions", () => {
   const graph = renderProcess(blueprint, bindings);
   const nodes = byKey(graph);
   assert.deepEqual(nodes.get("project_start").config.project_process_start, {
@@ -153,8 +184,8 @@ test("binds the immutable Column Start, profile ArtifactVersion, and pinned Agen
     project_id: bindings.project_id,
     state_id: bindings.ready_for_qa_state_id,
   });
-  assert.equal(nodes.get("project_start").trigger.mode, "manual");
-  for (const node of graph.nodes.filter((entry) => entry.type === "agent_task")) {
+  assert.deepEqual(nodes.get("project_start"), liveStart.node);
+  for (const node of graph.nodes.filter((entry) => entry.type === "agent_task" && entry.key !== "independent_release_decision")) {
     assert.equal(node.config.agent_employee_id, bindings.qa_agent_employee_id);
     assert.equal(node.config.agent_version_id, bindings.qa_agent_version_id);
   }
@@ -163,17 +194,20 @@ test("binds the immutable Column Start, profile ArtifactVersion, and pinned Agen
   assert.match(nodes.get("load_project_context").config.instruction, /role&quot;|"role":"implementation"/);
 });
 
-test("allows an independent strongest Codex decision version without changing other tasks", () => {
-  const decisionBindings = {
-    ...bindings,
-    decision_agent_employee_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-    decision_agent_version_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-  };
-  const graph = renderProcess(blueprint, decisionBindings);
+test("requires an explicit distinct capable strongest-Codex decision binding", () => {
+  const graph = renderProcess(blueprint, bindings);
   const nodes = byKey(graph);
-  assert.equal(nodes.get("independent_release_decision").config.agent_employee_id, decisionBindings.decision_agent_employee_id);
-  assert.equal(nodes.get("independent_release_decision").config.agent_version_id, decisionBindings.decision_agent_version_id);
+  assert.equal(nodes.get("independent_release_decision").config.agent_employee_id, bindings.decision_agent_employee_id);
+  assert.equal(nodes.get("independent_release_decision").config.agent_version_id, bindings.decision_agent_version_id);
   assert.equal(nodes.get("aggregate_evidence").config.agent_version_id, bindings.qa_agent_version_id);
+  assert.deepEqual(nodes.get("independent_release_decision").config.binding_metadata, bindings.decision_agent_metadata);
+  assert.match(nodes.get("independent_release_decision").config.instruction, /task-scoped Nuanu MCP/i);
+  assert.match(nodes.get("independent_release_decision").config.instruction, /Git/i);
+  for (const invalid of [
+    { decision_agent_employee_id: undefined, decision_agent_version_id: undefined },
+    { decision_agent_employee_id: bindings.qa_agent_employee_id },
+    { decision_agent_version_id: bindings.qa_agent_version_id },
+  ]) assert.throws(() => renderProcess(blueprint, { ...bindings, ...invalid }), /decision agent.*(?:required|distinct)/i);
 });
 
 test("routes fail closed through exactly one default XOR edge and changes state only at End", () => {
@@ -221,6 +255,21 @@ test("blueprint is universal and contains no product, host, path, model, or inst
   }
 });
 
+test("UI runtime owns the isolated context and instructions never close the worker browser", () => {
+  const instruction = byKey(renderProcess(blueprint, bindings)).get("verify_ui_with_playwright").config.instruction;
+  assert.match(instruction, /adapter.*isolated.*context/is);
+  assert.match(instruction, /detach/is);
+  assert.doesNotMatch(instruction, /(?:закрой|закрывай|close).{0,40}(?:browser|браузер|context)/is);
+});
+
+test("publication carries bounded finalization context through the second parallel join", () => {
+  const nodes = byKey(renderProcess(blueprint, bindings));
+  assert.deepEqual(Object.keys(nodes.get("publish_flow_item_comment").config.output.data).sort(), [
+    "cleanup_lease", "comment_receipt", "decision", "issue_id", "profile_ref", "project_id", "review_bundle_ref", "source_ref", "workspace_id",
+  ]);
+  assert.match(nodes.get("finalize_transition").config.instruction, /только.*input\.publish_flow_item_comment.*input\.cleanup_environment/is);
+});
+
 test("renderer is canonical, immutable, and rejects invalid or unresolved bindings", () => {
   const first = renderProcessJson(blueprint, bindings);
   const second = renderProcessJson(blueprint, structuredClone(bindings));
@@ -237,6 +286,13 @@ test("renderer is canonical, immutable, and rejects invalid or unresolved bindin
   assert.throws(() => renderProcess(blueprint, { ...bindings, in_progress_state_id: bindings.ready_for_qa_state_id }), /state UUIDs must be distinct/);
   assert.throws(() => renderProcess(blueprint, { ...bindings, project_id: "not-a-uuid" }), /project_id must be a UUID/);
   assert.throws(() => renderProcess(blueprint, { ...bindings, profile_artifact: { ...bindings.profile_artifact, role: "output" } }), /profile_artifact/);
-  assert.throws(() => renderProcess(blueprint, { ...bindings, decision_agent_version_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }), /decision agent bindings must be supplied together/);
+  assert.throws(() => renderProcess(blueprint, { ...bindings, decision_agent_employee_id: undefined }), /decision agent/);
   assert.throws(() => renderProcess({ ...blueprint, graph: { ...blueprint.graph, name: "__BINDING_UNKNOWN__" } }, bindings), /unresolved binding token/);
+  assert.throws(() => renderProcess({ ...blueprint, graph: { ...blueprint.graph, name: "prefix __BINDING malformed" } }, bindings), /unresolved binding token/);
+  const deletedEdge = structuredClone(blueprint);
+  deletedEdge.graph.edges.pop();
+  assert.throws(() => renderProcess(deletedEdge, bindings), /topology fingerprint|blueprint integrity/);
+  const mutatedConfig = structuredClone(blueprint);
+  mutatedConfig.graph.nodes.find((node) => node.key === "aggregate_evidence").config.failure_handling.mode = "continue";
+  assert.throws(() => renderProcess(mutatedConfig, bindings), /topology fingerprint|blueprint integrity/);
 });

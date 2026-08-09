@@ -2,6 +2,7 @@ export const BRANCHES = Object.freeze(["code", "api", "ui", "domain"]);
 export const PRODUCT_RESULTS = Object.freeze(["PASS", "FAIL", "INCONCLUSIVE", "SKIPPED"]);
 export const ENVIRONMENT_STATUSES = Object.freeze(["HEALTHY", "INFRA_FAILURE", "NOT_REQUIRED"]);
 export const EVIDENCE_STATUSES = Object.freeze(["VERIFIED", "PARTIAL", "UNVERIFIED"]);
+export const OUTCOME_CODE_CLASSES = Object.freeze(["pass", "fail", "infra", "skipped"]);
 
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -97,7 +98,7 @@ function schema(value, expected) {
 
 export function validateProfile(value) {
   try {
-    exactKeys(value, ["schema_version", "project_key", "repository", "environment", "checks", "safety", "execution", "test_data", "areas", "risk"]);
+    exactKeys(value, ["schema_version", "project_key", "repository", "environment", "checks", "outcome_codes", "safety", "execution", "test_data", "areas", "risk"]);
     schema(value.schema_version, "nuanu.qa-project-profile.v1");
     projectKey(value.project_key);
     noSecrets(value);
@@ -117,6 +118,21 @@ export function validateProfile(value) {
 
     exactKeys(value.checks, BRANCHES);
     for (const branch of BRANCHES) command(value.checks[branch], `checks.${branch}`);
+
+    exactKeys(value.outcome_codes, BRANCHES);
+    for (const branch of BRANCHES) {
+      exactKeys(value.outcome_codes[branch], OUTCOME_CODE_CLASSES);
+      const allCodes = [];
+      for (const classification of OUTCOME_CODE_CLASSES) {
+        const codes = value.outcome_codes[branch][classification];
+        if (!Array.isArray(codes) || codes.length < 1 || codes.length > 32 || new Set(codes).size !== codes.length
+          || codes.some((code) => typeof code !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(code))) {
+          throw new Error(`outcome_codes.${branch}.${classification} must be a non-empty unique closed code array`);
+        }
+        allCodes.push(...codes);
+      }
+      if (new Set(allCodes).size !== allCodes.length) throw new Error(`outcome_codes.${branch} classes must not overlap`);
+    }
 
     exactKeys(value.safety, ["mutation_mode", "irreversible_actions", "secret_output", "allowed_origins"]);
     member(value.safety.mutation_mode, ["sandbox_only"], "safety.mutation_mode");
@@ -160,6 +176,22 @@ export function validateProfile(value) {
   } catch (error) {
     throw new Error(`exact profile contract: ${error.message}`);
   }
+}
+
+export function outcomeCodeClass({ applicability, product_result, environment_status }) {
+  if (applicability === "NOT_APPLICABLE" && product_result === "SKIPPED") return "skipped";
+  if (environment_status === "INFRA_FAILURE" || product_result === "INCONCLUSIVE") return "infra";
+  if (product_result === "PASS") return "pass";
+  if (product_result === "FAIL") return "fail";
+  throw new Error("outcome axes do not select a declared code class");
+}
+
+export function validateOutcomeCode(profile, branch, axes, code) {
+  const classification = outcomeCodeClass(axes);
+  if (!profile?.outcome_codes?.[branch]?.[classification]?.includes(code)) {
+    throw new Error(`outcome code ${code} is not declared for ${branch}.${classification}`);
+  }
+  return code;
 }
 
 export function validateResolvedContext(value) {

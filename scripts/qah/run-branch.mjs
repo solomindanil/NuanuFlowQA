@@ -2,12 +2,12 @@
 
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, readFile as readFileFs, realpath } from "node:fs/promises";
+import { lstat, mkdir, readFile as readFileFs, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { canonicalJson, sha256 } from "./canonical.mjs";
-import { BRANCHES, validateBranchResult, validateProfile, validateTestPlan } from "./contracts.mjs";
+import { BRANCHES, validateBranchResult, validateOutcomeCode, validateProfile, validateTestPlan } from "./contracts.mjs";
 import { targetNamespace } from "./environment.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -204,7 +204,7 @@ function validateCandidate(value, maximumBytes) {
   return value;
 }
 
-function validateAdapterResult(value, branch, expectedEvidence, maximumBytes) {
+function validateAdapterResult(value, branch, expectedEvidence, maximumBytes, profile) {
   exactKeys(value, ADAPTER_RESULT_KEYS, "branch adapter result");
   if (value.schema_version !== "nuanu.qa-branch-adapter-result.v1" || value.branch !== branch) throw new Error("branch adapter result identity is invalid");
   if (!["PASS", "FAIL", "INCONCLUSIVE"].includes(value.product_result) || !["HEALTHY", "INFRA_FAILURE", "NOT_REQUIRED"].includes(value.environment_status) || !["VERIFIED", "PARTIAL", "UNVERIFIED"].includes(value.evidence_status)) throw new Error("branch adapter axes are invalid");
@@ -212,6 +212,11 @@ function validateAdapterResult(value, branch, expectedEvidence, maximumBytes) {
   if (value.product_result === "PASS" && (value.environment_status !== "HEALTHY" || value.evidence_status !== "VERIFIED")) throw new Error("passing adapter result requires healthy verified evidence");
   if (value.product_result === "FAIL" && value.environment_status !== "HEALTHY") throw new Error("product failure requires a healthy environment");
   if (value.environment_status === "INFRA_FAILURE" && value.product_result !== "INCONCLUSIVE") throw new Error("infrastructure failure must be inconclusive");
+  validateOutcomeCode(profile, branch, {
+    applicability: "REQUIRED",
+    product_result: value.product_result,
+    environment_status: value.environment_status,
+  }, value.code);
   if (!Array.isArray(value.observations) || value.observations.length === 0 || value.observations.length > 64) throw new Error("verified adapter evidence requires nonempty bounded assertions");
   for (const observation of value.observations) {
     exactKeys(observation, OBSERVATION_KEYS, "adapter observation");
@@ -230,6 +235,80 @@ function validateAdapterResult(value, branch, expectedEvidence, maximumBytes) {
     if (!kinds.includes("screenshot") || !kinds.includes("trace")) throw new Error("UI evidence requires same-interaction screenshot and trace candidates");
   }
   return value;
+}
+
+function materialReference(value, role, expectedRole) {
+  exactKeys(value, SOURCE_ARTIFACT_KEYS, `${role} Artifact reference`);
+  if (!UUID.test(value.artifact_id) || !UUID.test(value.version_id) || value.kind !== "document" || value.role !== expectedRole) {
+    throw new Error(`${role} Artifact reference is invalid`);
+  }
+  return { ...value };
+}
+
+function safeOutputDirectory(value) {
+  if (typeof value !== "string" || !isAbsolute(value) || resolve(value) === resolve("/")) throw new Error("outputDir must be an absolute bounded task directory");
+  return resolve(value);
+}
+
+export async function materializeBranchFiles({ output, plan, environmentReceipt, repositoryOrigin, refs, outputDir }) {
+  validateBranchExecutionOutput(output);
+  validateTestPlan(plan?.artifact_slot);
+  let repository;
+  try { repository = exactUrl(repositoryOrigin, "repository origin"); } catch { repository = null; }
+  if (!plan || plan.plan_sha256 !== sha256(Object.fromEntries(Object.entries(plan).filter(([key]) => key !== "plan_sha256")))
+    || repository?.protocol !== "https:" || repository.search || repository.href !== repositoryOrigin || !plan.source_artifact) throw new Error("materialization plan identity is invalid");
+  const branch = output.branch_result.branch;
+  const payloadRef = materialReference(refs?.branch_payload, "branch_payload", "output");
+  const occurrenceRef = materialReference(refs?.occurrence, "occurrence", "evidence");
+  const evidenceRef = materialReference(refs?.evidence, "evidence", "evidence");
+  const directory = safeOutputDirectory(outputDir);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const executionData = output.envelope.item.data;
+  let evidenceCandidate;
+  try { evidenceCandidate = JSON.parse(executionData.evidence_candidate); } catch { throw new Error("branch evidence candidate is invalid JSON"); }
+  if (canonicalJson(evidenceCandidate) !== executionData.evidence_candidate || sha256(executionData.evidence_candidate) !== executionData.evidence_sha256) throw new Error("branch evidence candidate digest is invalid");
+  const payload = { schema_version: "nuanu.qa-materialized-branch-payload.v1", branch_result: output.branch_result, execution_data: executionData };
+  const payloadBytes = Buffer.from(canonicalJson(payload));
+  const evidence = {
+    schema_version: "nuanu.qa-materialized-evidence.v1",
+    source_artifact: { ...plan.source_artifact },
+    plan_sha256: plan.plan_sha256,
+    branch,
+    branch_payload_sha256: digestBytes(payloadBytes),
+    evidence_sha256: executionData.evidence_sha256,
+    evidence_candidate: evidenceCandidate,
+    confirmed_findings: output.branch_result.product_result === "FAIL" ? 1 : 0,
+  };
+  const unsignedOccurrence = {
+    schema_version: "nuanu.qa-evidence-occurrence.v1",
+    source_artifact: { ...plan.source_artifact },
+    plan_sha256: plan.plan_sha256,
+    branch,
+    repository_origin: repositoryOrigin,
+    commit: plan.commit,
+    content_hash: plan.content_hash,
+    environment_id: environmentReceipt.environment_id,
+    instance_nonce: environmentReceipt.instance_nonce ?? null,
+    run_id: executionData.run_id,
+    attempt_id: executionData.attempt_id,
+    branch_payload_artifact: payloadRef,
+    evidence_artifact: evidenceRef,
+  };
+  const occurrence = { ...unsignedOccurrence, occurrence_key: sha256(unsignedOccurrence) };
+  const files = [
+    ["branch-payload.json", payload],
+    ["evidence.json", evidence],
+    ["occurrence.json", occurrence],
+  ];
+  for (const [name, value] of files) await writeFile(join(directory, name), canonicalJson(value), { mode: 0o600, flag: "w" });
+  const completed = structuredClone(output);
+  completed.envelope.item.artifacts = { evidence_report: evidenceRef };
+  completed.envelope.artifact_outputs = { "item.artifacts.evidence_report": evidenceRef };
+  return {
+    output: completed,
+    refs: { branch_payload: payloadRef, occurrence: occurrenceRef, evidence: evidenceRef },
+    files: files.map(([name, value]) => ({ name, sha256: sha256(canonicalJson(value)), size_bytes: Buffer.byteLength(canonicalJson(value), "utf8") })),
+  };
 }
 
 function validateBranchExecutionOutput(value) {
@@ -270,8 +349,20 @@ function buildOutput({ plan, branch, runId, attemptId, attemptNs, branchNs, rece
   });
 }
 
+function declaredOutcomeCode(context, classification, preferred) {
+  const codes = context.profile.outcome_codes[context.branch][classification];
+  return codes.includes(preferred) ? preferred : codes[0];
+}
+
 function infraOutput(context, code = "TRANSPORT_FAILURE") {
-  return buildOutput({ ...context, productResult: "INCONCLUSIVE", environmentStatus: "INFRA_FAILURE", evidenceStatus: "UNVERIFIED", confidence: 0, code });
+  return buildOutput({
+    ...context,
+    productResult: "INCONCLUSIVE",
+    environmentStatus: "INFRA_FAILURE",
+    evidenceStatus: "UNVERIFIED",
+    confidence: 0,
+    code: declaredOutcomeCode(context, "infra", code),
+  });
 }
 
 async function defaultExecute(file, args, options) {
@@ -302,9 +393,16 @@ export async function runBranch({ branch, plan: rawPlan, profile: rawProfile, en
   const { receipt } = validateReceipt(rawReceipt, { plan, profile, runId, attemptId, trustedStateRoot });
   const attemptNs = attemptNamespace(runId, attemptId);
   const branchNs = branchNamespace(runId, attemptId, branch);
-  const context = { plan, branch, runId, attemptId, attemptNs, branchNs, receipt };
+  const context = { plan, profile, branch, runId, attemptId, attemptNs, branchNs, receipt };
 
-  if (plan.applicability[branch] === "NOT_APPLICABLE") return buildOutput({ ...context, productResult: "SKIPPED", environmentStatus: receipt.environment_status === "READY" ? "HEALTHY" : "NOT_REQUIRED", evidenceStatus: "VERIFIED", confidence: 1, code: "NOT_APPLICABLE" });
+  if (plan.applicability[branch] === "NOT_APPLICABLE") return buildOutput({
+    ...context,
+    productResult: "SKIPPED",
+    environmentStatus: receipt.environment_status === "READY" ? "HEALTHY" : "NOT_REQUIRED",
+    evidenceStatus: "VERIFIED",
+    confidence: 1,
+    code: profile.outcome_codes[branch].skipped[0],
+  });
   if (branch === "domain") {
     if (typeof testDataProfile !== "string" || !profile.test_data.profiles.includes(testDataProfile)) throw new Error("domain branch requires a declared named test-data profile");
   } else if (testDataProfile !== undefined) throw new Error("test-data profile is valid only for the domain branch");
@@ -351,13 +449,23 @@ export async function runBranch({ branch, plan: rawPlan, profile: rawProfile, en
       kind: "document", name: "code-evidence.md", media_type: "text/markdown", size_bytes: evidenceBytes.byteLength,
       sha256: digestBytes(evidenceBytes), content_base64: evidenceBytes.toString("base64"),
     }, profile.execution.max_output_bytes);
-    return buildOutput({ ...context, productResult: passed ? "PASS" : "FAIL", environmentStatus: "HEALTHY", evidenceStatus: "VERIFIED", confidence: 1, code: passed ? "COMMAND_PASSED" : "COMMAND_FAILED", observations, evidenceKinds: plan.expected_evidence.code, candidates: [candidate] });
+    return buildOutput({
+      ...context,
+      productResult: passed ? "PASS" : "FAIL",
+      environmentStatus: "HEALTHY",
+      evidenceStatus: "VERIFIED",
+      confidence: 1,
+      code: declaredOutcomeCode(context, passed ? "pass" : "fail", passed ? "COMMAND_PASSED" : "COMMAND_FAILED"),
+      observations,
+      evidenceKinds: plan.expected_evidence.code,
+      candidates: [candidate],
+    });
   }
   if (execution.exitCode !== 0) return infraOutput(context, "ADAPTER_EXIT_FAILURE");
   try {
     const parsed = JSON.parse(execution.stdout);
     if (canonicalJson(parsed) !== execution.stdout) throw new Error("adapter stdout must be exact canonical bytes");
-    const adapter = validateAdapterResult(parsed, branch, plan.expected_evidence[branch], profile.execution.max_output_bytes);
+    const adapter = validateAdapterResult(parsed, branch, plan.expected_evidence[branch], profile.execution.max_output_bytes, profile);
     return buildOutput({ ...context, productResult: adapter.product_result, environmentStatus: adapter.environment_status, evidenceStatus: adapter.evidence_status, confidence: adapter.confidence, code: adapter.code, observations: adapter.observations, evidenceKinds: adapter.evidence_kinds, candidates: adapter.candidates });
   } catch { return infraOutput(context, "INVALID_ADAPTER_OUTPUT"); }
 }

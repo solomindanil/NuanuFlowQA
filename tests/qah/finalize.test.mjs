@@ -252,6 +252,25 @@ test("trusted review aggregate is independently revalidated and stored decision 
   assert.ok(fixture.calls.profile > 0, "profile was re-read at pinned commit");
 });
 
+test("review bundle requires three output links and permits only the documented automatic work_item/about link", async () => {
+  const fixture = await trustedFixture();
+  const record = material(fixture.aggregateBase.store, reviewBundle);
+  record.links = [...reviewLinks, { entity_type: "work_item", entity_id: issueId, relation: "about" }];
+  const receipt = await publishComment(publicationInput(fixture), fixture.dependencies);
+  assert.equal(receipt.publication_status, "ADDED");
+  for (const extra of [
+    { entity_type: "project", entity_id: projectId, relation: "about" },
+    { entity_type: "work_item", entity_id: issueId, relation: "attachment" },
+  ]) {
+    const hostile = await trustedFixture();
+    material(hostile.aggregateBase.store, reviewBundle).links = [...reviewLinks, extra];
+    await assert.rejects(publishComment(publicationInput(hostile), hostile.dependencies), /REVIEW_BUNDLE_MISMATCH/);
+  }
+  const missing = await trustedFixture();
+  material(missing.aggregateBase.store, reviewBundle).links = reviewLinks.slice(1);
+  await assert.rejects(publishComment(publicationInput(missing), missing.dependencies), /REVIEW_BUNDLE_MISMATCH/);
+});
+
 test("invalid aggregate axes never become cleanup authority even with null or matching stored decision", async () => {
   for (const stored of ["null", "matching"]) {
     const fixture = await trustedFixture();
