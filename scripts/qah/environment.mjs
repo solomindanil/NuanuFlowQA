@@ -390,6 +390,17 @@ async function recoveryReceipt(input, paths, deps, fence, namespace, reason) {
   return cleanupReceipt(fence, namespace, "RECOVERY_REQUIRED", { reason: errorMessage(reason), quarantine_path: quarantinePath });
 }
 
+async function persistBlockingRecovery(paths, state, deps, reason) {
+  const blocked = {
+    ...state,
+    phase: "RECOVERY_REQUIRED",
+    recovery_status: "OWNERSHIP_UNCERTAIN",
+    recovery_reason: errorMessage(reason),
+  };
+  await writeAtomic(paths.stateFile, `${JSON.stringify(blocked, null, 2)}\n`, deps);
+  return blocked;
+}
+
 function validateIdentityShape(identity, { allowFileRepository = false } = {}) {
   if (!identity || typeof identity !== "object" || Array.isArray(identity) || JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(IDENTITY_KEYS)) {
     throw new HealthProtocolError("health identity must be an exact object");
@@ -470,8 +481,9 @@ async function waitForIdentity(state, input, deps) {
 
 function validateState(state, expected) {
   const phase = state?.phase;
-  const started = phase === "STARTED" || phase === "READY" || phase === "RECOVERED_STOPPED";
-  if (state?.schema !== STATE_SCHEMA || !["PREPARING", "STARTED", "READY", "RECOVERED_STOPPED"].includes(phase) || state.state_root !== expected.root || state.checkout !== expected.paths.checkout || state.state_file !== expected.paths.stateFile || state.pid_file !== expected.paths.pidFile || !/^[a-f0-9]{64}$/.test(state.target_namespace) || !NONCE_PATTERN.test(state.instance_nonce) || typeof state.owner_token !== "string" || state.owner_token.length < 16 || !DIGEST_PATTERN.test(state.declared_request_digest) || !DIGEST_PATTERN.test(state.request_digest) || !DIGEST_PATTERN.test(state.runtime_contract_digest) || !state.runtime_contract || typeof state.runtime_contract !== "object" || !isAbsolute(state.executable_identity) || !isAbsolute(state.executable_realpath) || !isAbsolute(state.entrypoint_identity) || !isAbsolute(state.entrypoint_realpath) || (started && (!Number.isSafeInteger(state.pid) || state.pid <= 1 || typeof state.process_start_token !== "string" || state.process_start_token.length === 0))) {
+  const started = phase === "STARTED" || phase === "READY" || phase === "RECOVERED_STOPPED" || phase === "RECOVERY_REQUIRED";
+  const blocking = phase === "RECOVERY_REQUIRED";
+  if (state?.schema !== STATE_SCHEMA || !["PREPARING", "STARTED", "READY", "RECOVERED_STOPPED", "RECOVERY_REQUIRED"].includes(phase) || state.state_root !== expected.root || state.checkout !== expected.paths.checkout || state.state_file !== expected.paths.stateFile || state.pid_file !== expected.paths.pidFile || !/^[a-f0-9]{64}$/.test(state.target_namespace) || !NONCE_PATTERN.test(state.instance_nonce) || typeof state.owner_token !== "string" || state.owner_token.length < 16 || !DIGEST_PATTERN.test(state.declared_request_digest) || !DIGEST_PATTERN.test(state.request_digest) || !DIGEST_PATTERN.test(state.runtime_contract_digest) || !state.runtime_contract || typeof state.runtime_contract !== "object" || !isAbsolute(state.executable_identity) || !isAbsolute(state.executable_realpath) || !isAbsolute(state.entrypoint_identity) || !isAbsolute(state.entrypoint_realpath) || (started && (!Number.isSafeInteger(state.pid) || state.pid <= 1 || typeof state.process_start_token !== "string" || state.process_start_token.length === 0)) || (blocking && (state.recovery_status !== "OWNERSHIP_UNCERTAIN" || typeof state.recovery_reason !== "string" || state.recovery_reason.length === 0))) {
     throw new Error("environment ownership state is malformed");
   }
   if (canonicalJson(state.fence) !== canonicalJson(expected.fence) || state.repository_origin !== expected.repositoryOrigin) throw new Error("environment ownership tuple does not match the requested fence, repository, and state root");
@@ -606,19 +618,21 @@ export async function prepareEnvironment(input) {
         if (state.declared_request_digest !== declaredDigest) throw new Error("attempt fence conflicts with a different request body");
         if (state.phase === "STARTED") {
           if (!await exists(paths.pidFile) || (await readFile(paths.pidFile, "utf8")).trim() !== String(state.pid)) {
-            const quarantinePath = await quarantine(paths, deps);
-            throw new Error(`RECOVERY_REQUIRED: STARTED PID file is missing or mismatched; state was quarantined at ${quarantinePath} without a signal`);
+            const reason = "STARTED PID file is missing or mismatched; refusing to signal and blocking the canonical namespace";
+            await persistBlockingRecovery(paths, state, deps, reason);
+            throw new Error(`RECOVERY_REQUIRED: ${reason}`);
           }
           const ownership = await processOwnership(state, deps);
           if (ownership === "foreign") {
-            if (input.quarantineRecovery === false) throw new Error("RECOVERY_REQUIRED: STARTED PID ownership is foreign or uncertain; refusing to signal it");
-            const quarantinePath = await quarantine(paths, deps);
-            throw new Error(`RECOVERY_REQUIRED: STARTED PID ownership is foreign or uncertain; state was quarantined at ${quarantinePath} without a signal`);
+            const reason = "STARTED PID ownership is foreign or uncertain; refusing to signal it and blocking the canonical namespace";
+            await persistBlockingRecovery(paths, state, deps, reason);
+            throw new Error(`RECOVERY_REQUIRED: ${reason}`);
           }
           const stopped = ownership === "absent" ? "absent" : await stopOwned(state, deps);
           if (stopped === "uncertain") {
-            const quarantinePath = await quarantine(paths, deps);
-            throw new Error(`RECOVERY_REQUIRED: exact-owned STARTED process could not be reconciled; state was quarantined at ${quarantinePath}`);
+            const reason = "exact-owned STARTED process could not be reconciled; blocking the canonical namespace";
+            await persistBlockingRecovery(paths, state, deps, reason);
+            throw new Error(`RECOVERY_REQUIRED: ${reason}`);
           }
           state = { ...state, phase: "RECOVERED_STOPPED", recovery_status: stopped === "stopped" ? "STOPPED" : "ABSENT" };
           await writeAtomic(paths.stateFile, `${JSON.stringify(state, null, 2)}\n`, deps);
@@ -626,6 +640,9 @@ export async function prepareEnvironment(input) {
         }
         if (state.phase === "RECOVERED_STOPPED") {
           throw new Error("RECOVERY_REQUIRED: recovered environment remains visible until cleanup");
+        }
+        if (state.phase === "RECOVERY_REQUIRED") {
+          throw new Error(`RECOVERY_REQUIRED: canonical environment namespace is blocked: ${state.recovery_reason}`);
         }
         if (state.phase !== "READY") {
           const quarantinePath = await quarantine(paths, deps);
@@ -680,7 +697,7 @@ export async function prepareEnvironment(input) {
         await verifyCheckout({ deps, checkout: paths.checkout, commit, timeoutMs, maxOutputBytes, allowedGeneratedEntries: runtime.allowed_generated_entries });
         const { executableIdentity, executableRealpath, entrypointIdentity, entrypointRealpath } = await resolveExecutable(runtime.command);
         const stateFields = runtime.state_fields;
-        const protectedStateFields = new Set(["schema", "phase", "fence", "declared_request_digest", "request_digest", "runtime_contract_digest", "runtime_contract", "repository_origin", "commit", "state_root", "checkout", "state_file", "target_namespace", "pid_file", "executable_identity", "executable_realpath", "entrypoint_identity", "entrypoint_realpath", "process_start_token", "instance_nonce", "owner_token", "content_hash", "base_url", "health_path", "timeout_ms", "max_output_bytes", "allowed_generated_entries", "pid", "receipt", "recovery_status"]);
+        const protectedStateFields = new Set(["schema", "phase", "fence", "declared_request_digest", "request_digest", "runtime_contract_digest", "runtime_contract", "repository_origin", "commit", "state_root", "checkout", "state_file", "target_namespace", "pid_file", "executable_identity", "executable_realpath", "entrypoint_identity", "entrypoint_realpath", "process_start_token", "instance_nonce", "owner_token", "content_hash", "base_url", "health_path", "timeout_ms", "max_output_bytes", "allowed_generated_entries", "pid", "receipt", "recovery_status", "recovery_reason"]);
         if (Object.keys(stateFields).some((key) => protectedStateFields.has(key))) throw new Error("managed adapter attempted to override generic ownership state");
         const runtimeDigest = runtimeContractDigest(runtime);
         state = {
@@ -767,10 +784,18 @@ export async function cleanupEnvironment(input) {
         await rm(paths.environmentDirectory, { recursive: true, force: true });
         return cleanupReceipt(fence, namespace, "STOPPED");
       }
+      if (state.phase === "RECOVERY_REQUIRED") {
+        return cleanupReceipt(fence, namespace, "RECOVERY_REQUIRED", { reason: state.recovery_reason });
+      }
       if (state.phase === "PREPARING") {
         return recoveryReceipt(input, paths, deps, fence, namespace, `${state.phase} environment attempt is not safe for automatic cleanup`);
       }
       if (!(await exists(paths.pidFile)) || (await readFile(paths.pidFile, "utf8")).trim() !== String(state.pid)) {
+        if (state.phase === "STARTED") {
+          const reason = "STARTED PID file is missing or mismatched; refusing to signal and blocking the canonical namespace";
+          await persistBlockingRecovery(paths, state, deps, reason);
+          return cleanupReceipt(fence, namespace, "RECOVERY_REQUIRED", { reason });
+        }
         return recoveryReceipt(input, paths, deps, fence, namespace, "PID file does not match ownership state");
       }
       if (state.phase === "READY" && !validReadyReceipt(state.receipt, state)) {
@@ -778,6 +803,11 @@ export async function cleanupEnvironment(input) {
       }
       const stopped = await stopOwned(state, deps);
       if (stopped === "uncertain") {
+        if (state.phase === "STARTED") {
+          const reason = "STARTED PID ownership is foreign or uncertain; refusing to signal it and blocking the canonical namespace";
+          await persistBlockingRecovery(paths, state, deps, reason);
+          return cleanupReceipt(fence, namespace, "RECOVERY_REQUIRED", { reason });
+        }
         return recoveryReceipt(input, paths, deps, fence, namespace, "PID ownership is foreign or uncertain; refusing to signal it");
       }
       await rm(paths.environmentDirectory, { recursive: true, force: true });

@@ -360,7 +360,7 @@ test("STARTED crash replay safely stops exact-owned process and remains visible 
   await assert.rejects(access(ready.state_file));
 });
 
-test("real STARTED recovery stops only exact-owned listener while a foreign process remains alive", { timeout: 20_000 }, async (t) => {
+test("real STARTED recovery stops exact-owned listener and persistently blocks foreign ownership", { timeout: 20_000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "qah-started-recovery-"));
   const ownedPids = new Set();
   let foreign;
@@ -370,7 +370,7 @@ test("real STARTED recovery stops only exact-owned listener while a foreign proc
     await rm(root, { recursive: true, force: true });
   });
 
-  async function lifecycleInput({ attempt, environment, port, quarantineRecovery = true }) {
+  async function lifecycleInput({ attempt, environment, port, quarantineRecovery }) {
     const runtime = (checkout) => ({
       command: [process.execPath, join(checkout, "server.mjs")],
       base_url: `http://127.0.0.1:${port}`,
@@ -387,7 +387,7 @@ test("real STARTED recovery stops only exact-owned listener while a foreign proc
       attemptId: attempt,
       environmentId: environment,
       stateRoot: join(root, "state"),
-      quarantineRecovery,
+      ...(quarantineRecovery === undefined ? {} : { quarantineRecovery }),
       dependencies: {
         async execFile(commandName, args, options) {
           if (commandName !== "git") return systemExecFile(commandName, args, options);
@@ -447,9 +447,16 @@ test("real STARTED recovery stops only exact-owned listener while a foreign proc
   assert.equal((await cleanupEnvironment(ownedInput)).environment_status, "STOPPED");
   ownedPids.delete(ownedState.pid);
 
-  const foreignInput = await lifecycleInput({ attempt: "attempt-foreign", environment: "foreign-started", port: await unusedPort(), quarantineRecovery: false });
+  const foreignInput = await lifecycleInput({ attempt: "attempt-foreign", environment: "foreign-started", port: await unusedPort() });
+  const prepareForeignCheckout = foreignInput.managed.prepareCheckout;
+  let foreignPrepareCalls = 0;
+  foreignInput.managed.prepareCheckout = async (context) => {
+    foreignPrepareCalls += 1;
+    return prepareForeignCheckout(context);
+  };
   const foreignReady = await prepareEnvironment(foreignInput);
   assert.equal(foreignReady.environment_status, "READY");
+  assert.equal(foreignPrepareCalls, 1);
   const originalState = JSON.parse(await readFile(foreignReady.state_file, "utf8"));
   ownedPids.add(originalState.pid);
   foreign = spawnChild(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
@@ -461,6 +468,17 @@ test("real STARTED recovery stops only exact-owned listener while a foreign proc
 
   const refused = await cleanupEnvironment(foreignInput);
   assert.equal(refused.environment_status, "RECOVERY_REQUIRED");
+  assert.equal(processAlive(foreign.pid), true);
+  await access(foreignReady.state_file);
+
+  const repeatedCleanup = await cleanupEnvironment(foreignInput);
+  assert.equal(repeatedCleanup.environment_status, "RECOVERY_REQUIRED");
+  assert.equal(processAlive(foreign.pid), true);
+
+  const blockedPrepare = await prepareEnvironment(foreignInput);
+  assert.equal(blockedPrepare.environment_status, "INFRA_FAILURE");
+  assert.match(blockedPrepare.reason, /recovery|required|foreign|uncertain/i);
+  assert.equal(foreignPrepareCalls, 1);
   assert.equal(processAlive(foreign.pid), true);
 
   await writeFile(foreignReady.state_file, `${JSON.stringify(originalState)}\n`);
