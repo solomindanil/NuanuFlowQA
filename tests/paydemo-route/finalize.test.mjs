@@ -29,7 +29,7 @@ async function runFinalize(input) {
   }
 }
 
-test('finalizes the clean path to Done only after verified cleanup', async () => {
+test('finalizes the clean path to Ready for Production only after verified cleanup', async () => {
   const envelope = await runFinalize({
     cleanup_clean_environment: completed('cleanup_clean_environment', {
       environment_id: 'qah-payd-22-buggy-v1',
@@ -38,9 +38,9 @@ test('finalizes the clean path to Done only after verified cleanup', async () =>
     }),
   });
   assert.equal(envelope.item.key, 'finalize_qa_status');
-  assert.equal(envelope.item.data.target_state, 'done');
+  assert.equal(envelope.item.data.target_state, 'ready_for_production');
   assert.equal(envelope.item.data.overall_product_result, 'PASS');
-  assert.match(envelope.item.data.route_reason, /очищен.*Done/i);
+  assert.match(envelope.item.data.route_reason, /очищен.*Ready for Production/i);
   assert.equal(envelope.artifact_outputs['item.artifacts.transition_report'], null);
 });
 
@@ -60,6 +60,20 @@ test('finalizes confirmed findings to In Progress with the human reason', async 
   assert.equal(envelope.item.data.target_state, 'in_progress');
   assert.equal(envelope.item.data.overall_product_result, 'FAIL');
   assert.match(envelope.item.data.route_reason, /Дефекты подтверждены/);
+});
+
+test('automatically returns a risk result to In Progress after verified cleanup', async () => {
+  const envelope = await runFinalize({
+    cleanup_risk_environment: completed('cleanup_risk_environment', {
+      environment_id: 'qah-payd-22-buggy-v1',
+      environment_status: 'STOPPED',
+      pid_file: '/private/tmp/paydemo/server.pid',
+    }),
+  });
+  assert.equal(envelope.item.data.target_state, 'in_progress');
+  assert.equal(envelope.item.data.overall_product_result, 'FAIL');
+  assert.equal(envelope.item.data.overall_environment_status, 'HEALTHY');
+  assert.match(envelope.item.data.route_reason, /автоматически.*In Progress/i);
 });
 
 test('finalizes an acknowledged environment failure to In Progress', async () => {

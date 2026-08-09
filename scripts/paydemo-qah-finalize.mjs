@@ -45,13 +45,28 @@ export function finalizeQaStatus(input) {
       throw new TypeError('Clean path has no authoritative cleanup receipt');
     }
     return {
-      target_state: 'done',
-      route_reason: 'Все проверки пройдены, точное тестовое окружение очищено; тикет переведён в Done.',
+      target_state: 'ready_for_production',
+      route_reason: 'Все проверки пройдены, точное тестовое окружение очищено; тикет переведён в Ready for Production.',
       overall_product_result: 'PASS',
       overall_environment_status: 'HEALTHY',
       overall_evidence_status: 'VERIFIED',
       recommendation: 'no_findings',
       summary: 'Чистый результат QA подтверждён, очистка завершена.',
+    };
+  }
+
+  if (exactKeys(input, ['cleanup_risk_environment'])) {
+    if (!validCleanup(input.cleanup_risk_environment, 'cleanup_risk_environment')) {
+      throw new TypeError('Automatic risk path has no authoritative cleanup receipt');
+    }
+    return {
+      target_state: 'in_progress',
+      route_reason: 'QA обнаружил дефект или неопределённость; после подтверждённой очистки тикет автоматически возвращён в In Progress.',
+      overall_product_result: 'FAIL',
+      overall_environment_status: 'HEALTHY',
+      overall_evidence_status: 'VERIFIED',
+      recommendation: 'accept_findings',
+      summary: 'Автоматический QA-контур требует исправления или повторной проверки разработчиком.',
     };
   }
 

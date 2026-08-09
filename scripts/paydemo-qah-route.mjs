@@ -64,7 +64,7 @@ function cleanVerifiedPass(data) {
 }
 
 function routeReason(data, targetState) {
-  if (targetState === 'done') {
+  if (targetState === 'ready_for_production') {
     return 'Все 3 проверки пройдены на точной сборке, доказательства подтверждены.';
   }
   if (data.overall_product_result === 'FAIL' && data.finding_count > 0) {
@@ -80,7 +80,7 @@ function routeReason(data, targetState) {
 
 export function routeQa(input) {
   const data = validateSynthesis(input);
-  const targetState = cleanVerifiedPass(data) ? 'done' : 'in_progress';
+  const targetState = cleanVerifiedPass(data) ? 'ready_for_production' : 'in_progress';
   return {
     ...data,
     target_state: targetState,

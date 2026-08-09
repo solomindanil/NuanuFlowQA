@@ -70,11 +70,11 @@ async function runRoute(input) {
   }
 }
 
-test('routes only a fully verified clean synthesis to Done', async () => {
+test('routes only a fully verified clean synthesis to Ready for Production', async () => {
   const envelope = await runRoute(synthesisInput());
   assert.deepEqual(Object.keys(envelope).sort(), ['artifact_outputs', 'item']);
   assert.equal(envelope.item.key, 'route_qa_result');
-  assert.equal(envelope.item.data.target_state, 'done');
+  assert.equal(envelope.item.data.target_state, 'ready_for_production');
   assert.equal(envelope.item.data.route_reason, 'Все 3 проверки пройдены на точной сборке, доказательства подтверждены.');
   assert.equal(envelope.item.data.instance_nonce, '33333333-3333-4333-8333-333333333333');
   assert.deepEqual(envelope.item.artifacts, {});
