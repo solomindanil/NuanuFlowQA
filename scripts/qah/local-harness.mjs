@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
+import { execFile as execFileCallback } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import YAML from "yaml";
 
 import { canonicalJson, sha256 } from "./canonical.mjs";
@@ -11,6 +13,8 @@ import { resolveContext } from "./context.mjs";
 import { validateAggregateForDecision } from "./decide.mjs";
 import { runPaydemoAdapter } from "./adapters/paydemo.mjs";
 import { normalizeRawIssueComments, runTaskCommand } from "./task-runtime.mjs";
+
+const execFile = promisify(execFileCallback);
 
 const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
 const PROJECT_ID = "22222222-2222-4222-8222-222222222222";
@@ -99,7 +103,7 @@ class LocalArtifactVersions {
     return ref;
   }
 
-  dependencies(profile, comments) {
+  dependencies(profile, comments, pinnedCommit) {
     return {
       resolveArtifactVersion: async ({ workspace_id, ref, max_bytes }) => {
         const record = this.records.get(`${ref.artifact_id}@${ref.version_id}`);
@@ -111,7 +115,7 @@ class LocalArtifactVersions {
         return structuredClone({ ...this.source, enforced_max_bytes: max_bytes });
       },
       resolveProfileAtCommit: async ({ repository_origin, commit, path, max_bytes }) => {
-        if (repository_origin !== profile.repository.allowed_origin || commit !== "a".repeat(40) || path !== "qa-harness.yaml" || this.profileBytes.byteLength > max_bytes) return null;
+        if (repository_origin !== profile.repository.allowed_origin || commit !== pinnedCommit || path !== "qa-harness.yaml" || this.profileBytes.byteLength > max_bytes) return null;
         return {
           repository_origin,
           commit,
@@ -133,6 +137,21 @@ class LocalArtifactVersions {
       },
     };
   }
+}
+
+async function createPinnedDocsCheckout(root, profileBytes, repositoryOrigin) {
+  const checkout = join(root, "docs-repository");
+  await mkdir(checkout);
+  await execFile("git", ["init", "--quiet"], { cwd: checkout });
+  await execFile("git", ["config", "user.email", "qa@example.test"], { cwd: checkout });
+  await execFile("git", ["config", "user.name", "Universal QA Harness"], { cwd: checkout });
+  await execFile("git", ["remote", "add", "origin", repositoryOrigin], { cwd: checkout });
+  await writeFile(join(checkout, "qa-harness.yaml"), profileBytes);
+  await writeFile(join(checkout, "README.md"), "# Deterministic docs repository\n");
+  await execFile("git", ["add", "qa-harness.yaml", "README.md"], { cwd: checkout });
+  await execFile("git", ["commit", "--quiet", "-m", "docs fixture"], { cwd: checkout });
+  const { stdout } = await execFile("git", ["rev-parse", "--verify", "HEAD"], { cwd: checkout });
+  return { checkout: await realpath(checkout), commit: stdout.trim() };
 }
 
 async function persistManifest(store, directory, manifest, linksFor = {}) {
@@ -281,15 +300,19 @@ export async function runLocalQaHarness({ fixture, mode = "pass" }) {
   const root = await mkdtemp(join(tmpdir(), "universal-qah-e2e-"));
   const events = [];
   try {
-    const rawProfile = YAML.parse(await readFile(new URL("../../qa-harness.yaml", import.meta.url), "utf8"));
-    const profile = fixture === "docs" ? { ...rawProfile, environment: { strategy: "none" } } : rawProfile;
-    const profileBytes = Buffer.from(YAML.stringify(profile));
+    const profilePath = fixture === "docs" ? "tests/qah/fixtures/qa-harness.docs.yaml" : "qa-harness.yaml";
+    const profileBytes = await readFile(new URL(`../../${profilePath}`, import.meta.url));
+    const profile = YAML.parse(profileBytes.toString("utf8"));
+    const repository = fixture === "docs"
+      ? await createPinnedDocsCheckout(root, profileBytes, profile.repository.allowed_origin)
+      : { checkout: await realpath(root), commit: "a".repeat(40) };
+    if (fixture === "docs" && mode === "missing-evidence") await writeFile(join(repository.checkout, "README.md"), "dirty checkout\n");
     const store = new LocalArtifactVersions(profileBytes);
     const comments = [];
-    const dependencies = store.dependencies(profile, comments);
+    const dependencies = store.dependencies(profile, comments, repository.commit);
     const profileRef = store.persist({ name: "qa-harness.yaml", bytes: profileBytes, role: "implementation" });
     const contextFixture = JSON.parse(await readFile(new URL(`../../tests/qah/fixtures/context-${fixture}.json`, import.meta.url), "utf8"));
-    const rawContext = { ...contextFixture, profile_digest: sha256(profile) };
+    const rawContext = { ...contextFixture, commit: repository.commit, profile_digest: sha256(profile) };
     const profileInstall = { workspace_id: WORKSPACE_ID, profile_artifact: profileRef, repository_origin: profile.repository.allowed_origin, commit: rawContext.commit, profile_digest: rawContext.profile_digest };
     const workerEnvelopes = {};
 
@@ -336,16 +359,9 @@ export async function runLocalQaHarness({ fixture, mode = "pass" }) {
       }, { dependencies: {
         ...dependencies,
         trustedStateRoot: envHarness.stateRoot,
+        repositoryCheckout: repository.checkout,
         execute,
         verifyEnvironment: async ({ receipt }) => ({ receipt, checkout: root }),
-        verifyRepository: async ({ receipt, plan: verifiedPlan }) => ({
-          receipt,
-          checkout: root,
-          repository_origin: profile.repository.allowed_origin,
-          commit: verifiedPlan.commit,
-          source_artifact: verifiedPlan.source_artifact,
-          profile_digest: verifiedPlan.profile_digest,
-        }),
       } });
       const primaryRefs = await persistManifest(store, branchTask.outputDir, branchTask.result);
       const linked = await runTaskCommand(command, {
@@ -363,6 +379,7 @@ export async function runLocalQaHarness({ fixture, mode = "pass" }) {
       workerEnvelopes[envelope.item.key] = envelope;
       const data = envelope.item.data;
       const timing = timings[branch];
+      if (fixture === "docs" && branch === "code" && data.branch_result.evidence_status === "VERIFIED") timing.body_invoked = true;
       if (!timing.body_invoked) { timing.started_at = branchStart; timing.ended_at = Date.now(); }
       return {
         output: { branch_result: data.branch_result, envelope: data.envelope },
@@ -421,6 +438,11 @@ export async function runLocalQaHarness({ fixture, mode = "pass" }) {
 
     return {
       fixture,
+      profile_source: {
+        path: profilePath,
+        environment_strategy: profile.environment.strategy,
+        git_blob_sha256: `sha256:${checksum(profileBytes)}`,
+      },
       plan,
       environment,
       environment_created: environment.environment_status === "READY",

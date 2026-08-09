@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
+import YAML from "yaml";
 
 import { BRANCHES } from "../../scripts/qah/contracts.mjs";
 import { runLocalQaHarness } from "../../scripts/qah/local-harness.mjs";
@@ -90,4 +93,19 @@ test("product failure and missing code evidence fail closed through comment and 
       assert.ok(result.events.indexOf("transition") > result.events.indexOf("cleanup-complete"));
     });
   }
+});
+
+test("docs uses exact committed none-profile bytes while PayDemo keeps its managed profile", async () => {
+  const productProfile = YAML.parse(await readFile(new URL("../../qa-harness.yaml", import.meta.url), "utf8"));
+  const docsBytes = await readFile(new URL("./fixtures/qa-harness.docs.yaml", import.meta.url));
+  const docsProfile = YAML.parse(docsBytes.toString("utf8"));
+  assert.equal(productProfile.environment.strategy, "managed_command");
+  assert.equal(docsProfile.environment.strategy, "none");
+
+  const result = await runLocalQaHarness({ fixture: "docs" });
+  assert.deepEqual(result.profile_source, {
+    path: "tests/qah/fixtures/qa-harness.docs.yaml",
+    environment_strategy: "none",
+    git_blob_sha256: `sha256:${createHash("sha256").update(docsBytes).digest("hex")}`,
+  });
 });

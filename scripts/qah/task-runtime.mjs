@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
+import { execFile as execFileCallback } from "node:child_process";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { aggregateEvidence, resolveArtifactVersionForSlot, resolveCommitProfile, resolvePlatformEntityVersion } from "./aggregate.mjs";
 import { canonicalJson, sha256 } from "./canonical.mjs";
 import { resolveContext } from "./context.mjs";
@@ -15,6 +17,8 @@ import { publishComment, COMMENT_LIST_MAX_BYTES, COMMENT_LIST_MAX_COMMENTS } fro
 import { runBranch, runtimeEnvironmentForBranch } from "./run-branch.mjs";
 
 export { runtimeEnvironmentForBranch };
+
+const execFile = promisify(execFileCallback);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ARTIFACT_REF_KEYS = ["artifact_id", "version_id", "kind", "role"];
@@ -372,12 +376,43 @@ export function createResolverAdapters(bundle) {
       return structuredClone(attestation);
     },
     addIssueComment: async () => ({ accepted: true }),
+    repositoryCheckout: bundle.branch_execution?.checkout,
     verifyEnvironment: bundle.branch_execution === null ? undefined : async ({ receipt }) => ({ receipt, checkout: bundle.branch_execution.checkout }),
-    verifyRepository: bundle.branch_execution === null ? undefined : async ({ receipt, plan, profile }) => ({
-      receipt, checkout: bundle.branch_execution.checkout, repository_origin: profile.repository.allowed_origin,
-      commit: plan.commit, source_artifact: plan.source_artifact, profile_digest: plan.profile_digest,
-    }),
     execute: bundle.branch_execution === null ? undefined : async () => structuredClone(bundle.branch_execution.result),
+  };
+}
+
+async function verifyRepositoryCheckout({ checkout, receipt, plan, profile }) {
+  if (typeof checkout !== "string" || !isAbsolute(checkout)) throw new Error("repository checkout must be an absolute path");
+  const metadata = await lstat(checkout);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("repository checkout must be a real directory");
+  const exactCheckout = await realpath(checkout);
+  if (exactCheckout !== resolve(checkout)) throw new Error("repository checkout path must be exact");
+  const git = async (args) => {
+    const result = await execFile("git", args, {
+      cwd: exactCheckout,
+      encoding: "utf8",
+      env: runtimeEnvironmentForBranch("code", process.env),
+      maxBuffer: 65_536,
+      timeout: 10_000,
+    });
+    if (typeof result.stdout !== "string" || typeof result.stderr !== "string" || result.stderr !== "") throw new Error("Git repository verification emitted unexpected output");
+    return result.stdout;
+  };
+  const root = (await git(["rev-parse", "--show-toplevel"])).trimEnd();
+  if (!isAbsolute(root) || await realpath(root) !== exactCheckout || root !== exactCheckout) throw new Error("repository checkout must be the exact Git root");
+  const head = (await git(["rev-parse", "--verify", "HEAD^{commit}"])).trimEnd();
+  if (head !== plan.commit || !/^[a-f0-9]{40}$/.test(head)) throw new Error("repository HEAD does not match the pinned plan commit");
+  if ((await git(["status", "--porcelain=v1", "--untracked-files=all"])) !== "") throw new Error("repository checkout must be clean");
+  const origins = (await git(["remote", "get-url", "--all", "origin"])).trimEnd().split("\n");
+  if (origins.length !== 1 || origins[0] !== profile.repository.allowed_origin) throw new Error("repository origin does not match the pinned profile");
+  return {
+    receipt,
+    checkout: exactCheckout,
+    repository_origin: origins[0],
+    commit: head,
+    source_artifact: plan.source_artifact,
+    profile_digest: plan.profile_digest,
   };
 }
 
@@ -477,7 +512,17 @@ export async function runTaskCommand(command, input, options = {}) {
     exact(input, ["phase", "branch_input"], "branch execute input");
     if (input.phase !== "prepare") throw new Error("branch phase must be prepare, link, or complete");
     const raw = { ...input.branch_input, branch };
-    const output = await runBranch({ ...raw, execute: dependencies.execute, dependencies: { ...dependencies, verifyEnvironment: dependencies.verifyEnvironment } });
+    const repositoryOnly = branch === "code" && raw.profile?.environment?.strategy === "none" && raw.environmentReceipt?.environment_status === "NOT_REQUIRED";
+    const branchDependencies = { ...dependencies, verifyEnvironment: dependencies.verifyEnvironment };
+    if (repositoryOnly) {
+      branchDependencies.verifyRepository = ({ receipt, plan, profile }) => verifyRepositoryCheckout({
+        checkout: dependencies.repositoryCheckout,
+        receipt,
+        plan,
+        profile,
+      });
+    }
+    const output = await runBranch({ ...raw, execute: repositoryOnly ? undefined : dependencies.execute, dependencies: branchDependencies });
     return prepareBranchCandidates(taskKey, output, raw.plan, outputDir);
   }
   if (command === "aggregate-evidence") {

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import YAML from "yaml";
 import { loadWorkerCompletionValidator } from "./helpers/worker-contract.mjs";
 
@@ -21,6 +23,7 @@ import {
 import { aggregateFixture, aggregateFixtureResult } from "./aggregate.test.mjs?fixtures-only";
 
 const { buildCanonicalCompletion } = await loadWorkerCompletionValidator();
+const execFile = promisify(execFileCallback);
 
 const GRAPH_COMMANDS = [
   "resolve-flow-item", "load-project-context", "plan-qa-scope", "prepare-environment",
@@ -105,6 +108,65 @@ function serializedBundle(fixture, comments = []) {
   };
 }
 
+async function cleanGitCheckout(t, origin = "https://example.test/generic/product.git") {
+  const checkout = await mkdtemp(join(tmpdir(), "qah-runtime-git-"));
+  t.after(() => rm(checkout, { recursive: true, force: true }));
+  await execFile("git", ["init", "--quiet"], { cwd: checkout });
+  await execFile("git", ["config", "user.email", "qa@example.test"], { cwd: checkout });
+  await execFile("git", ["config", "user.name", "QA Harness"], { cwd: checkout });
+  await execFile("git", ["remote", "add", "origin", origin], { cwd: checkout });
+  await writeFile(join(checkout, "tracked.txt"), "pinned\n");
+  await execFile("git", ["add", "tracked.txt"], { cwd: checkout });
+  await execFile("git", ["commit", "--quiet", "-m", "fixture"], { cwd: checkout });
+  const { stdout } = await execFile("git", ["rev-parse", "HEAD"], { cwd: checkout });
+  return { checkout: await realpath(checkout), commit: stdout.trim(), origin };
+}
+
+function repositoryOnlyBranchInput(fixture, commit, command = [process.execPath, "--version"]) {
+  const profile = structuredClone(fixture.profile);
+  profile.environment = { strategy: "none" };
+  profile.checks.code = command;
+  const plan = structuredClone(fixture.plan);
+  plan.commit = commit;
+  plan.profile_digest = sha256(profile);
+  plan.artifact_slot = { ...plan.artifact_slot, commit, profile_digest: plan.profile_digest };
+  const { plan_sha256: _old, ...unsigned } = plan;
+  plan.plan_sha256 = sha256(unsigned);
+  const runId = "99999999-9999-4999-8999-999999999999";
+  const attemptId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const environmentId = "repository-only";
+  return {
+    plan,
+    profile,
+    environmentReceipt: {
+      environment_status: "NOT_REQUIRED",
+      run_id: runId,
+      attempt_id: attemptId,
+      environment_id: environmentId,
+      target_namespace: sha256({ run_id: runId, attempt_id: attemptId, environment_id: environmentId }).slice(7),
+    },
+    runId,
+    attemptId,
+  };
+}
+
+async function repositoryOnlyResult(t, branchInput, branch_execution) {
+  const root = await mkdtemp(join(tmpdir(), "qah-runtime-repository-only-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = aggregateFixture();
+  const bundle = serializedBundle(fixture);
+  bundle.branch_execution = {
+    result: { exitCode: 0, signal: null, stdout: "fabricated success", stderr: "" },
+    ...branch_execution,
+  };
+  await runTaskCommand("verify-requirements-and-code", {
+    phase: "prepare",
+    branch_input: branchInput,
+  }, runtimeOptions(root, "verify-requirements-and-code", { resolverBundle: bundle }));
+  const payload = JSON.parse(await readFile(join(root, "qah", "verify-requirements-and-code", "branch-payload.json"), "utf8"));
+  return { ...payload.branch_result, execution_data: payload.execution_data };
+}
+
 test("runtime exposes one explicit executable subcommand for every graph Agent Task", () => {
   assert.deepEqual(GRAPH_TASK_COMMANDS, GRAPH_COMMANDS);
   for (const command of GRAPH_COMMANDS) assert.equal(typeof runTaskCommand, "function", command);
@@ -173,6 +235,41 @@ test("resolver bundle adapter is exact and profile install precondition proves A
     commit: fixture.input.plan.commit,
     profile_digest: sha256(fixture.profile),
   }, changedDependencies), /profile.*(?:bytes|digest|Git)/i);
+});
+
+test("repository-only runtime fails closed for nonexistent, wrong-commit, and dirty Git checkouts", async (t) => {
+  const fixture = aggregateFixture();
+  const repository = await cleanGitCheckout(t);
+  const nonexistent = repositoryOnlyBranchInput(fixture, repository.commit);
+  const nonexistentResult = await repositoryOnlyResult(t, nonexistent, { checkout: join(repository.checkout, "missing") });
+  assert.deepEqual([nonexistentResult.product_result, nonexistentResult.evidence_status], ["INCONCLUSIVE", "PARTIAL"]);
+
+  const wrongCommit = repositoryOnlyBranchInput(fixture, "b".repeat(40));
+  const wrongCommitResult = await repositoryOnlyResult(t, wrongCommit, { checkout: repository.checkout });
+  assert.deepEqual([wrongCommitResult.product_result, wrongCommitResult.evidence_status], ["INCONCLUSIVE", "PARTIAL"]);
+
+  await writeFile(join(repository.checkout, "tracked.txt"), "dirty\n");
+  const dirty = repositoryOnlyBranchInput(fixture, repository.commit);
+  const dirtyResult = await repositoryOnlyResult(t, dirty, { checkout: repository.checkout });
+  assert.deepEqual([dirtyResult.product_result, dirtyResult.evidence_status], ["INCONCLUSIVE", "PARTIAL"]);
+});
+
+test("repository-only runtime executes the pinned profile argv and never accepts a fabricated success result", async (t) => {
+  const fixture = aggregateFixture();
+  const repository = await cleanGitCheckout(t);
+  const passingInput = repositoryOnlyBranchInput(fixture, repository.commit);
+  const passing = await repositoryOnlyResult(t, passingInput, { checkout: repository.checkout });
+  assert.equal(passing.product_result, "PASS", JSON.stringify(passing));
+  const branchInput = repositoryOnlyBranchInput(fixture, repository.commit, [process.execPath, "-p", "missingIdentifier"]);
+  const fabricated = serializedBundle(fixture);
+  fabricated.branch_execution = {
+    checkout: repository.checkout,
+    result: { exitCode: 0, signal: null, stdout: "forged success", stderr: "" },
+  };
+  const result = await repositoryOnlyResult(t, branchInput, fabricated.branch_execution);
+  assert.equal(result.product_result, "FAIL", JSON.stringify(result));
+  assert.equal(result.execution_data.code, "COMMAND_FAILED");
+  assert.equal(result.execution_data.environment_status, "NOT_REQUIRED");
 });
 
 test("non-interactive graph commands execute real Task1-6 functions with trusted adapters", async (t) => {
