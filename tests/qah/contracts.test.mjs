@@ -204,13 +204,15 @@ test("branch result rejects skipped required and unverified passing states", () 
   assert.throws(() => validateBranchResult(branchResult({ applicability: "NOT_APPLICABLE", product_result: "PASS" })), /not-applicable branch must be skipped/);
 });
 
-test("release decision rejects APPROVE and READY with a failing required branch", () => {
-  for (const decision of ["APPROVE", "READY"]) {
-    assert.throws(() => validateReleaseDecision(releaseDecision({
-      decision,
-      branch_results: [branchResult({ product_result: "FAIL", evidence_status: "VERIFIED" })],
-    })), /approval requires passing branches/);
-  }
+test("release decision rejects APPROVE with a failing required branch", () => {
+  assert.throws(() => validateReleaseDecision(releaseDecision({
+    branch_results: [branchResult({ product_result: "FAIL", evidence_status: "VERIFIED" })],
+  })), /approval requires passing branches/);
+});
+
+test("release decision rejects undocumented READY while APPROVE remains valid", () => {
+  assert.deepEqual(validateReleaseDecision(releaseDecision()), releaseDecision());
+  assert.throws(() => validateReleaseDecision(releaseDecision({ decision: "READY" })), /invalid decision/);
 });
 
 test("branch results require a commit-bound project identity", () => {
@@ -231,7 +233,6 @@ test("JSON schemas and runtime reject the same branch and approval invariants", 
   const requiredSkipped = branchResult({ product_result: "SKIPPED" });
   const unverifiedPass = branchResult({ evidence_status: "UNVERIFIED" });
   const approvalWithFailure = releaseDecision({ branch_results: [branchResult({ product_result: "FAIL", evidence_status: "VERIFIED" })] });
-  const readyWithFailure = releaseDecision({ decision: "READY", branch_results: [branchResult({ product_result: "FAIL", evidence_status: "VERIFIED" })] });
 
   for (const invalidBranch of [requiredSkipped, unverifiedPass]) {
     assert.equal(schemaAllowsInvariants(branchSchema, invalidBranch), false);
@@ -239,8 +240,6 @@ test("JSON schemas and runtime reject the same branch and approval invariants", 
   }
   assert.equal(schemaAllowsInvariants(releaseSchema, approvalWithFailure), false);
   assert.throws(() => validateReleaseDecision(approvalWithFailure));
-  assert.equal(schemaAllowsInvariants(releaseSchema, readyWithFailure), false);
-  assert.throws(() => validateReleaseDecision(readyWithFailure));
 });
 
 test("profile loader rejects aliases, custom tags, duplicate keys, and multiple documents", async () => {

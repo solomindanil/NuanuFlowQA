@@ -188,7 +188,7 @@ export function validateReleaseDecision(value) {
   projectKey(value.project_key);
   commit(value.commit);
   digest(value.profile_digest);
-  member(value.decision, ["APPROVE", "READY", "BLOCK", "INCONCLUSIVE"], "decision");
+  member(value.decision, ["APPROVE", "BLOCK", "INCONCLUSIVE"], "decision");
   if (!Array.isArray(value.branch_results) || value.branch_results.length === 0) throw new Error("branch_results must be a non-empty array");
   const branches = new Set();
   for (const result of value.branch_results) {
@@ -197,6 +197,6 @@ export function validateReleaseDecision(value) {
     if (branches.has(result.branch)) throw new Error("branch_results must contain unique branches");
     branches.add(result.branch);
   }
-  if (["APPROVE", "READY"].includes(value.decision) && value.branch_results.some((result) => result.applicability === "REQUIRED" && result.product_result !== "PASS")) throw new Error("approval requires passing branches");
+  if (value.decision === "APPROVE" && value.branch_results.some((result) => result.applicability === "REQUIRED" && result.product_result !== "PASS")) throw new Error("approval requires passing branches");
   return value;
 }
