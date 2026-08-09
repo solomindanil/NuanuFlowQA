@@ -33,7 +33,9 @@ async function gitFixture() {
   }
   execFileSync("git", ["-C", dir, "add", "."]);
   execFileSync("git", ["-C", dir, "commit", "-qm", "fixture"]);
-  return { dir, commit: execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() };
+  const origin = `file://${dir}`;
+  execFileSync("git", ["-C", dir, "remote", "set-url", "origin", origin]);
+  return { dir, origin, commit: execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() };
 }
 
 async function apiFixture(git, override = {}) {
@@ -58,11 +60,14 @@ async function apiFixture(git, override = {}) {
   const server = createServer((req, res) => {
     calls.push(req.url);
     if (override.redirectBinding && req.url.includes("/process-bindings/")) { res.writeHead(302, { location: `${base}/blob/profile` }).end(); return; }
-    if (req.url === `/api/workspaces/acme/artifacts/${ids.artifact}/download/?version=${ids.artifactv}`) { res.writeHead(302, { location: `${base}/bucket/profile?X-Amz-Signature=test` }).end(); return; }
-    if (req.url === "/bucket/profile?X-Amz-Signature=test") { res.writeHead(200, { "content-type": "application/yaml" }).end(override.oversize ? Buffer.alloc(300000) : profile); return; }
-    const value = responses[req.url];
+    if (req.url === `/be/api/workspaces/acme/artifacts/${ids.artifact}/download/?version=${ids.artifactv}&proxy=1`) { res.writeHead(200, { "content-type": "application/yaml" }).end(override.oversize ? Buffer.alloc(300000) : profile); return; }
+    const lookup = req.url.startsWith("/be/api/") ? req.url.slice(3) : req.url;
+    const value = responses[lookup];
     if (!value) { res.writeHead(404).end("{}"); return; }
-    res.setHeader("content-type", "application/json"); res.end(JSON.stringify(typeof value === "function" ? value(req) : value));
+    let body = typeof value === "function" ? value(req) : structuredClone(value);
+    if (lookup.includes("/versions/")) body.configuration_snapshot = { configuration_schema_version: 1, runtime: "remote", remote_protocol: "native", system_prompt: body.configuration_snapshot.system_prompt, endpoint_url: "", health_path: "", tools: [], skills: [], integrations: [], memory_loadout: { enabled: false, bindings: [] }, mcp_servers: [], a2a: null, capability_ceiling: { tools: [], integrations: [], mcp_servers: [], memory: [] }, execution_policy: { external_side_effects: "remote_admission_policy" }, catalog_provenance: { version: 1, curated_skill_catalog_revision: 1 } };
+    if (lookup.includes("/artifacts/") && !lookup.includes("/download/")) body = { ...body, workspace: ids.workspace, versions: body.versions.map((version) => override.externalArtifact ? ({ ...version, file_asset: null, representation: { type: "external_resource", canonicalUrl: "https://attacker.invalid/secret" } }) : ({ ...version, file_asset: "98989898-9898-4989-8989-989898989898", representation: { type: "file", fileAssetId: "98989898-9898-4989-8989-989898989898" } })) };
+    res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -70,7 +75,7 @@ async function apiFixture(git, override = {}) {
 }
 
 function request(git) {
-  return { workspace_slug: "acme", workspace_id: ids.workspace, project_id: ids.project, project_process_binding_id: ids.binding, process_template_id: ids.template, ready_for_qa_state_id: ids.ready, in_progress_state_id: ids.progress, ready_for_production_state_id: ids.production, qa_agent_employee_id: ids.qa, qa_agent_version_id: ids.qav, decision_agent_employee_id: ids.decision, decision_agent_version_id: ids.decisionv, decision_agent_metadata: { requested_model: "openai/gpt-5.6-sol-pro", required_capabilities: ["git", "nuanu_mcp", "tool_execution"] }, profile_artifact: { artifact_id: ids.artifact, version_id: ids.artifactv, kind: "document", role: "implementation" }, repository_origin: "https://example.invalid/acme.git", repository_path: git.dir, commit: git.commit };
+  return { workspace_slug: "acme", workspace_id: ids.workspace, project_id: ids.project, project_process_binding_id: ids.binding, process_template_id: ids.template, ready_for_qa_state_id: ids.ready, in_progress_state_id: ids.progress, ready_for_production_state_id: ids.production, qa_agent_employee_id: ids.qa, qa_agent_version_id: ids.qav, decision_agent_employee_id: ids.decision, decision_agent_version_id: ids.decisionv, decision_agent_metadata: { requested_model: "openai/gpt-5.6-sol-pro", required_capabilities: ["git", "nuanu_mcp", "tool_execution"] }, profile_artifact: { artifact_id: ids.artifact, version_id: ids.artifactv, kind: "document", role: "implementation" }, repository_origin: git.origin ?? "https://github.com/solomindanil/NuanuFlowQA.git", repository_path: git.dir, commit: git.commit };
 }
 
 test("production install path exposes no callback adapter or public attestation constructor", async () => {
@@ -88,15 +93,14 @@ test("direct fixed-route preflight accepts a faithful loopback API and actual Gi
   assert.equal(preflight.isInstallAttestation(attestation), true);
   assert.equal(api.calls.some((path) => path.includes("get_worker_binding")), false);
   assert.deepEqual(api.calls, [
-    `/api/workspaces/acme/projects/${ids.project}/process-bindings/${ids.binding}/`,
-    `/api/workspaces/acme/process-templates/${ids.template}/graph/?view=selection&node_keys=project_start&include_neighbors=true&include_incident_edges=true`,
-    "/api/workspaces/acme/agent-employees/",
-    `/api/workspaces/acme/agent-employees/${ids.qa}/versions/${ids.qav}/`,
-    `/api/workspaces/acme/agent-employees/${ids.decision}/versions/${ids.decisionv}/`,
+    `/be/api/workspaces/acme/projects/${ids.project}/process-bindings/${ids.binding}/`,
+    `/be/api/workspaces/acme/process-templates/${ids.template}/graph/?view=selection&node_keys=project_start&include_neighbors=true&include_incident_edges=true`,
+    "/be/api/workspaces/acme/agent-employees/",
+    `/be/api/workspaces/acme/agent-employees/${ids.qa}/versions/${ids.qav}/`,
+    `/be/api/workspaces/acme/agent-employees/${ids.decision}/versions/${ids.decisionv}/`,
     "/api/agent-worker/whoami/", "/api/agent-worker/whoami/",
-    `/api/workspaces/acme/artifacts/${ids.artifact}/`,
-    `/api/workspaces/acme/artifacts/${ids.artifact}/download/?version=${ids.artifactv}`,
-    "/bucket/profile?X-Amz-Signature=test",
+    `/be/api/workspaces/acme/artifacts/${ids.artifact}/`,
+    `/be/api/workspaces/acme/artifacts/${ids.artifact}/download/?version=${ids.artifactv}&proxy=1`,
   ]);
 });
 
@@ -117,6 +121,9 @@ test("direct transport rejects production lookalikes, redirects, oversize bodies
   await assert.rejects(preflight.runDirectInstallPreflight(request(git), { environment: environment(redirected.base) }), /redirect|HTTP/i);
   const oversized = await apiFixture(git, { oversize: true }); t.after(oversized.close);
   await assert.rejects(preflight.runDirectInstallPreflight(request(git), { environment: environment(oversized.base) }), /oversized|byte|profile/i);
+  const external = await apiFixture(git, { externalArtifact: true }); t.after(external.close);
+  await assert.rejects(preflight.runDirectInstallPreflight(request(git), { environment: environment(external.base) }), /external|file/i);
+  assert.equal(external.calls.some((path) => path.includes("/download/")), false);
 });
 
 test("production preflight CLI is callable without a custom JavaScript callback module", async () => {

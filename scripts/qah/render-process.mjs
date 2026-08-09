@@ -208,7 +208,7 @@ export async function verifyInstallPreconditions(installRequest) {
 
 export function renderProcessForInstall(blueprint, attestation) {
   const verified = consumeDirectInstallAttestation(attestation);
-  if (verified.test_mode) throw new TypeError("loopback test preflight is not install-ready");
+  if (verified.test_mode || verified.install_ready !== true) throw new TypeError(`preflight is not install-ready: ${(verified.unmet_preconditions ?? []).join("; ")}`);
   return {
     graph: renderProcess(blueprint, verified.bindings),
     install_attestation: {
