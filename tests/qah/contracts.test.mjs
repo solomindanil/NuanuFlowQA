@@ -24,6 +24,12 @@ test("canonical helpers produce a sorted JSON representation and prefixed digest
   assert.equal(sha256("abc"), "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 });
 
+test("canonical JSON preserves an own __proto__ key without prototype mutation", () => {
+  const value = JSON.parse('{"z":1,"__proto__":{"polluted":true}}');
+  assert.equal(canonicalJson(value), '{"__proto__":{"polluted":true},"z":1}');
+  assert.equal({}.polluted, undefined);
+});
+
 function profile(overrides = {}) {
   return {
     schema_version: "nuanu.qa-project-profile.v1",

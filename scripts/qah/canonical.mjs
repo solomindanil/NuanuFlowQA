@@ -10,7 +10,7 @@ function canonicalize(value, stack = new Set()) {
   if (typeof value !== "object") throw new TypeError("canonical JSON only supports JSON values");
   if (stack.has(value)) throw new TypeError("canonical JSON does not support circular values");
   stack.add(value);
-  const result = {};
+  const result = Object.create(null);
   for (const key of Object.keys(value).sort()) result[key] = canonicalize(value[key], stack);
   stack.delete(value);
   return result;
