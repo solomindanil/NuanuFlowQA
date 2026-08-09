@@ -7,6 +7,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const SECRET_KEY = /(secret|token|password|credential|authorization|api[_-]?key)/i;
 const SHELL_SYNTAX = /(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|%[A-Za-z_][A-Za-z0-9_]*%|[`;&|<>]|\r|\n)/;
+const SECRET_ARGV = /(?:--?(?:secret|token|password|credential|authorization|api[_-]?key)(?:=|\s|$)|\b(?:secret|token|password|credential|authorization|api[_-]?key)\s*[:=]|\bbearer\s+\S+)/i;
 
 export function exactKeys(value, required, optional = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected object");
@@ -36,6 +37,7 @@ function command(value, label) {
       if (/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|%[A-Za-z_][A-Za-z0-9_]*%/.test(part)) throw new Error(`${label} contains environment interpolation`);
       throw new Error(`${label} contains shell syntax`);
     }
+    if (SECRET_ARGV.test(part)) throw new Error(`${label} contains secret-bearing argv`);
   }
   return value;
 }
@@ -45,7 +47,7 @@ function url(value, label) {
   let parsed;
   try { parsed = new URL(value); } catch { throw new Error(`${label} must be an absolute URL`); }
   if (!/^https?:$/.test(parsed.protocol)) throw new Error(`${label} must use http or https`);
-  if (parsed.username || parsed.password) throw new Error(`${label} contains credentials`);
+  if (parsed.username || parsed.password || SECRET_KEY.test(decodeURIComponent(parsed.search)) || SECRET_KEY.test(decodeURIComponent(parsed.hash))) throw new Error(`${label} contains credentials`);
   if (parsed.hash) throw new Error(`${label} must not contain a fragment`);
   return value;
 }
@@ -95,7 +97,7 @@ function schema(value, expected) {
 
 export function validateProfile(value) {
   try {
-    exactKeys(value, ["schema_version", "project_key", "repository", "environment", "checks", "safety", "test_data"]);
+    exactKeys(value, ["schema_version", "project_key", "repository", "environment", "checks", "safety", "execution", "test_data"]);
     schema(value.schema_version, "nuanu.qa-project-profile.v1");
     projectKey(value.project_key);
     noSecrets(value);
@@ -119,6 +121,12 @@ export function validateProfile(value) {
     member(value.safety.secret_output, ["deny"], "safety.secret_output");
     safeStringArray(value.safety.allowed_origins, "safety.allowed_origins");
     for (const allowedOrigin of value.safety.allowed_origins) url(allowedOrigin, "safety.allowed_origins");
+
+    exactKeys(value.execution, ["shell", "environment", "timeout_ms", "max_output_bytes"]);
+    if (value.execution.shell !== false) throw new Error("execution.shell must be false");
+    member(value.execution.environment, ["minimal"], "execution.environment");
+    if (!Number.isInteger(value.execution.timeout_ms) || value.execution.timeout_ms <= 0 || value.execution.timeout_ms > 600000) throw new Error("execution.timeout_ms must be a finite bounded integer");
+    if (!Number.isInteger(value.execution.max_output_bytes) || value.execution.max_output_bytes <= 0 || value.execution.max_output_bytes > 10485760) throw new Error("execution.max_output_bytes must be a finite bounded integer");
 
     exactKeys(value.test_data, ["profiles"]);
     safeStringArray(value.test_data.profiles, "test_data.profiles");
@@ -156,8 +164,11 @@ export function validateTestPlan(value) {
 }
 
 export function validateBranchResult(value) {
-  exactKeys(value, ["schema_version", "branch", "applicability", "product_result"], ["evidence_status"]);
+  exactKeys(value, ["schema_version", "project_key", "commit", "profile_digest", "branch", "applicability", "product_result"], ["evidence_status"]);
   schema(value.schema_version, "nuanu.qa-branch-result.v1");
+  projectKey(value.project_key);
+  commit(value.commit);
+  digest(value.profile_digest);
   member(value.branch, BRANCHES, "branch");
   member(value.applicability, ["REQUIRED", "NOT_APPLICABLE"], "applicability");
   member(value.product_result, PRODUCT_RESULTS, "product_result");
@@ -177,14 +188,15 @@ export function validateReleaseDecision(value) {
   projectKey(value.project_key);
   commit(value.commit);
   digest(value.profile_digest);
-  member(value.decision, ["APPROVE", "BLOCK", "INCONCLUSIVE"], "decision");
+  member(value.decision, ["APPROVE", "READY", "BLOCK", "INCONCLUSIVE"], "decision");
   if (!Array.isArray(value.branch_results) || value.branch_results.length === 0) throw new Error("branch_results must be a non-empty array");
   const branches = new Set();
   for (const result of value.branch_results) {
     validateBranchResult(result);
+    if (result.project_key !== value.project_key || result.commit !== value.commit || result.profile_digest !== value.profile_digest) throw new Error("branch result identity must match release decision");
     if (branches.has(result.branch)) throw new Error("branch_results must contain unique branches");
     branches.add(result.branch);
   }
-  if (value.decision === "APPROVE" && value.branch_results.some((result) => result.applicability === "REQUIRED" && result.product_result !== "PASS")) throw new Error("approval requires passing branches");
+  if (["APPROVE", "READY"].includes(value.decision) && value.branch_results.some((result) => result.applicability === "REQUIRED" && result.product_result !== "PASS")) throw new Error("approval requires passing branches");
   return value;
 }

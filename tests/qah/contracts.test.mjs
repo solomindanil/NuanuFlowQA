@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   validateProfile,
   validateResolvedContext,
@@ -15,6 +17,7 @@ import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
 
 const sha = "a".repeat(40);
 const digest = `sha256:${"b".repeat(64)}`;
+const execFile = promisify(execFileCallback);
 
 test("canonical helpers produce a sorted JSON representation and prefixed digest", () => {
   assert.equal(canonicalJson({ z: [true, null], a: { y: 2, b: 1 } }), '{"a":{"b":1,"y":2},"z":[true,null]}');
@@ -43,6 +46,12 @@ function profile(overrides = {}) {
       irreversible_actions: "deny",
       secret_output: "deny",
       allowed_origins: ["http://127.0.0.1"],
+    },
+    execution: {
+      shell: false,
+      environment: "minimal",
+      timeout_ms: 300000,
+      max_output_bytes: 1048576,
     },
     test_data: { profiles: ["default", "payment_sandbox"] },
     ...overrides,
@@ -75,12 +84,42 @@ function testPlan(overrides = {}) {
 function branchResult(overrides = {}) {
   return {
     schema_version: "nuanu.qa-branch-result.v1",
+    project_key: "paydemo",
+    commit: sha,
+    profile_digest: digest,
     branch: "ui",
     applicability: "REQUIRED",
     product_result: "PASS",
     evidence_status: "VERIFIED",
     ...overrides,
   };
+}
+
+async function git(directory, ...args) {
+  return execFile("git", ["-C", directory, ...args]);
+}
+
+async function committedProfile(source) {
+  const directory = await mkdtemp(join(tmpdir(), "qah-profile-git-"));
+  await execFile("git", ["init", "--quiet", directory]);
+  await writeFile(join(directory, "qa-harness.yaml"), source);
+  await git(directory, "add", "qa-harness.yaml");
+  await git(directory, "-c", "user.name=QAH test", "-c", "user.email=qah@example.test", "commit", "--quiet", "-m", "fixture");
+  const { stdout } = await git(directory, "rev-parse", "HEAD");
+  return { directory, path: join(directory, "qa-harness.yaml"), commit: stdout.trim() };
+}
+
+function schemaAllowsInvariants(schema, value) {
+  const matches = (rule, candidate) => {
+    if (!rule) return true;
+    if ("const" in rule && candidate !== rule.const) return false;
+    if (rule.not && matches(rule.not, candidate)) return false;
+    if (rule.required && (!candidate || typeof candidate !== "object" || rule.required.some((key) => !(key in candidate)))) return false;
+    if (rule.properties && (!candidate || typeof candidate !== "object" || Object.entries(rule.properties).some(([key, child]) => key in candidate && !matches(child, candidate[key])))) return false;
+    if (rule.contains && (!Array.isArray(candidate) || !candidate.some((entry) => matches(rule.contains, entry)))) return false;
+    return true;
+  };
+  return (schema.allOf ?? []).every((rule) => !matches(rule.if, value) || matches(rule.then, value));
 }
 
 function releaseDecision(overrides = {}) {
@@ -117,8 +156,32 @@ test("profile rejects unsafe command entries and secret-bearing URLs", () => {
     repository: { allowed_origin: "https://alice:secret@github.com/solomindanil/NuanuFlowQA.git" },
   })), /credentials/);
   assert.throws(() => validateProfile(profile({
+    repository: { allowed_origin: "https://github.com/solomindanil/NuanuFlowQA.git?token=secret" },
+  })), /credentials/);
+  assert.throws(() => validateProfile(profile({
+    safety: { ...profile().safety, allowed_origins: ["http://127.0.0.1/#access_token=secret"] },
+  })), /credentials/);
+  assert.throws(() => validateProfile(profile({
+    checks: { ...profile().checks, code: ["npm", "run", "typecheck", "--token=secret"] },
+  })), /secret/);
+  assert.throws(() => validateProfile(profile({
+    checks: { ...profile().checks, api: ["curl", "-H", "Authorization: Bearer secret"] },
+  })), /secret/);
+  assert.throws(() => validateProfile(profile({
+    checks: { ...profile().checks, ui: ["curl", "-H", "x-api-key: secret"] },
+  })), /secret/);
+  assert.throws(() => validateProfile(profile({
     environment: { ...profile().environment, prepare_command: ["node\u0000bad"] },
   })), /NUL/);
+});
+
+test("profile requires a closed execution policy", () => {
+  assert.deepEqual(validateProfile(profile()), profile());
+  assert.throws(() => validateProfile(profile({ execution: { ...profile().execution, shell: true } })), /execution.shell/);
+  assert.throws(() => validateProfile(profile({ execution: { ...profile().execution, environment: "inherit" } })), /execution.environment/);
+  assert.throws(() => validateProfile(profile({ execution: { ...profile().execution, timeout_ms: Infinity } })), /timeout_ms/);
+  assert.throws(() => validateProfile(profile({ execution: { ...profile().execution, max_output_bytes: 0 } })), /max_output_bytes/);
+  assert.throws(() => validateProfile(profile({ execution: { ...profile().execution, extra: true } })), /unknown extra/);
 });
 
 test("resolved context rejects malformed commit and digest", () => {
@@ -132,10 +195,7 @@ test("test plan rejects extra keys and duplicate branches", () => {
 });
 
 test("branch result cannot call an applicable check SKIPPED", () => {
-  assert.throws(() => validateBranchResult({
-    schema_version: "nuanu.qa-branch-result.v1",
-    branch: "ui", applicability: "REQUIRED", product_result: "SKIPPED",
-  }), /required branch cannot be skipped/);
+  assert.throws(() => validateBranchResult(branchResult({ product_result: "SKIPPED" })), /required branch cannot be skipped/);
 });
 
 test("branch result rejects skipped required and unverified passing states", () => {
@@ -144,14 +204,46 @@ test("branch result rejects skipped required and unverified passing states", () 
   assert.throws(() => validateBranchResult(branchResult({ applicability: "NOT_APPLICABLE", product_result: "PASS" })), /not-applicable branch must be skipped/);
 });
 
-test("release decision rejects approval with failing branch", () => {
+test("release decision rejects APPROVE and READY with a failing required branch", () => {
+  for (const decision of ["APPROVE", "READY"]) {
+    assert.throws(() => validateReleaseDecision(releaseDecision({
+      decision,
+      branch_results: [branchResult({ product_result: "FAIL", evidence_status: "VERIFIED" })],
+    })), /approval requires passing branches/);
+  }
+});
+
+test("branch results require a commit-bound project identity", () => {
+  const result = branchResult();
+  delete result.project_key;
+  assert.throws(() => validateBranchResult(result), /missing project_key/);
+});
+
+test("release decision rejects mixed branch identity", () => {
   assert.throws(() => validateReleaseDecision(releaseDecision({
-    branch_results: [branchResult({ product_result: "FAIL", evidence_status: "VERIFIED" })],
-  })), /approval requires passing branches/);
+    branch_results: [branchResult({ commit: "c".repeat(40) })],
+  })), /branch result identity/);
+});
+
+test("JSON schemas and runtime reject the same branch and approval invariants", async () => {
+  const branchSchema = JSON.parse(await readFile("schemas/qah/branch-result.schema.json", "utf8"));
+  const releaseSchema = JSON.parse(await readFile("schemas/qah/release-decision.schema.json", "utf8"));
+  const requiredSkipped = branchResult({ product_result: "SKIPPED" });
+  const unverifiedPass = branchResult({ evidence_status: "UNVERIFIED" });
+  const approvalWithFailure = releaseDecision({ branch_results: [branchResult({ product_result: "FAIL", evidence_status: "VERIFIED" })] });
+  const readyWithFailure = releaseDecision({ decision: "READY", branch_results: [branchResult({ product_result: "FAIL", evidence_status: "VERIFIED" })] });
+
+  for (const invalidBranch of [requiredSkipped, unverifiedPass]) {
+    assert.equal(schemaAllowsInvariants(branchSchema, invalidBranch), false);
+    assert.throws(() => validateBranchResult(invalidBranch));
+  }
+  assert.equal(schemaAllowsInvariants(releaseSchema, approvalWithFailure), false);
+  assert.throws(() => validateReleaseDecision(approvalWithFailure));
+  assert.equal(schemaAllowsInvariants(releaseSchema, readyWithFailure), false);
+  assert.throws(() => validateReleaseDecision(readyWithFailure));
 });
 
 test("profile loader rejects aliases, custom tags, duplicate keys, and multiple documents", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "qah-contracts-"));
   const invalidDocuments = [
     "profile: &p paydemo\nproject_key: *p\n",
     "schema_version: !unsafe nuanu.qa-project-profile.v1\n",
@@ -159,8 +251,16 @@ test("profile loader rejects aliases, custom tags, duplicate keys, and multiple 
     "schema_version: nuanu.qa-project-profile.v1\n---\nschema_version: nuanu.qa-project-profile.v1\n",
   ];
   for (const [index, yaml] of invalidDocuments.entries()) {
-    const path = join(directory, `${index}.yaml`);
-    await writeFile(path, yaml);
-    await assert.rejects(loadProfile(path, sha), /YAML|exact profile contract/);
+    const { path, commit } = await committedProfile(yaml);
+    await assert.rejects(loadProfile(path, commit), /YAML|exact profile contract/);
   }
+});
+
+test("profile loader reads profile bytes from the requested commit", async () => {
+  const committed = profile({ project_key: "committed" });
+  const altered = profile({ project_key: "altered" });
+  const { path, commit } = await committedProfile(JSON.stringify(committed));
+  await writeFile(path, JSON.stringify(altered));
+  const loaded = await loadProfile(path, commit);
+  assert.equal(loaded.project_key, "committed");
 });

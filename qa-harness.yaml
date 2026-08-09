@@ -17,5 +17,10 @@ safety:
   irreversible_actions: deny
   secret_output: deny
   allowed_origins: [http://127.0.0.1]
+execution:
+  shell: false
+  environment: minimal
+  timeout_ms: 300000
+  max_output_bytes: 1048576
 test_data:
   profiles: [default, payment_sandbox]

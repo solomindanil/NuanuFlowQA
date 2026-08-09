@@ -1,6 +1,11 @@
-import { readFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { realpath } from "node:fs/promises";
+import { dirname, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import YAML, { isAlias, isMap, isSeq } from "yaml";
 import { validateProfile } from "./contracts.mjs";
+
+const execFile = promisify(execFileCallback);
 
 function assertSafeYaml(node) {
   if (!node) return;
@@ -14,7 +19,24 @@ function assertSafeYaml(node) {
 
 export async function loadProfile(path, expectedCommit) {
   if (typeof expectedCommit !== "string" || !/^[a-f0-9]{40}$/.test(expectedCommit)) throw new Error("expectedCommit must be a lowercase 40-character Git SHA");
-  const source = await readFile(path, "utf8");
+  const requestedPath = await realpath(resolve(path));
+  let repositoryRoot;
+  try {
+    ({ stdout: repositoryRoot } = await execFile("git", ["-C", dirname(requestedPath), "rev-parse", "--show-toplevel"]));
+  } catch {
+    throw new Error("profile path must belong to a Git repository");
+  }
+  repositoryRoot = await realpath(resolve(repositoryRoot.trim()));
+  const profilePath = relative(repositoryRoot, requestedPath);
+  if (!profilePath || profilePath === ".." || profilePath.startsWith(`..${sep}`)) throw new Error("profile path must be contained by its Git repository");
+  const objectName = `${expectedCommit}:${profilePath.split(sep).join("/")}`;
+  let source;
+  try {
+    await execFile("git", ["-C", repositoryRoot, "rev-parse", "--verify", "--quiet", `${expectedCommit}^{commit}`]);
+    ({ stdout: source } = await execFile("git", ["-C", repositoryRoot, "show", "--no-ext-diff", "--format=", objectName], { maxBuffer: 1048576 }));
+  } catch {
+    throw new Error("profile must exist in the requested Git commit");
+  }
   const documents = YAML.parseAllDocuments(source, { schema: "core", uniqueKeys: true, prettyErrors: false, merge: false });
   if (documents.length !== 1) throw new Error("YAML profile must contain exactly one document");
   const [document] = documents;
