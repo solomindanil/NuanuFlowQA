@@ -114,6 +114,7 @@ function materialize(store, { index, semanticRole, payload, bytes, metadata = {}
     workspace_id: workspaceId,
     enforced_max_bytes: null,
     byte_length: immutableBytes.byteLength,
+    links: [],
     artifact: {
       id: artifactId,
       workspace_id: workspaceId,
@@ -148,6 +149,7 @@ function registerSourceMaterial(store) {
     workspace_id: workspaceId,
     enforced_max_bytes: null,
     byte_length: bytes.byteLength,
+    links: [],
     artifact: {
       id: sourceArtifact.artifact_id,
       workspace_id: workspaceId,

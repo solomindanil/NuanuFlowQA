@@ -236,6 +236,24 @@ test("docs profile returns NOT_REQUIRED without spawning product", async () => {
   assert.equal(spawnCalls, 0);
 });
 
+test("none cleanup returns the exact lease-free ABSENT receipt", async () => {
+  const receipt = await cleanupEnvironment({
+    profile: noneProfile,
+    repositoryOrigin: origin,
+    commit,
+    runId,
+    attemptId,
+    environmentId,
+  });
+  assert.deepEqual(receipt, {
+    environment_status: "ABSENT",
+    run_id: runId,
+    attempt_id: attemptId,
+    environment_id: environmentId,
+    target_namespace: targetNamespace({ runId, attemptId, environmentId }),
+  });
+});
+
 test("managed environment clones an exact HTTPS commit with redirects disabled and persists the full attempt fence", async (t) => {
   const harness = await createHarness(t);
   const receipt = await prepareEnvironment(harness.input());
@@ -357,6 +375,8 @@ test("STARTED crash replay safely stops exact-owned process and remains visible 
 
   const cleaned = await cleanupEnvironment(harness.input());
   assert.equal(cleaned.environment_status, "STOPPED");
+  assert.equal(cleaned.instance_nonce, ready.instance_nonce);
+  assert.deepEqual(Object.keys(cleaned).sort(), ["attempt_id", "environment_id", "environment_status", "instance_nonce", "run_id", "target_namespace"]);
   await assert.rejects(access(ready.state_file));
 });
 

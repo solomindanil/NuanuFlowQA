@@ -26,9 +26,12 @@ const READY_RECEIPT_KEYS = ["environment_status", "run_id", "attempt_id", "envir
 const NOT_REQUIRED_RECEIPT_KEYS = ["environment_status", "run_id", "attempt_id", "environment_id", "target_namespace"];
 const FAILURE_RECEIPT_KEYS = [...NOT_REQUIRED_RECEIPT_KEYS, "reason"];
 const ARTIFACT_REF_KEYS = ["artifact_id", "version_id", "kind", "role"];
-const RESOLVED_ARTIFACT_KEYS = ["workspace_id", "enforced_max_bytes", "byte_length", "artifact", "bytes"];
+const RESOLVED_ARTIFACT_KEYS = ["workspace_id", "enforced_max_bytes", "byte_length", "links", "artifact", "bytes"];
 const RESOLVED_ARTIFACT_META_KEYS = ["id", "workspace_id", "status", "current_version", "kind", "name", "mime_type", "versions"];
 const RESOLVED_VERSION_KEYS = ["id", "version", "file_asset", "size", "checksum"];
+const ARTIFACT_LINK_KEYS = ["entity_type", "entity_id", "relation"];
+const ARTIFACT_LINK_TYPES = new Set(["project", "work_item", "process_run"]);
+const ARTIFACT_LINK_RELATIONS = new Set(["about", "source", "output", "attachment"]);
 const COMMIT_PROFILE_KEYS = ["repository_origin", "commit", "path", "byte_length", "enforced_max_bytes", "sha256", "bytes"];
 const ARTIFACT_ROLES = ["branch_payload", "occurrence", "evidence"];
 const CANDIDATE_KEYS = ["schema_version", "run_id", "attempt_id", "attempt_namespace", "branch_namespace", "branch", "environment_identity", "product_result", "environment_status", "evidence_status", "confidence", "code", "evidence_kinds", "observations", "candidates"];
@@ -42,6 +45,7 @@ export const ARTIFACT_SLOT_POLICY = Object.freeze({
   branch_payload: Object.freeze({ kind: "document", role: "output", name: "branch-payload.json", media_type: "application/json" }),
   occurrence: Object.freeze({ kind: "document", role: "evidence", name: "occurrence.json", media_type: "application/json" }),
   evidence: Object.freeze({ kind: "document", role: "evidence", name: "evidence.json", media_type: "application/json" }),
+  review_bundle: Object.freeze({ kind: "document", role: "evidence", name: "review-bundle.json", media_type: "application/json" }),
 });
 const PASS_CODES = Object.freeze({
   code: new Set(["COMMAND_PASSED"]),
@@ -181,6 +185,10 @@ export async function resolveArtifactVersionForSlot(refValue, slot, context, max
   if (!exactKeys(result, RESOLVED_ARTIFACT_KEYS)) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
   if (result.enforced_max_bytes !== maximumBytes) throw new PolicyError("UNATTESTED_ARTIFACT_BOUND");
   if (!exactKeys(result.artifact, RESOLVED_ARTIFACT_META_KEYS) || !Array.isArray(result.artifact.versions) || result.artifact.versions.length < 1 || result.artifact.versions.length > 64) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
+  if (!Array.isArray(result.links) || result.links.length > 64 || result.links.some((link) => !exactKeys(link, ARTIFACT_LINK_KEYS)
+    || !ARTIFACT_LINK_TYPES.has(link.entity_type) || !UUID.test(link.entity_id) || !ARTIFACT_LINK_RELATIONS.has(link.relation))) {
+    throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
+  }
   const version = result.artifact.versions.find((candidate) => candidate?.id === ref.version_id);
   if (!exactKeys(version, RESOLVED_VERSION_KEYS)) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
   const policy = ARTIFACT_SLOT_POLICY[slot];
@@ -202,7 +210,7 @@ export async function resolveArtifactVersionForSlot(refValue, slot, context, max
     try { payload = JSON.parse(text); } catch { throw new PolicyError("INVALID_TRUSTED_ARTIFACT"); }
     if (canonicalJson(payload) !== text) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
   }
-  return { reference: ref, checksum: version.checksum, version_number: version.version, payload, bytes, byte_length: byteLength };
+  return { reference: ref, checksum: version.checksum, version_number: version.version, payload, bytes, byte_length: byteLength, links: structuredClone(result.links) };
 }
 
 export async function resolveCommitProfile(context, repositoryOrigin, commit) {

@@ -164,6 +164,12 @@ test("profile accepts safe named command arrays", () => {
   assert.deepEqual(validateProfile(profile()), profile());
 });
 
+test("profile accepts only the exact lease-free environment none contract", () => {
+  const value = profile({ environment: { strategy: "none" } });
+  assert.deepEqual(validateProfile(value), value);
+  assert.throws(() => validateProfile(profile({ environment: { strategy: "none", cleanup_command: ["node", "cleanup.mjs"] } })), /unknown cleanup_command/);
+});
+
 test("profile rejects unsafe command entries and secret-bearing URLs", () => {
   assert.throws(() => validateProfile(profile({
     checks: { ...profile().checks, code: ["npm", "run", "typecheck", "$TOKEN"] },
@@ -210,6 +216,7 @@ test("test plan rejects extra keys and duplicate branches", () => {
   const ownProtoKey = JSON.parse(JSON.stringify(testPlan()).replace(/}$/, ',"__proto__":{"release":"READY"}}'));
   assert.throws(() => validateTestPlan(ownProtoKey), /unknown __proto__/);
   assert.throws(() => validateTestPlan(testPlan({ branches: ["code", "code"] })), /unique branches/);
+  assert.deepEqual(validateTestPlan(testPlan({ branches: [] })), testPlan({ branches: [] }));
 });
 
 test("branch result cannot call an applicable check SKIPPED", () => {

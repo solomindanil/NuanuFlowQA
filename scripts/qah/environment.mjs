@@ -782,7 +782,7 @@ export async function cleanupEnvironment(input) {
       }
       if (state.phase === "RECOVERED_STOPPED") {
         await rm(paths.environmentDirectory, { recursive: true, force: true });
-        return cleanupReceipt(fence, namespace, "STOPPED");
+        return cleanupReceipt(fence, namespace, "STOPPED", { instance_nonce: state.instance_nonce });
       }
       if (state.phase === "RECOVERY_REQUIRED") {
         return cleanupReceipt(fence, namespace, "RECOVERY_REQUIRED", { reason: state.recovery_reason });
@@ -811,7 +811,7 @@ export async function cleanupEnvironment(input) {
         return recoveryReceipt(input, paths, deps, fence, namespace, "PID ownership is foreign or uncertain; refusing to signal it");
       }
       await rm(paths.environmentDirectory, { recursive: true, force: true });
-      return cleanupReceipt(fence, namespace, "STOPPED");
+      return cleanupReceipt(fence, namespace, "STOPPED", { instance_nonce: state.instance_nonce });
     });
   } catch (error) {
     return cleanupReceipt(fence, namespace, "RECOVERY_REQUIRED", { reason: errorMessage(error) });

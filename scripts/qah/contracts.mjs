@@ -105,12 +105,15 @@ export function validateProfile(value) {
     exactKeys(value.repository, ["allowed_origin"]);
     url(value.repository.allowed_origin, "repository.allowed_origin");
 
-    exactKeys(value.environment, ["strategy", "prepare_command", "cleanup_command", "health_path"]);
-    member(value.environment.strategy, ["managed_command"], "environment.strategy");
-    command(value.environment.prepare_command, "environment.prepare_command");
-    command(value.environment.cleanup_command, "environment.cleanup_command");
-    nonEmptyString(value.environment.health_path, "environment.health_path");
-    if (!value.environment.health_path.startsWith("/") || value.environment.health_path.includes("..") || value.environment.health_path.includes("?")) throw new Error("environment.health_path must be an absolute safe path");
+    member(value.environment?.strategy, ["managed_command", "none"], "environment.strategy");
+    if (value.environment.strategy === "none") exactKeys(value.environment, ["strategy"]);
+    else {
+      exactKeys(value.environment, ["strategy", "prepare_command", "cleanup_command", "health_path"]);
+      command(value.environment.prepare_command, "environment.prepare_command");
+      command(value.environment.cleanup_command, "environment.cleanup_command");
+      nonEmptyString(value.environment.health_path, "environment.health_path");
+      if (!value.environment.health_path.startsWith("/") || value.environment.health_path.includes("..") || value.environment.health_path.includes("?")) throw new Error("environment.health_path must be an absolute safe path");
+    }
 
     exactKeys(value.checks, BRANCHES);
     for (const branch of BRANCHES) command(value.checks[branch], `checks.${branch}`);
@@ -181,7 +184,7 @@ export function validateTestPlan(value) {
   projectKey(value.project_key);
   commit(value.commit);
   digest(value.profile_digest);
-  safeStringArray(value.branches, "branches");
+  if (!Array.isArray(value.branches) || value.branches.length > BRANCHES.length || new Set(value.branches).size !== value.branches.length) throw new Error("branches must be a bounded array with unique branches");
   for (const branch of value.branches) member(branch, BRANCHES, "branch");
   return value;
 }
