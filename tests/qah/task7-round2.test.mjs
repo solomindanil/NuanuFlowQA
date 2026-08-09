@@ -133,6 +133,6 @@ test("install rendering rejects the former caller-authoritative resolver and att
   assert.equal(typeof renderer.verifyInstallPreconditions, "function");
   assert.equal(typeof renderer.renderForInstall, "function");
   const install = { workspace_id: "22222222-2222-4222-8222-222222222222", repository_origin: "https://example.invalid/repository.git", commit: "a".repeat(40) };
-  await assert.rejects(renderer.renderForInstall(blueprint, bindings, install), /trusted|adapter|brand/i);
-  assert.throws(() => renderer.renderProcessForInstall(blueprint, { verified: true }), /attestation|transcript/i);
+  await assert.rejects(renderer.renderForInstall(blueprint, bindings, install), /install request|direct|environment/i);
+  assert.throws(() => renderer.renderProcessForInstall(blueprint, { verified: true }), /attestation|direct/i);
 });

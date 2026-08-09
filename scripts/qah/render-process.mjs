@@ -1,5 +1,5 @@
 import { canonicalJson, sha256 } from "./canonical.mjs";
-import { consumeNuanuInstallAttestation, runNuanuInstallPreflight } from "./nuanu-install-adapter.mjs";
+import { consumeDirectInstallAttestation, runDirectInstallPreflight } from "./install-preflight.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /__BINDING_[A-Z0-9_]+__/g;
@@ -202,23 +202,24 @@ export function renderProcess(blueprint, rawBindings) {
   return JSON.parse(canonicalJson(graph));
 }
 
-export async function verifyInstallPreconditions(installRequest, adapter) {
-  return runNuanuInstallPreflight(adapter, installRequest);
+export async function verifyInstallPreconditions(installRequest) {
+  return runDirectInstallPreflight(installRequest);
 }
 
 export function renderProcessForInstall(blueprint, attestation) {
-  const verified = consumeNuanuInstallAttestation(attestation);
+  const verified = consumeDirectInstallAttestation(attestation);
+  if (verified.test_mode) throw new TypeError("loopback test preflight is not install-ready");
   return {
     graph: renderProcess(blueprint, verified.bindings),
     install_attestation: {
-      kind: "nuanu.qa-install-attestation.v1", catalog_revision: verified.request.catalog_revision,
-      graph_hash: verified.live_graph_hash, definition_etag: verified.live_definition_etag, profile_digest: verified.profile_digest,
+      kind: "nuanu.qah-direct-install-attestation.v1",
+      graph_hash: verified.graph_hash, definition_etag: verified.definition_etag, profile_digest: verified.profile_digest,
     },
   };
 }
 
-export async function renderForInstall(blueprint, installRequest, adapter) {
-  const attestation = await verifyInstallPreconditions(installRequest, adapter);
+export async function renderForInstall(blueprint, installRequest) {
+  const attestation = await verifyInstallPreconditions(installRequest);
   return renderProcessForInstall(blueprint, attestation);
 }
 
