@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalJson, sha256 } from "../canonical.mjs";
 import { runProbe as existingPaydemoProbe } from "../../paydemo-qah-probe.mjs";
@@ -127,10 +127,47 @@ async function boundedReceiptText(session, page, input, maximumBytes = MAX_UI_RE
   return summary.value.trim();
 }
 
-export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = join(tmpdir(), "nuanu-qah-ui"), maxArtifactBytes = DEFAULT_MAX_ARTIFACT_BYTES } = {}) {
+async function loadWorkerChromium(modulePath) {
+  if (typeof modulePath !== "string" || !isAbsolute(modulePath)) throw new Error("NUANU_QA_PLAYWRIGHT_MODULE must be an absolute pinned module path");
+  const metadata = await lstat(modulePath);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || await realpath(modulePath) !== resolve(modulePath)) throw new Error("NUANU_QA_PLAYWRIGHT_MODULE must be an exact real file");
+  const loaded = await import(pathToFileURL(modulePath).href);
+  const chromium = loaded.chromium ?? loaded.default?.chromium;
+  if (!chromium?.connectOverCDP) throw new Error("pinned Playwright module has no chromium.connectOverCDP");
+  return chromium;
+}
+
+function workerCdpUrl(value) {
+  let parsed;
+  try { parsed = new URL(value); } catch { parsed = null; }
+  if (!parsed || parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1" || !parsed.port || parsed.pathname !== "/" || parsed.search || parsed.hash || parsed.username || parsed.password || parsed.origin !== value) throw new Error("NUANU_QA_BROWSER_CDP_URL must be an exact loopback origin");
+  return value;
+}
+
+async function disconnectWorkerBrowserClient(browser) {
+  if (typeof browser?.disconnect === "function") return browser.disconnect();
+  if (browser?._connection && typeof browser._connection.close === "function") {
+    browser._connection.close();
+    return;
+  }
+  throw new Error("worker CDP client transport cannot be safely detached");
+}
+
+export async function runPaydemoUiProbe(rawInput, {
+  chromium, artifactRoot = join(tmpdir(), "nuanu-qah-ui"), maxArtifactBytes = DEFAULT_MAX_ARTIFACT_BYTES,
+  browserMode = "worker", environment = process.env,
+} = {}) {
   const input = validateInput(rawInput);
   if (input.branch !== "ui") throw new Error("UI probe requires the UI branch");
-  if (!chromium) ({ chromium } = await import("@playwright/test"));
+  if (!["worker", "standalone"].includes(browserMode)) throw new Error("UI browser mode must be explicitly worker or standalone");
+  if (browserMode === "worker") {
+    workerCdpUrl(environment.NUANU_QA_BROWSER_CDP_URL);
+    if (!chromium) chromium = await loadWorkerChromium(environment.NUANU_QA_PLAYWRIGHT_MODULE);
+    if (!chromium?.connectOverCDP) throw new Error("worker UI requires chromium.connectOverCDP");
+  } else {
+    if (!chromium) ({ chromium } = await import("@playwright/test"));
+    if (!chromium?.launch) throw new Error("standalone UI requires chromium.launch");
+  }
   if (!Number.isInteger(maxArtifactBytes) || maxArtifactBytes < 1 || maxArtifactBytes > 1024 * 1024) throw new Error("UI artifact bound is invalid");
   await mkdir(artifactRoot, { recursive: true, mode: 0o700 });
   const temporary = await mkdtemp(join(artifactRoot, `${input.branch_namespace}-`));
@@ -148,7 +185,9 @@ export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = joi
   let primaryError;
   const cleanupErrors = [];
   try {
-    browser = await chromium.launch({ headless: true, timeout: 10_000 });
+    browser = browserMode === "worker"
+      ? await chromium.connectOverCDP(workerCdpUrl(environment.NUANU_QA_BROWSER_CDP_URL))
+      : await chromium.launch({ headless: true, timeout: 10_000 });
     context = await browser.newContext({ serviceWorkers: "block" });
     context.setDefaultTimeout(10_000);
     await context.route("**/*", async (route) => {
@@ -202,7 +241,12 @@ export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = joi
       try { await context.tracing.stop({ path: tracePath }); } catch (error) { cleanupErrors.push(error); }
     }
     if (context) try { await context.close(); } catch (error) { cleanupErrors.push(error); }
-    if (browser) try { await browser.close(); } catch (error) { cleanupErrors.push(error); }
+    if (browser) {
+      try {
+        if (browserMode === "worker") await disconnectWorkerBrowserClient(browser);
+        else await browser.close();
+      } catch (error) { cleanupErrors.push(error); }
+    }
     try { await rm(temporary, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }
   }
   if (cleanupErrors.length > 0) throw new AggregateError(primaryError ? [primaryError, ...cleanupErrors] : cleanupErrors, "UI probe cleanup failed");

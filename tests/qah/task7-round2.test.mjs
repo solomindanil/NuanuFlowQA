@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,10 +6,12 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { buildCanonicalCompletion } from "/Users/danilsolomin/.codex/plugins/cache/nuanu/nuanu-flow-worker/0.3.13/scripts/worker/adapter.mjs";
+import { loadWorkerCompletionValidator } from "./helpers/worker-contract.mjs";
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
 import * as renderer from "../../scripts/qah/render-process.mjs";
 import * as runtime from "../../scripts/qah/task-runtime.mjs";
+
+const { buildCanonicalCompletion } = await loadWorkerCompletionValidator();
 
 const blueprint = JSON.parse(await readFile(new URL("../../processes/universal-qa-flow.graph.json", import.meta.url), "utf8"));
 const liveStart = JSON.parse(await readFile(new URL("fixtures/live-column-start.json", import.meta.url), "utf8"));
@@ -128,71 +129,10 @@ test("renderer byte-preserves the complete live Start edge and binds resolve_flo
   assert.throws(() => renderer.renderProcess(blueprint, { ...bindings, platform_start_edge: { ...liveStart.edge, source: bindings.qa_agent_employee_id } }), /source|edge/i);
 });
 
-test("install rendering only accepts verifier-created exact live capability and profile attestations", async () => {
+test("install rendering rejects the former caller-authoritative resolver and attestation APIs", async () => {
   assert.equal(typeof renderer.verifyInstallPreconditions, "function");
   assert.equal(typeof renderer.renderForInstall, "function");
-  const profileBytes = Buffer.from("schema_version: 1\n");
-  const capable = (employee_id, version_id, decision = false) => ({
-    agent: {
-      id: employee_id, name: decision ? "universal-release-decision" : "universal-qa-runner", display_name: "Universal QA",
-      runtime: "remote", role: "member", is_active: true,
-      active_version: { id: version_id, version_number: 1, content_hash: "1".repeat(64), published_at: "2026-08-09T00:00:00Z" },
-      capabilities: {
-        ...(decision ? { base_model: "openai/gpt-5.6-sol-pro" } : {}),
-        tools: [], skills: [], integrations: [], mcp_servers: [], remote_protocol: "native",
-        skill_availability: { source: "installed_plugin", scope: "full_bundled", attached_skills_applicable: false, includes_artifacts: true },
-      },
-    },
-    version: {
-      id: version_id, version_number: 1, content_hash: "1".repeat(64), published_at: "2026-08-09T00:00:00Z",
-      workspace: "22222222-2222-4222-8222-222222222222", agent_employee: employee_id,
-      configuration_schema_version: 1,
-      configuration_snapshot: {
-        ...(decision ? { base_model: "openai/gpt-5.6-sol-pro" } : {}),
-        a2a: null, tools: [], skills: [], runtime: "remote", health_path: "", mcp_servers: [], endpoint_url: "", integrations: [],
-        system_prompt: decision ? "Generic independent repository QA release decision." : "Generic repository QA executor.",
-        remote_protocol: "native", execution_policy: { external_side_effects: "remote_admission_policy" },
-        capability_ceiling: { tools: [], memory: [], mcp_servers: [], integrations: [] }, configuration_schema_version: 1,
-      },
-    },
-    worker_binding: {
-      repository_origin: "https://example.invalid/repository.git", repository_access: "read",
-      model: decision ? "openai/gpt-5.6-sol-pro" : "openai/gpt-5.6-sol",
-      capabilities: ["git", "tool_execution", "nuanu_artifacts", "nuanu_work_items"],
-    },
-  });
-  const dependencies = {
-    resolveAgentVersion: async ({ employee_id, version_id }) => capable(employee_id, version_id, employee_id === bindings.decision_agent_employee_id),
-    resolveArtifactVersion: async () => ({
-      workspace_id: "22222222-2222-4222-8222-222222222222", artifact_id: bindings.profile_artifact.artifact_id,
-      version_id: bindings.profile_artifact.version_id, kind: "document", status: "stored", size: profileBytes.byteLength,
-      checksum: createHash("sha256").update(profileBytes).digest("hex"), bytes: profileBytes,
-    }),
-    resolveProfileAtCommit: async () => ({ repository_origin: "https://example.invalid/repository.git", commit: "a".repeat(40), path: "qa-harness.yaml", sha256: `sha256:${createHash("sha256").update(profileBytes).digest("hex")}`, bytes: profileBytes }),
-  };
   const install = { workspace_id: "22222222-2222-4222-8222-222222222222", repository_origin: "https://example.invalid/repository.git", commit: "a".repeat(40) };
-  const verified = await renderer.renderForInstall(blueprint, bindings, install, dependencies);
-  assert.equal(verified.install_attestation.verified, true);
-  assert.deepEqual(verified.graph.edges[0], liveStart.edge);
-  await assert.rejects(renderer.renderForInstall(blueprint, bindings, install, {
-    ...dependencies,
-    resolveAgentVersion: async ({ employee_id, version_id }) => ({ ...capable(employee_id, version_id, true), worker_binding: { ...capable(employee_id, version_id, true).worker_binding, capabilities: [] } }),
-  }), /capabilit|tool|MCP/i);
-  await assert.rejects(renderer.renderForInstall(blueprint, bindings, install, {
-    ...dependencies,
-    resolveAgentVersion: async ({ employee_id, version_id }) => {
-      const snapshot = capable(employee_id, version_id, true);
-      snapshot.version.configuration_snapshot.system_prompt = "PayDemo payment endpoints";
-      return snapshot;
-    },
-  }), /generic|product|payment/i);
-  await assert.rejects(renderer.renderForInstall(blueprint, bindings, install, {
-    ...dependencies,
-    resolveAgentVersion: async ({ employee_id, version_id }) => {
-      const snapshot = capable(employee_id, version_id, true);
-      snapshot.agent.id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-      return snapshot;
-    },
-  }), /foreign|employee|UUID/i);
-  assert.throws(() => renderer.renderProcessForInstall?.(blueprint, bindings, { verified: true }), /attestation|verifier/i);
+  await assert.rejects(renderer.renderForInstall(blueprint, bindings, install), /trusted|adapter|brand/i);
+  assert.throws(() => renderer.renderProcessForInstall(blueprint, { verified: true }), /attestation|transcript/i);
 });

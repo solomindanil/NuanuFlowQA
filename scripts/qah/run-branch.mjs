@@ -20,6 +20,7 @@ const ADAPTER_RESULT_KEYS = ["schema_version", "branch", "product_result", "envi
 const OBSERVATION_KEYS = ["code", "status", "value_sha256"];
 const CANDIDATE_KEYS = ["kind", "name", "media_type", "size_bytes", "sha256", "content_base64"];
 const MINIMAL_ENVIRONMENT = ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"];
+const UI_WORKER_ENVIRONMENT = ["NUANU_QA_BROWSER_CDP_URL", "NUANU_QA_PLAYWRIGHT_MODULE"];
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -190,8 +191,10 @@ function branchNamespace(runId, attemptId, branch) {
   return sha256({ run_id: runId, attempt_id: attemptId, branch }).slice("sha256:".length);
 }
 
-function minimalEnvironment(environment) {
-  return Object.fromEntries(MINIMAL_ENVIRONMENT.filter((name) => typeof environment?.[name] === "string").map((name) => [name, environment[name]]));
+export function runtimeEnvironmentForBranch(branch, environment) {
+  if (!BRANCHES.includes(branch)) throw new Error("branch is invalid");
+  const names = branch === "ui" ? [...MINIMAL_ENVIRONMENT, ...UI_WORKER_ENVIRONMENT] : MINIMAL_ENVIRONMENT;
+  return Object.fromEntries(names.filter((name) => typeof environment?.[name] === "string").map((name) => [name, environment[name]]));
 }
 
 function validateCandidate(value, maximumBytes) {
@@ -431,7 +434,7 @@ export async function runBranch({ branch, plan: rawPlan, profile: rawProfile, en
   const command = profile.checks[branch];
   let execution;
   try {
-    execution = await execute(command[0], command.slice(1), { cwd: verified.checkout, env: minimalEnvironment(environment), shell: false, timeoutMs: profile.execution.timeout_ms, maxOutputBytes: profile.execution.max_output_bytes, stdin });
+    execution = await execute(command[0], command.slice(1), { cwd: verified.checkout, env: runtimeEnvironmentForBranch(branch, environment), shell: false, timeoutMs: profile.execution.timeout_ms, maxOutputBytes: profile.execution.max_output_bytes, stdin });
   } catch { return infraOutput(context); }
   if (!execution || typeof execution !== "object" || typeof execution.stdout !== "string" || typeof execution.stderr !== "string" || !Number.isInteger(execution.exitCode) || execution.signal !== null || Buffer.byteLength(execution.stdout) + Buffer.byteLength(execution.stderr) > profile.execution.max_output_bytes) return infraOutput(context);
 

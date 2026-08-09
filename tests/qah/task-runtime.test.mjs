@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
-import { buildCanonicalCompletion } from "/Users/danilsolomin/.codex/plugins/cache/nuanu/nuanu-flow-worker/0.3.13/scripts/worker/adapter.mjs";
+import { loadWorkerCompletionValidator } from "./helpers/worker-contract.mjs";
 
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
 import { decideRelease } from "../../scripts/qah/decide.mjs";
@@ -19,6 +19,8 @@ import {
   verifyProfileInstallPrecondition,
 } from "../../scripts/qah/task-runtime.mjs";
 import { aggregateFixture, aggregateFixtureResult } from "./aggregate.test.mjs?fixtures-only";
+
+const { buildCanonicalCompletion } = await loadWorkerCompletionValidator();
 
 const GRAPH_COMMANDS = [
   "resolve-flow-item", "load-project-context", "plan-qa-scope", "prepare-environment",

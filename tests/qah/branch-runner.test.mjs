@@ -533,7 +533,7 @@ test("PayDemo UI wrapper returns candidates captured by the asserted interaction
   assert.deepEqual(result.candidates.map((candidate) => candidate.kind), ["screenshot", "trace"]);
 });
 
-test("PayDemo UI wrapper does not require inherited worker browser capabilities", async () => {
+test("PayDemo UI wrapper forwards only the explicitly supplied environment to its probe", async () => {
   const uiInput = paydemoInput("ui");
   const environments = [];
   await runPaydemoAdapter(uiInput, {
@@ -824,7 +824,7 @@ test("UI assertion, screenshot, and trace share one isolated context and clean t
   t.after(() => rm(artifactRoot, { recursive: true, force: true }));
   const harness = fakeUiBrowser();
   const input = paydemoInput("ui");
-  const result = await paydemoAdapterModule.runPaydemoUiProbe(input, { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 });
+  const result = await paydemoAdapterModule.runPaydemoUiProbe(input, { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024, browserMode: "standalone" });
   assert.equal(harness.events.indexOf("click") < harness.events.indexOf("screenshot"), true);
   assert.equal(harness.events.indexOf("screenshot") < harness.events.indexOf("trace-stop"), true);
   assert.deepEqual(result.candidates.map((entry) => entry.kind), ["screenshot", "trace"]);
@@ -845,7 +845,7 @@ test("UI rejects cross-origin navigation or requests and removes oversized evide
     t.after(() => rm(artifactRoot, { recursive: true, force: true }));
     const harness = fakeUiBrowser(configuration);
     const input = paydemoInput("ui");
-    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(input, { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /origin|artifact|size|scope/i);
+    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(input, { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024, browserMode: "standalone" }), /origin|artifact|size|scope/i);
     assert.deepEqual(await readdir(artifactRoot), []);
     assert.equal(harness.events.includes("context-close"), true);
     assert.equal(harness.events.includes("browser-close"), true);
@@ -856,7 +856,7 @@ test("UI assertion never materializes an untrusted response body", async (t) => 
   const artifactRoot = await mkdtemp(join(tmpdir(), "qah-ui-no-body-"));
   t.after(() => rm(artifactRoot, { recursive: true, force: true }));
   const harness = fakeUiBrowser({ responseBodyError: new Error("body is decompressed and unbounded") });
-  const result = await paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 });
+  const result = await paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024, browserMode: "standalone" });
   assert.equal(result.classification.product_result, "PASS");
   assert.equal(harness.events.includes("response-body"), false);
   assert.deepEqual(await readdir(artifactRoot), []);
@@ -866,7 +866,7 @@ test("UI rejects oversized request metadata before any POST body crosses the Pla
   const artifactRoot = await mkdtemp(join(tmpdir(), "qah-ui-request-oversize-"));
   t.after(() => rm(artifactRoot, { recursive: true, force: true }));
   const harness = fakeUiBrowser({ requestSizes: { requestBodySize: 4097, requestHeadersSize: 128, responseBodySize: 1, responseHeadersSize: 128 } });
-  await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /request|body|size/i);
+  await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024, browserMode: "standalone" }), /request|body|size/i);
   assert.equal(harness.events.includes("post-data-buffer"), false);
   assert.equal(harness.events.includes("post-data-json"), false);
   assert.deepEqual(await readdir(artifactRoot), []);
@@ -882,7 +882,7 @@ test("UI rejects missing, mismatched, or non-closed bounded POST bodies", async 
     const artifactRoot = await mkdtemp(join(tmpdir(), `qah-ui-request-invalid-${index}-`));
     t.after(() => rm(artifactRoot, { recursive: true, force: true }));
     const harness = fakeUiBrowser(configuration);
-    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /request|body|size|shape/i);
+    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024, browserMode: "standalone" }), /request|body|size|shape/i);
     assert.equal(harness.events.includes("post-data-buffer"), configuration.expectedBufferRead);
     assert.equal(harness.events.includes("post-data-json"), false);
     assert.equal(canonicalJson(harness.events).includes("must-not-cross"), false);
@@ -901,7 +901,7 @@ test("UI isolated world never transfers oversized or malformed receipt DOM value
     const artifactRoot = await mkdtemp(join(tmpdir(), `qah-ui-receipt-invalid-${index}-`));
     t.after(() => rm(artifactRoot, { recursive: true, force: true }));
     const harness = fakeUiBrowser(configuration);
-    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /receipt|DOM|size|shape|type/i);
+    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024, browserMode: "standalone" }), /receipt|DOM|size|shape|type/i);
     assert.equal(harness.events.includes("receipt-text-content"), false);
     assert.equal(canonicalJson(harness.events).includes("must-not-cross"), false);
     assert.deepEqual(await readdir(artifactRoot), []);
@@ -969,7 +969,7 @@ test("real Chromium receipt cap uses a pristine world despite a main-world TextE
   const artifactRoot = await mkdtemp(join(tmpdir(), "qah-ui-real-isolated-world-"));
   t.after(() => rm(artifactRoot, { recursive: true, force: true }));
   let observedError;
-  try { await paydemoAdapterModule.runPaydemoUiProbe(input, { chromium, artifactRoot, maxArtifactBytes: 1024 }); } catch (error) { observedError = error; }
+  try { await paydemoAdapterModule.runPaydemoUiProbe(input, { chromium, artifactRoot, maxArtifactBytes: 1024, browserMode: "standalone" }); } catch (error) { observedError = error; }
   assert.match(String(observedError), /receipt|DOM|size/i);
   assert.equal(state.mainWorldEncoderCalls, 0);
   assert.equal(String(observedError).includes(hugeReceipt), false);
@@ -989,7 +989,7 @@ test("UI rejects unavailable or malformed isolated CDP worlds and observes detac
     const artifactRoot = await mkdtemp(join(tmpdir(), `qah-ui-cdp-invalid-${index}-`));
     t.after(() => rm(artifactRoot, { recursive: true, force: true }));
     const harness = fakeUiBrowser(configuration);
-    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), configuration.pattern);
+    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024, browserMode: "standalone" }), configuration.pattern);
     assert.deepEqual(await readdir(artifactRoot), []);
     assert.equal(harness.events.includes("context-close"), true);
     assert.equal(harness.events.includes("browser-close"), true);
@@ -1005,7 +1005,7 @@ test("UI cleanup failures reject the adapter, attempt all cleanup, and remove ev
     const artifactRoot = await mkdtemp(join(tmpdir(), `qah-ui-cleanup-${index}-`));
     t.after(() => rm(artifactRoot, { recursive: true, force: true }));
     const harness = fakeUiBrowser(configuration);
-    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /cleanup/i);
+    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024, browserMode: "standalone" }), /cleanup/i);
     assert.deepEqual(await readdir(artifactRoot), []);
     assert.equal(harness.events.includes("context-close"), true);
     assert.equal(harness.events.includes("browser-close"), true);

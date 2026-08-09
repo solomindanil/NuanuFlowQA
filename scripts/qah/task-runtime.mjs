@@ -12,7 +12,9 @@ import { finalizeTransition } from "./finalize.mjs";
 import { planQaScope } from "./plan.mjs";
 import { parseProfileBytes } from "./profile.mjs";
 import { publishComment, COMMENT_LIST_MAX_BYTES, COMMENT_LIST_MAX_COMMENTS } from "./render-comment.mjs";
-import { runBranch } from "./run-branch.mjs";
+import { runBranch, runtimeEnvironmentForBranch } from "./run-branch.mjs";
+
+export { runtimeEnvironmentForBranch };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ARTIFACT_REF_KEYS = ["artifact_id", "version_id", "kind", "role"];
@@ -80,7 +82,13 @@ async function verifiedOutputDirectory(value, taskRoot) {
   const requested = outputDirectory(value);
   const lexicalParts = relative(resolve(taskRoot), requested).split(sep);
   if (lexicalParts.length !== 2 || lexicalParts[0] !== "qah" || !/^[a-z][a-z0-9-]{1,63}$/.test(lexicalParts[1])) throw new Error("outputDir must be one exact NUANU_TASK_DIR/qah/<step> directory");
-  await mkdir(requested, { recursive: true, mode: 0o700 });
+  const qah = join(root, "qah");
+  const qahMetadata = await lstat(qah).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+  if (qahMetadata === null) await mkdir(qah, { recursive: false, mode: 0o700 });
+  else if (!qahMetadata.isDirectory() || qahMetadata.isSymbolicLink()) throw new Error("NUANU_TASK_DIR/qah must be a real directory, not a symlink");
+  if (await realpath(qah) !== qah) throw new Error("NUANU_TASK_DIR/qah must stay inside the real task directory");
+  const requestedMetadata = await lstat(requested).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+  if (requestedMetadata === null) await mkdir(requested, { recursive: false, mode: 0o700 });
   const outputMetadata = await lstat(requested);
   if (!outputMetadata.isDirectory() || outputMetadata.isSymbolicLink()) throw new Error("outputDir must not be a symlink");
   const actual = await realpath(requested);
@@ -93,7 +101,8 @@ async function verifiedOutputDirectory(value, taskRoot) {
 
 async function writeCanonical(directory, name, value) {
   const root = outputDirectory(directory);
-  await mkdir(root, { recursive: true, mode: 0o700 });
+  const metadata = await lstat(root);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() || await realpath(root) !== root) throw new Error("canonical output directory must remain a real directory");
   const bytes = canonicalJson(value);
   await writeFile(join(root, name), bytes, { mode: 0o600, flag: "w" });
   return {
