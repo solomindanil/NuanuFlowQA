@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
+import { buildCanonicalCompletion } from "/Users/danilsolomin/.codex/plugins/cache/nuanu/nuanu-flow-worker/0.3.13/scripts/worker/adapter.mjs";
 
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
 import { decideRelease } from "../../scripts/qah/decide.mjs";
@@ -25,9 +26,45 @@ const GRAPH_COMMANDS = [
   "prepare-and-verify-domain-data", "aggregate-evidence", "independent-release-decision",
   "publish-flow-item-comment", "cleanup-environment", "finalize-transition",
 ];
+const processBlueprint = JSON.parse(await readFile(new URL("../../processes/universal-qa-flow.graph.json", import.meta.url), "utf8"));
+const taskNodeByCommand = new Map(GRAPH_COMMANDS.map((command) => [command, processBlueprint.graph.nodes.find((node) => node.key === command.replaceAll("-", "_"))]));
+let artifactSequence = 200;
+
+function actualRef(role = "output") {
+  artifactSequence += 1;
+  return {
+    artifact_id: `20000000-0000-4000-8000-${String(artifactSequence).padStart(12, "0")}`,
+    version_id: `30000000-0000-4000-8000-${String(artifactSequence).padStart(12, "0")}`,
+    kind: "document",
+    role,
+  };
+}
+
+function validateWorkerCompletion(command, result) {
+  const node = taskNodeByCommand.get(command);
+  assert.ok(node, command);
+  assert.deepEqual(Object.keys(result.item.data).sort(), Object.keys(node.config.output.data).sort(), `${command} data keys`);
+  const completion = buildCanonicalCompletion({
+    task_id: `task-${command}`, attempt: 1,
+    request: { process: { step_key: node.key }, output_definition: node.config.output },
+  }, { output: canonicalJson(result), publishedArtifacts: [] });
+  assert.equal(completion.result.item.key, node.key);
+  assert.deepEqual(Object.keys(completion.result.artifact_outputs).sort(), Object.keys(node.config.output.artifacts).map((slot) => `item.artifacts.${slot}`).sort());
+  for (const output of Object.values(completion.result.artifact_outputs)) assert.equal(output.mode, "reference");
+}
 
 function base64(value) {
   return Buffer.from(value).toString("base64");
+}
+
+function runtimeOptions(root, command, extra = {}) {
+  return { outputDir: join(root, "qah", command), taskRoot: root, ...extra };
+}
+
+async function completePrepared(root, command, artifact_refs, extra = {}) {
+  const result = await runTaskCommand(command, { phase: "complete", artifact_refs }, runtimeOptions(root, command, extra));
+  validateWorkerCompletion(command, result);
+  return result;
 }
 
 function serializedBundle(fixture, comments = []) {
@@ -104,7 +141,7 @@ test("raw full get_issue_comments adapter attests only a complete post-fetch bou
     observed_bytes: Buffer.byteLength(canonicalJson([{ comment_id: raw[0].id, ...identity, comment_html: raw[0].comment_html }]), "utf8"),
   });
   assert.throws(() => normalizeRawIssueComments(Array(101).fill(raw[0]), identity), /comment.*limit/i);
-  assert.throws(() => normalizeRawIssueComments([{ ...raw[0], extra: true }], identity), /exact|unknown/i);
+  assert.deepEqual(normalizeRawIssueComments([{ ...raw[0], extra: true }], identity).comments, result.comments);
 });
 
 test("resolver bundle adapter is exact and profile install precondition proves Artifact bytes equal pinned Git bytes", async () => {
@@ -159,25 +196,35 @@ test("non-interactive graph commands execute real Task1-6 functions with trusted
     repository_origin: fixture.input.repository_origin, commit: fixture.plan.commit, profile_digest: sha256(fixture.profile),
   };
   const resolved = await runTaskCommand("resolve-flow-item", {
+    phase: "prepare",
     workspace_id: fixture.input.workspace_id, project_id: raw_context.project_uuid, issue_id: raw_context.issue_uuid,
     source_artifact: fixture.plan.source_artifact,
-  }, { outputDir: join(root, "resolve"), dependencies });
+  }, runtimeOptions(root, "resolve-flow-item", { dependencies }));
   assert.equal(resolved.files[0].name, "resolve-flow-item.json");
-  const loaded = await runTaskCommand("load-project-context", { raw_context, profile: fixture.profile, profile_install }, { outputDir: join(root, "context"), dependencies });
-  const context = JSON.parse(await readFile(join(root, "context", "load-project-context.json"), "utf8"));
+  const resolvedFinal = await completePrepared(root, "resolve-flow-item", { resolved_item: actualRef() }, { dependencies });
+  const loaded = await runTaskCommand("load-project-context", { phase: "prepare", raw_context, profile: fixture.profile, profile_install }, runtimeOptions(root, "load-project-context", { dependencies }));
+  const context = JSON.parse(await readFile(join(root, "qah", "load-project-context", "load-project-context.json"), "utf8"));
   assert.equal(loaded.files[0].name, "load-project-context.json");
-  const planned = await runTaskCommand("plan-qa-scope", { context, profile: fixture.profile }, { outputDir: join(root, "plan"), dependencies });
+  const loadedFinal = await completePrepared(root, "load-project-context", { resolved_context: actualRef() }, { dependencies });
+  const planned = await runTaskCommand("plan-qa-scope", { phase: "prepare", context, profile: fixture.profile, carry: { profile_ref: fixture.input.profile_artifact, workspace_id: fixture.input.workspace_id } }, runtimeOptions(root, "plan-qa-scope", { dependencies }));
   assert.equal(planned.files[0].name, "test-plan.json");
+  const plannedFinal = await completePrepared(root, "plan-qa-scope", { test_plan: actualRef() }, { dependencies });
+  assert.deepEqual(plannedFinal.item.data.test_plan_ref, plannedFinal.artifact_outputs["item.artifacts.test_plan"]);
   const runId = "99999999-9999-4999-8999-999999999999";
   const attemptId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const environmentInput = { profile: fixture.profile, repositoryOrigin: fixture.input.repository_origin, commit: fixture.plan.commit, runId, attemptId, environmentId: "generic-env" };
-  const prepared = await runTaskCommand("prepare-environment", { environment_input: environmentInput }, { outputDir: join(root, "prepare"), dependencies });
-  const cleaned = await runTaskCommand("cleanup-environment", { environment_input: environmentInput }, { outputDir: join(root, "cleanup"), dependencies });
+  const carry = { source_ref: fixture.plan.source_artifact, profile_ref: fixture.input.profile_artifact, test_plan_ref: fixture.input.plan_artifact, workspace_id: fixture.input.workspace_id, project_id: raw_context.project_uuid, issue_id: raw_context.issue_uuid };
+  const prepared = await runTaskCommand("prepare-environment", { phase: "prepare", environment_input: environmentInput, carry }, runtimeOptions(root, "prepare-environment", { dependencies }));
+  const cleaned = await runTaskCommand("cleanup-environment", { phase: "prepare", environment_input: environmentInput, completion_context: { source_ref: fixture.plan.source_artifact, review_bundle_ref: fixture.input.plan_artifact } }, runtimeOptions(root, "cleanup-environment", { dependencies }));
   assert.deepEqual([prepared.files[0].name, cleaned.files[0].name], ["environment-manifest.json", "cleanup-receipt.json"]);
+  const preparedFinal = await completePrepared(root, "prepare-environment", { environment_manifest: actualRef() }, { dependencies });
+  const cleanedFinal = await completePrepared(root, "cleanup-environment", { cleanup_receipt_report: actualRef() }, { dependencies });
   const aggregated = await runTaskCommand("aggregate-evidence", {
-    aggregate_input: fixture.input, project_id: raw_context.project_uuid, issue_id: raw_context.issue_uuid,
-  }, { outputDir: join(root, "aggregate"), dependencies });
+    phase: "prepare", aggregate_input: fixture.input, project_id: raw_context.project_uuid, issue_id: raw_context.issue_uuid,
+  }, runtimeOptions(root, "aggregate-evidence", { dependencies }));
   assert.deepEqual(aggregated.files.map((file) => file.name), ["aggregate-report.json", "review-bundle.json"]);
+  const aggregatedFinal = await completePrepared(root, "aggregate-evidence", { aggregate_report: actualRef(), review_bundle: actualRef("evidence") }, { dependencies });
+  assert.equal(aggregatedFinal.item.data.review_bundle_ref.role, "evidence");
   const aggregate = await aggregateFixtureResult(fixture);
   const decided = await runTaskCommand("independent-release-decision", {
     aggregate, proposal: {},
@@ -187,8 +234,10 @@ test("non-interactive graph commands execute real Task1-6 functions with trusted
       cleanup_lease: { run_id: aggregate.run_id, attempt_id: aggregate.attempt_id, environment_id: aggregate.environment_id, target_namespace: aggregate.target_namespace, instance_nonce: aggregate.instance_nonce },
       workspace_id: fixture.input.workspace_id, project_id: raw_context.project_uuid, issue_id: raw_context.issue_uuid,
     },
-  }, { outputDir: join(root, "decision"), dependencies });
+  }, runtimeOptions(root, "independent-release-decision", { dependencies }));
   assert.equal(decided.item.data.decision.route, "READY_FOR_PRODUCTION");
+  validateWorkerCompletion("independent-release-decision", decided);
+  for (const final of [resolvedFinal, loadedFinal, plannedFinal, preparedFinal, cleanedFinal, aggregatedFinal, decided]) assert.deepEqual(JSON.parse(canonicalJson(final)), final);
   for (const result of [resolved, loaded, planned, prepared, cleaned, aggregated, decided]) assert.deepEqual(JSON.parse(canonicalJson(result)), result);
 });
 
@@ -206,11 +255,11 @@ test("every Task 4 CLI command uses actual refs across execute, link, and comple
   };
   const branchCommands = GRAPH_COMMANDS.filter((command) => /verify|requirements/.test(command));
   for (const [index, command] of branchCommands.entries()) {
-    const outputDir = join(root, command);
+    const outputDir = join(root, "qah", command);
     const execute = await runTaskCommand(command, {
-      phase: "execute",
+      phase: "prepare",
       branch_input: { plan: fixture.plan, profile: fixture.profile, environmentReceipt, runId: run_id, attemptId: attempt_id },
-    }, { outputDir });
+    }, { outputDir, taskRoot: root });
     assert.deepEqual(execute.files.map((file) => file.name).sort(), ["branch-payload.json", "evidence.json"]);
     const primary_refs = {
       branch_payload: { artifact_id: `00000000-0000-4000-8000-${String(index * 6 + 1).padStart(12, "0")}`, version_id: `00000000-0000-4000-8000-${String(index * 6 + 2).padStart(12, "0")}`, kind: "document", role: "output" },
@@ -219,7 +268,7 @@ test("every Task 4 CLI command uses actual refs across execute, link, and comple
     const linked = await runTaskCommand(command, {
       phase: "link", primary_refs,
       occurrence_context: { repository_origin: fixture.profile.repository.allowed_origin, content_hash: fixture.plan.content_hash, environment_id, instance_nonce: null },
-    }, { outputDir });
+    }, { outputDir, taskRoot: root });
     assert.deepEqual(linked.files.map((file) => file.name), ["occurrence.json"]);
     const occurrence = { artifact_id: `00000000-0000-4000-8000-${String(index * 6 + 5).padStart(12, "0")}`, version_id: `00000000-0000-4000-8000-${String(index * 6 + 6).padStart(12, "0")}`, kind: "document", role: "evidence" };
     const material_refs = { ...primary_refs, occurrence };
@@ -231,9 +280,10 @@ test("every Task 4 CLI command uses actual refs across execute, link, and comple
         project_id: "55555555-5555-4555-8555-555555555555", issue_id: "66666666-6666-4666-8666-666666666666",
         run_id, attempt_id,
       },
-    }, { outputDir });
+    }, { outputDir, taskRoot: root });
     assert.deepEqual(completed.item.data.material_refs, material_refs);
     assert.deepEqual(completed.artifact_outputs, { "item.artifacts.branch_payload": primary_refs.branch_payload });
+    validateWorkerCompletion(command, completed);
     assert.deepEqual((await Promise.all(["branch-payload.json", "occurrence.json", "evidence.json"].map((name) => readFile(join(outputDir, name), "utf8")))).map(JSON.parse).length, 3);
   }
 });
@@ -281,21 +331,26 @@ test("comment publisher and finalizer CLI wrappers consume complete normalized M
   publishBundle.comment_reads = [[], [rawComment]].map((comments) => ({ attestation: normalizeRawIssueComments(comments, {
     workspace_id: fixture.input.workspace_id, project_id, issue_id,
   }) }));
-  const published = await runTaskCommand("publish-flow-item-comment", { publication_input }, {
-    outputDir: join(root, "publish"), resolverBundle: publishBundle,
-  });
+  const published = await runTaskCommand("publish-flow-item-comment", { phase: "prepare", publication_input, completion_context: {
+    decision, profile_ref: fixture.input.profile_artifact,
+    cleanup_lease: { run_id: aggregate.run_id, attempt_id: aggregate.attempt_id, environment_id: aggregate.environment_id, target_namespace: aggregate.target_namespace, instance_nonce: aggregate.instance_nonce },
+  } }, runtimeOptions(root, "publish-flow-item-comment", { resolverBundle: publishBundle }));
   assert.equal(published.files[0].name, "comment-receipt.json");
-  const comment_receipt = JSON.parse(await readFile(join(root, "publish", "comment-receipt.json"), "utf8"));
+  const comment_receipt = JSON.parse(await readFile(join(root, "qah", "publish-flow-item-comment", "comment-receipt.json"), "utf8"));
+  const publishedFinal = await completePrepared(root, "publish-flow-item-comment", { comment_receipt_report: actualRef() }, { resolverBundle: publishBundle });
   const finalizeBundle = serializedBundle(fixture, [rawComment]);
   const cleanup_receipt = {
     environment_status: "STOPPED", run_id: aggregate.run_id, attempt_id: aggregate.attempt_id,
     environment_id: aggregate.environment_id, target_namespace: aggregate.target_namespace, instance_nonce: aggregate.instance_nonce,
   };
   const finalized = await runTaskCommand("finalize-transition", {
-    finalization_input: { ...publication_input, comment_receipt, cleanup_receipt },
-  }, { outputDir: join(root, "finalize"), resolverBundle: finalizeBundle });
+    phase: "prepare", finalization_input: { ...publication_input, comment_receipt, cleanup_receipt },
+  }, runtimeOptions(root, "finalize-transition", { resolverBundle: finalizeBundle }));
   assert.equal(finalized.files[0].name, "finalization.json");
-  assert.equal(JSON.parse(await readFile(join(root, "finalize", "finalization.json"), "utf8")).transition_allowed, true);
+  assert.equal(JSON.parse(await readFile(join(root, "qah", "finalize-transition", "finalization.json"), "utf8")).transition_allowed, true);
+  const finalizedFinal = await completePrepared(root, "finalize-transition", { finalization_report: actualRef() }, { resolverBundle: finalizeBundle });
+  assert.equal(publishedFinal.item.data.comment_receipt.comment_id, comment_receipt.comment_id);
+  assert.equal(finalizedFinal.item.data.transition_allowed, true);
 });
 
 test("normalizer command writes canonical attestation and never has silent stdout semantics", async (t) => {
@@ -308,9 +363,9 @@ test("normalizer command writes canonical attestation and never has silent stdou
       project_id: "55555555-5555-4555-8555-555555555555",
       issue_id: "66666666-6666-4666-8666-666666666666",
     },
-  }, { outputDir: root });
+  }, runtimeOptions(root, "normalize-comments"));
   assert.equal(result.schema_version, "nuanu.qa-comment-list-attestation.v1");
-  assert.equal(await readFile(join(root, "comments-attestation.json"), "utf8"), canonicalJson(result.attestation));
+  assert.equal(await readFile(join(root, "qah", "normalize-comments", "comments-attestation.json"), "utf8"), canonicalJson(result.attestation));
 });
 
 test("aggregate, universal blueprint, and universal runtime contain no payment policy literals", async () => {

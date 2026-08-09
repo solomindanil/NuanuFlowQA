@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { aggregateEvidence, resolveArtifactVersionForSlot, resolveCommitProfile, resolvePlatformEntityVersion } from "./aggregate.mjs";
 import { canonicalJson, sha256 } from "./canonical.mjs";
@@ -33,7 +33,17 @@ const TASK_KEYS = Object.freeze({
   "cleanup-environment": "cleanup_environment",
   "finalize-transition": "finalize_transition",
 });
+export const TASK_COMMAND_KEYS = TASK_KEYS;
 export const GRAPH_TASK_COMMANDS = Object.freeze(Object.keys(TASK_KEYS));
+export const TASK_PROTOCOLS = Object.freeze(Object.fromEntries(Object.values(TASK_KEYS).map((taskKey) => [taskKey, Object.freeze({
+  artifact_slots: Object.freeze(({
+    resolve_flow_item: ["resolved_item"], load_project_context: ["resolved_context"], plan_qa_scope: ["test_plan"],
+    prepare_environment: ["environment_manifest"], verify_requirements_and_code: ["branch_payload"], verify_api_contracts: ["branch_payload"],
+    verify_ui_with_playwright: ["branch_payload"], prepare_and_verify_domain_data: ["branch_payload"], aggregate_evidence: ["aggregate_report"],
+    independent_release_decision: [], publish_flow_item_comment: ["comment_receipt_report"], cleanup_environment: ["cleanup_receipt_report"],
+    finalize_transition: ["finalization_report"],
+  })[taskKey]),
+})])));
 
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -62,6 +72,25 @@ function outputDirectory(value) {
   return resolve(value);
 }
 
+async function verifiedOutputDirectory(value, taskRoot) {
+  if (typeof taskRoot !== "string" || !isAbsolute(taskRoot)) throw new Error("NUANU_TASK_DIR must be an absolute real directory");
+  const rootMetadata = await lstat(taskRoot).catch(() => null);
+  if (!rootMetadata?.isDirectory() || rootMetadata.isSymbolicLink()) throw new Error("NUANU_TASK_DIR must be an absolute real directory");
+  const root = await realpath(taskRoot);
+  const requested = outputDirectory(value);
+  const lexicalParts = relative(resolve(taskRoot), requested).split(sep);
+  if (lexicalParts.length !== 2 || lexicalParts[0] !== "qah" || !/^[a-z][a-z0-9-]{1,63}$/.test(lexicalParts[1])) throw new Error("outputDir must be one exact NUANU_TASK_DIR/qah/<step> directory");
+  await mkdir(requested, { recursive: true, mode: 0o700 });
+  const outputMetadata = await lstat(requested);
+  if (!outputMetadata.isDirectory() || outputMetadata.isSymbolicLink()) throw new Error("outputDir must not be a symlink");
+  const actual = await realpath(requested);
+  const child = relative(root, actual);
+  if (child.split(sep).length !== 2 || !child.startsWith(`qah${sep}`) || child.includes(`${sep}..${sep}`) || child.startsWith(`..${sep}`) || isAbsolute(child)) {
+    throw new Error("outputDir must be contained by NUANU_TASK_DIR/qah");
+  }
+  return actual;
+}
+
 async function writeCanonical(directory, name, value) {
   const root = outputDirectory(directory);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -80,6 +109,42 @@ function candidateManifest(taskKey, files) {
 
 function completion(taskKey, description, data = {}) {
   return { item: { key: taskKey, description, data, artifacts: {} }, artifact_outputs: {} };
+}
+
+async function writeCompletionState(outputDir, taskKey, data, auxiliarySlots = []) {
+  await writeCanonical(outputDir, ".completion-state.json", {
+    schema_version: "nuanu.qa-task-completion-state.v1",
+    task_key: taskKey,
+    data,
+    artifact_slots: [...TASK_PROTOCOLS[taskKey].artifact_slots],
+    auxiliary_slots: auxiliarySlots,
+  });
+}
+
+async function completePreparedTask(taskKey, input, outputDir) {
+  exact(input, ["phase", "artifact_refs"], `${taskKey} completion input`);
+  if (input.phase !== "complete") throw new Error(`${taskKey} phase must be complete`);
+  const state = await readCanonicalInputFile(join(outputDir, ".completion-state.json"));
+  exact(state, ["schema_version", "task_key", "data", "artifact_slots", "auxiliary_slots"], `${taskKey} completion state`);
+  if (state.schema_version !== "nuanu.qa-task-completion-state.v1" || state.task_key !== taskKey
+    || canonicalJson(state.artifact_slots) !== canonicalJson(TASK_PROTOCOLS[taskKey].artifact_slots)) throw new Error(`${taskKey} completion state is invalid`);
+  exact(input.artifact_refs, [...state.artifact_slots, ...state.auxiliary_slots], `${taskKey} actual artifact refs`);
+  const refs = {};
+  for (const slot of state.artifact_slots) refs[slot] = artifactRef(input.artifact_refs[slot], "document", "output", `artifact_refs.${slot}`);
+  for (const slot of state.auxiliary_slots) refs[slot] = artifactRef(input.artifact_refs[slot], "document", "evidence", `artifact_refs.${slot}`);
+  const data = structuredClone(state.data);
+  if (refs.review_bundle) data.review_bundle_ref = refs.review_bundle;
+  if (data.test_plan_ref === null && refs.test_plan) data.test_plan_ref = refs.test_plan;
+  return {
+    item: { key: taskKey, description: `${taskKey} completed by deterministic task runtime`, data, artifacts: {} },
+    artifact_outputs: Object.fromEntries(state.artifact_slots.map((slot) => [`item.artifacts.${slot}`, refs[slot]])),
+  };
+}
+
+function prepareInput(input, keys, label) {
+  exact(input, ["phase", ...keys], label);
+  if (input.phase !== "prepare") throw new Error(`${label} phase must be prepare or complete`);
+  return input;
 }
 
 function branchOutputFromPayload(payload) {
@@ -177,7 +242,7 @@ async function completeBranchTask(taskKey, input, outputDir) {
       key: taskKey,
       description: `${payload.branch_result.branch} QA materialized`,
       data: { branch_result: payload.branch_result, envelope: pending.envelope, material_refs: refs, ...input.completion_context },
-      artifacts: { branch_payload: refs.branch_payload },
+      artifacts: {},
     },
     artifact_outputs: { "item.artifacts.branch_payload": refs.branch_payload },
   };
@@ -205,7 +270,7 @@ export function normalizeRawIssueComments(raw, identity, limits = {}) {
   const rawBytes = Buffer.byteLength(canonicalJson(raw), "utf8");
   if (rawBytes > maximumBytes) throw new Error("raw comment response exceeds post-fetch byte limit");
   const comments = raw.map((comment) => {
-    exact(comment, ["id", "comment_html"], "raw comment");
+    if (!isObject(comment) || !Object.hasOwn(comment, "id") || !Object.hasOwn(comment, "comment_html")) throw new Error("raw comment must have own id and comment_html fields");
     uuid(comment.id, "raw comment.id");
     if (typeof comment.comment_html !== "string" || comment.comment_html.includes("\0") || Buffer.byteLength(comment.comment_html, "utf8") > 8192) throw new Error("raw comment body is invalid");
     return { comment_id: comment.id, ...identity, comment_html: comment.comment_html };
@@ -338,55 +403,82 @@ async function writeSingleArtifact(taskKey, outputDir, name, slot, value, extraD
 }
 
 export async function runTaskCommand(command, input, options = {}) {
+  const outputDir = await verifiedOutputDirectory(options.outputDir, options.taskRoot ?? process.env.NUANU_TASK_DIR);
   if (command === "normalize-comments") {
     exact(input, ["raw_comments", "identity"], "normalize-comments input");
     const attestation = normalizeRawIssueComments(input.raw_comments, input.identity);
-    await writeCanonical(options.outputDir, "comments-attestation.json", attestation);
+    await writeCanonical(outputDir, "comments-attestation.json", attestation);
     return { schema_version: "nuanu.qa-comment-list-attestation.v1", attestation };
   }
   if (!GRAPH_TASK_COMMANDS.includes(command)) throw new Error("unknown task-runtime subcommand");
   const taskKey = TASK_KEYS[command];
   const dependencies = options.dependencies ?? (options.resolverBundle ? createResolverAdapters(options.resolverBundle) : {});
 
+  if (input?.phase === "complete" && !branchName(command) && TASK_PROTOCOLS[taskKey].artifact_slots.length) {
+    return completePreparedTask(taskKey, input, outputDir);
+  }
+
   if (command === "resolve-flow-item") {
-    exact(input, ["workspace_id", "project_id", "issue_id", "source_artifact"], "resolve-flow-item input");
+    prepareInput(input, ["workspace_id", "project_id", "issue_id", "source_artifact"], "resolve-flow-item input");
     const source = await resolvePlatformEntityVersion(input.source_artifact, { workspaceId: input.workspace_id, ...dependencies }, 262144);
     if (source.project_id !== input.project_id || source.work_item_id !== input.issue_id) throw new Error("source Flow item identity mismatch");
     const value = { schema_version: "nuanu.qa-resolved-flow-item.v1", source_ref: input.source_artifact, workspace_id: input.workspace_id, project_id: input.project_id, issue_id: input.issue_id };
-    return writeSingleArtifact(taskKey, options.outputDir, "resolve-flow-item.json", "resolved_item", value);
+    await writeCompletionState(outputDir, taskKey, { source_ref: input.source_artifact, workspace_id: input.workspace_id, project_id: input.project_id, issue_id: input.issue_id });
+    return writeSingleArtifact(taskKey, outputDir, "resolve-flow-item.json", "resolved_item", value);
   }
   if (command === "load-project-context") {
-    exact(input, ["raw_context", "profile", "profile_install"], "load-project-context input");
-    await verifyProfileInstallPrecondition(input.profile_install, dependencies);
+    prepareInput(input, ["raw_context", "profile", "profile_install"], "load-project-context input");
+    const installed = await verifyProfileInstallPrecondition(input.profile_install, dependencies);
     if (sha256(input.profile) !== input.profile_install.profile_digest) throw new Error("resolved profile does not match the installed Artifact/Git digest");
-    return writeSingleArtifact(taskKey, options.outputDir, "load-project-context.json", "resolved_context", resolveContext(input.raw_context, input.profile.repository));
+    const context = resolveContext(input.raw_context, input.profile.repository);
+    await writeCompletionState(outputDir, taskKey, {
+      source_ref: context.source_artifact, profile_ref: input.profile_install.profile_artifact, workspace_id: input.profile_install.workspace_id,
+      project_id: context.project_uuid, issue_id: context.issue_uuid, repository_origin: context.repository_origin, commit: context.commit,
+      content_hash: context.content_hash, profile_blob_sha256: installed.profile_blob_sha256, context_sha256: sha256(context),
+    });
+    return writeSingleArtifact(taskKey, outputDir, "load-project-context.json", "resolved_context", context);
   }
   if (command === "plan-qa-scope") {
-    exact(input, ["context", "profile"], "plan-qa-scope input");
-    return writeSingleArtifact(taskKey, options.outputDir, "test-plan.json", "test_plan", planQaScope(input.context, input.profile));
+    prepareInput(input, ["context", "profile", "carry"], "plan-qa-scope input");
+    exact(input.carry, ["profile_ref", "workspace_id"], "plan-qa-scope carry");
+    const plan = planQaScope(input.context, input.profile);
+    await writeCompletionState(outputDir, taskKey, {
+      source_ref: plan.source_artifact, profile_ref: input.carry.profile_ref, test_plan_ref: null, workspace_id: input.carry.workspace_id,
+      project_id: input.context.project_uuid, issue_id: input.context.issue_uuid, repository_origin: input.context.repository_origin,
+      commit: plan.commit, content_hash: plan.content_hash, plan_sha256: plan.plan_sha256, applicability: plan.applicability, risk_level: plan.risk_level,
+    });
+    const manifest = await writeSingleArtifact(taskKey, outputDir, "test-plan.json", "test_plan", plan);
+    return manifest;
   }
   if (command === "prepare-environment") {
-    exact(input, ["environment_input"], "prepare-environment input");
-    return writeSingleArtifact(taskKey, options.outputDir, "environment-manifest.json", "environment_manifest", await prepareEnvironment(input.environment_input));
+    prepareInput(input, ["environment_input", "carry"], "prepare-environment input");
+    exact(input.carry, ["source_ref", "profile_ref", "test_plan_ref", "workspace_id", "project_id", "issue_id"], "prepare-environment carry");
+    const receipt = await prepareEnvironment(input.environment_input);
+    await writeCompletionState(outputDir, taskKey, { ...input.carry, run_id: receipt.run_id, attempt_id: receipt.attempt_id, environment_receipt: receipt });
+    return writeSingleArtifact(taskKey, outputDir, "environment-manifest.json", "environment_manifest", receipt);
   }
   const branch = branchName(command);
   if (branch) {
-    if (input?.phase === "link") return linkBranchOccurrence(taskKey, input, options.outputDir);
-    if (input?.phase === "complete") return completeBranchTask(taskKey, input, options.outputDir);
+    if (input?.phase === "link") return linkBranchOccurrence(taskKey, input, outputDir);
+    if (input?.phase === "complete") return completeBranchTask(taskKey, input, outputDir);
     exact(input, ["phase", "branch_input"], "branch execute input");
-    if (input.phase !== "execute") throw new Error("branch phase must be execute, link, or complete");
+    if (input.phase !== "prepare") throw new Error("branch phase must be prepare, link, or complete");
     const raw = { ...input.branch_input, branch };
     const output = await runBranch({ ...raw, execute: dependencies.execute, dependencies: { ...dependencies, verifyEnvironment: dependencies.verifyEnvironment } });
-    return prepareBranchCandidates(taskKey, output, raw.plan, options.outputDir);
+    return prepareBranchCandidates(taskKey, output, raw.plan, outputDir);
   }
   if (command === "aggregate-evidence") {
-    exact(input, ["aggregate_input", "project_id", "issue_id"], "aggregate-evidence input");
+    prepareInput(input, ["aggregate_input", "project_id", "issue_id"], "aggregate-evidence input");
     const aggregate = await aggregateEvidence(input.aggregate_input, dependencies);
     const review = { schema_version: "nuanu.qa-review-bundle.v1", workspace_id: input.aggregate_input.workspace_id, project_id: input.project_id, work_item_id: input.issue_id, source_artifact: aggregate.source_artifact, aggregate, stored_decision: null };
     const files = [
-      { ...(await writeCanonical(options.outputDir, "aggregate-report.json", aggregate)), slot: "aggregate_report", kind: "document", role: "output", media_type: "application/json" },
-      { ...(await writeCanonical(options.outputDir, "review-bundle.json", review)), slot: "review_bundle", kind: "document", role: "evidence", media_type: "application/json" },
+      { ...(await writeCanonical(outputDir, "aggregate-report.json", aggregate)), slot: "aggregate_report", kind: "document", role: "output", media_type: "application/json" },
+      { ...(await writeCanonical(outputDir, "review-bundle.json", review)), slot: "review_bundle", kind: "document", role: "evidence", media_type: "application/json" },
     ];
+    await writeCompletionState(outputDir, taskKey, {
+      aggregate, source_ref: aggregate.source_artifact, profile_ref: aggregate.profile_artifact, review_bundle_ref: null,
+      workspace_id: aggregate.workspace_id, project_id: input.project_id, issue_id: input.issue_id, run_id: aggregate.run_id, attempt_id: aggregate.attempt_id,
+    }, ["review_bundle"]);
     return candidateManifest(taskKey, files);
   }
   if (command === "independent-release-decision") {
@@ -398,18 +490,29 @@ export async function runTaskCommand(command, input, options = {}) {
     return completion(taskKey, `release decision: ${decision.route}`, { decision, ...input.completion_context });
   }
   if (command === "publish-flow-item-comment") {
-    exact(input, ["publication_input"], "publish-flow-item-comment input");
-    return writeSingleArtifact(taskKey, options.outputDir, "comment-receipt.json", "comment_receipt_report", await publishComment(input.publication_input, dependencies));
+    prepareInput(input, ["publication_input", "completion_context"], "publish-flow-item-comment input");
+    exact(input.completion_context, ["decision", "cleanup_lease", "profile_ref"], "publish-flow-item-comment completion context");
+    const receipt = await publishComment(input.publication_input, dependencies);
+    await writeCompletionState(outputDir, taskKey, {
+      comment_receipt: receipt, decision: input.completion_context.decision, cleanup_lease: input.completion_context.cleanup_lease,
+      source_ref: input.publication_input.source_artifact, profile_ref: input.completion_context.profile_ref, review_bundle_ref: input.publication_input.review_bundle,
+      workspace_id: input.publication_input.workspace_id, project_id: input.publication_input.project_id, issue_id: input.publication_input.issue_id,
+    });
+    return writeSingleArtifact(taskKey, outputDir, "comment-receipt.json", "comment_receipt_report", receipt);
   }
   if (command === "cleanup-environment") {
-    exact(input, ["environment_input"], "cleanup-environment input");
-    return writeSingleArtifact(taskKey, options.outputDir, "cleanup-receipt.json", "cleanup_receipt_report", await cleanupEnvironment(input.environment_input));
+    prepareInput(input, ["environment_input", "completion_context"], "cleanup-environment input");
+    exact(input.completion_context, ["source_ref", "review_bundle_ref"], "cleanup-environment completion context");
+    const receipt = await cleanupEnvironment(input.environment_input);
+    await writeCompletionState(outputDir, taskKey, { cleanup_receipt: receipt, ...input.completion_context });
+    return writeSingleArtifact(taskKey, outputDir, "cleanup-receipt.json", "cleanup_receipt_report", receipt);
   }
   if (command === "finalize-transition") {
-    exact(input, ["finalization_input"], "finalize-transition input");
+    prepareInput(input, ["finalization_input"], "finalize-transition input");
     const result = await finalizeTransition(input.finalization_input, dependencies);
     if (result.transition_allowed !== true) throw new Error(`finalization blocked: ${result.reason_codes.join(",")}`);
-    return writeSingleArtifact(taskKey, options.outputDir, "finalization.json", "finalization_report", result);
+    await writeCompletionState(outputDir, taskKey, { transition_allowed: result.transition_allowed, target_state: result.target_state, reason_codes: result.reason_codes });
+    return writeSingleArtifact(taskKey, outputDir, "finalization.json", "finalization_report", result);
   }
   throw new Error("unreachable task-runtime command");
 }
@@ -430,7 +533,7 @@ export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const input = await readCanonicalInputFile(args["--input"]);
   const resolverBundle = args["--resolver-bundle"] ? await readCanonicalInputFile(args["--resolver-bundle"]) : undefined;
-  const output = await runTaskCommand(args.command, input, { outputDir: args["--output-dir"], resolverBundle });
+  const output = await runTaskCommand(args.command, input, { outputDir: args["--output-dir"], resolverBundle, taskRoot: process.env.NUANU_TASK_DIR });
   process.stdout.write(canonicalJson(output));
 }
 

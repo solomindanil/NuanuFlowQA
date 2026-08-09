@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { canonicalJson, sha256 } from "./canonical.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /__BINDING_[A-Z0-9_]+__/g;
 const TOKEN_LIKE = /__BINDING|__[A-Z][A-Z0-9_]{2,}__/i;
-const BLUEPRINT_FINGERPRINT = "sha256:adf37563e220d25f2e390a86b593f3d1a7e032f46457009bfd887e1d8c89ddd5";
+const BLUEPRINT_FINGERPRINT = "sha256:ade26256fa47252e8374375ed6be33b594c8516738584269c3cb935f9c27fc39";
 const REQUIRED_BINDING_KEYS = Object.freeze([
   "project_process_binding_id",
   "project_id",
@@ -16,7 +17,8 @@ const REQUIRED_BINDING_KEYS = Object.freeze([
   "decision_agent_version_id",
   "decision_agent_metadata",
   "platform_start_node",
-  "platform_start_edge_id",
+  "platform_start_edge",
+  "platform_start_edge_fingerprint",
   "platform_start_fingerprint",
   "profile_artifact",
 ]);
@@ -77,6 +79,18 @@ function normalizePlatformStart(value, bindings) {
   return JSON.parse(canonicalJson(value));
 }
 
+function normalizePlatformStartEdge(value, start, fingerprint) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("platform_start_edge must be the complete live edge object");
+  for (const key of ["id", "source", "target"]) if (!Object.hasOwn(value, key)) throw new TypeError(`platform_start_edge is missing ${key}`);
+  uuid(value.id, "platform_start_edge.id");
+  uuid(value.source, "platform_start_edge.source");
+  uuid(value.target, "platform_start_edge.target");
+  if (value.source !== start.id || value.target === start.id) throw new TypeError("platform_start_edge source/target does not match the live Column Start");
+  if (typeof fingerprint !== "string" || sha256(value) !== fingerprint) throw new TypeError("platform_start_edge does not match its live fingerprint");
+  if (TOKEN_LIKE.test(canonicalJson(value))) throw new TypeError("platform_start_edge contains an unresolved token");
+  return structuredClone(value);
+}
+
 function normalizedBindings(value) {
   exactObject(value, REQUIRED_BINDING_KEYS, [], "bindings");
   if (!value.decision_agent_employee_id || !value.decision_agent_version_id) {
@@ -84,7 +98,7 @@ function normalizedBindings(value) {
   }
   for (const key of [
     "project_process_binding_id", "project_id", "ready_for_qa_state_id", "in_progress_state_id", "ready_for_production_state_id",
-    "qa_agent_employee_id", "qa_agent_version_id", "decision_agent_employee_id", "decision_agent_version_id", "platform_start_edge_id",
+    "qa_agent_employee_id", "qa_agent_version_id", "decision_agent_employee_id", "decision_agent_version_id",
   ]) uuid(value[key], key);
   if (value.decision_agent_employee_id === value.qa_agent_employee_id || value.decision_agent_version_id === value.qa_agent_version_id) {
     throw new TypeError("decision agent employee and version must be explicit and distinct from the QA agent");
@@ -98,6 +112,7 @@ function normalizedBindings(value) {
   if (new Set(states).size !== states.length) throw new TypeError("state UUIDs must be distinct");
   const normalized = { ...value, decision_agent_metadata: decisionMetadata, profile_artifact: { ...profile } };
   normalized.platform_start_node = normalizePlatformStart(value.platform_start_node, normalized);
+  normalized.platform_start_edge = normalizePlatformStartEdge(value.platform_start_edge, normalized.platform_start_node, value.platform_start_edge_fingerprint);
   return normalized;
 }
 
@@ -158,7 +173,8 @@ function validateRenderedGraph(graph, bindings) {
   const start = graph.nodes[0];
   if (canonicalJson(start) !== canonicalJson(bindings.platform_start_node)) throw new TypeError("rendered Column Start changed");
   const startEdges = graph.edges.filter((edge) => edge.source === start.id || edge.target === start.id);
-  if (startEdges.length !== 1 || canonicalJson(startEdges[0]) !== canonicalJson({ id: bindings.platform_start_edge_id, source: start.id, target: graph.nodes[1].id })) throw new TypeError("rendered Column Start connection changed");
+  if (startEdges.length !== 1 || canonicalJson(startEdges[0]) !== canonicalJson(bindings.platform_start_edge)) throw new TypeError("rendered Column Start connection changed");
+  if (graph.nodes[1]?.key !== "resolve_flow_item" || graph.nodes[1]?.id !== bindings.platform_start_edge.target) throw new TypeError("live Start edge target must be resolve_flow_item");
   const decision = graph.nodes.find((node) => node.key === "independent_release_decision");
   if (canonicalJson(decision?.config?.binding_metadata) !== canonicalJson(bindings.decision_agent_metadata)) throw new TypeError("decision capability binding changed");
 }
@@ -168,13 +184,117 @@ export function renderProcess(blueprint, rawBindings) {
   const bindings = normalizedBindings(rawBindings);
   const authored = replaceTokens(structuredClone(blueprint.graph), tokenValues(bindings));
   if (TOKEN_LIKE.test(canonicalJson(authored))) throw new TypeError("unresolved binding token remains after rendering");
+  const originalFirstId = authored.nodes[0]?.id;
+  if (authored.nodes[0]?.key !== "resolve_flow_item") throw new TypeError("first semantic authored node must be resolve_flow_item");
+  if (authored.nodes.slice(1).some((node) => node.id === bindings.platform_start_edge.target)
+    || authored.edges.some((edge) => edge.id === bindings.platform_start_edge.id)) throw new TypeError("platform_start_edge target/id collides with authored topology");
+  authored.nodes[0].id = bindings.platform_start_edge.target;
+  for (const edge of authored.edges) {
+    if (edge.source === originalFirstId) edge.source = bindings.platform_start_edge.target;
+    if (edge.target === originalFirstId) edge.target = bindings.platform_start_edge.target;
+  }
   const graph = {
     ...authored,
     nodes: [structuredClone(bindings.platform_start_node), ...authored.nodes],
-    edges: [{ id: bindings.platform_start_edge_id, source: bindings.platform_start_node.id, target: authored.nodes[0].id }, ...authored.edges],
+    edges: [structuredClone(bindings.platform_start_edge), ...authored.edges],
   };
   validateRenderedGraph(graph, bindings);
   return JSON.parse(canonicalJson(graph));
+}
+
+const VERIFIED_INSTALL_ATTESTATIONS = new WeakSet();
+
+function byteDigest(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.byteLength < 2 || bytes.byteLength > 262144) throw new TypeError("profile resolver must return bounded exact bytes");
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function normalizeInstallRequest(value) {
+  exactObject(value, ["workspace_id", "repository_origin", "commit"], [], "install request");
+  uuid(value.workspace_id, "install workspace_id");
+  let origin;
+  try { origin = new URL(value.repository_origin); } catch { origin = null; }
+  if (origin?.protocol !== "https:" || origin.username || origin.password || origin.search || origin.hash || origin.href !== value.repository_origin) throw new TypeError("install repository_origin must be exact credential-free HTTPS");
+  if (typeof value.commit !== "string" || !/^[a-f0-9]{40}$/.test(value.commit)) throw new TypeError("install commit must be an exact Git commit");
+  return { ...value };
+}
+
+function verifyAgentSnapshot(response, expectedEmployee, expectedVersion, install, decision, metadata) {
+  exactObject(response, ["agent", "version", "worker_binding"], [], `${decision ? "decision" : "QA"} trusted agent resolver response`);
+  const agent = response.agent;
+  const version = response.version;
+  const worker = response.worker_binding;
+  if (!agent || agent.id !== expectedEmployee || agent.is_active !== true || !["local", "remote"].includes(agent.runtime)
+    || agent.active_version?.id !== expectedVersion || !agent.capabilities || typeof agent.capabilities !== "object") throw new TypeError("agent resolver returned a foreign or inactive employee/version");
+  if (!version || version.id !== expectedVersion || version.agent_employee !== expectedEmployee || version.workspace !== install.workspace_id
+    || typeof version.content_hash !== "string" || !/^[a-f0-9]{64}$/.test(version.content_hash)
+    || typeof version.published_at !== "string" || !version.configuration_snapshot) throw new TypeError("AgentVersion resolver did not return the exact published snapshot");
+  const configuration = version.configuration_snapshot;
+  for (const key of ["tools", "skills", "mcp_servers", "integrations"]) if (!Array.isArray(configuration[key]) || !Array.isArray(agent.capabilities[key])) throw new TypeError(`AgentVersion ${key} must be inspected arrays`);
+  exactObject(worker, ["repository_origin", "repository_access", "model", "capabilities"], [], "trusted worker binding");
+  if (worker.repository_origin !== install.repository_origin || !["read", "read_write"].includes(worker.repository_access)) throw new TypeError("worker repository binding does not match install request");
+  if (!Array.isArray(worker.capabilities)) throw new TypeError("worker capabilities must be inspected");
+  const capabilities = new Set([
+    ...configuration.tools, ...configuration.mcp_servers, ...configuration.integrations,
+    ...agent.capabilities.tools, ...agent.capabilities.mcp_servers, ...agent.capabilities.integrations,
+    ...worker.capabilities,
+  ].map(String));
+  const nativeBundle = agent.runtime === "remote" && agent.capabilities.remote_protocol === "native"
+    && agent.capabilities.skill_availability?.source === "installed_plugin"
+    && agent.capabilities.skill_availability?.scope === "full_bundled"
+    && agent.capabilities.skill_availability?.includes_artifacts === true;
+  if (!capabilities.has("git") || !capabilities.has("tool_execution")) throw new TypeError("AgentVersion lacks Git/tool execution capabilities");
+  if (!(nativeBundle || [...capabilities].some((entry) => /nuanu.*artifact/i.test(entry)))) throw new TypeError("AgentVersion lacks Nuanu Artifact capability");
+  if (!(nativeBundle || [...capabilities].some((entry) => /nuanu.*work[_ -]?items?/i.test(entry)))) throw new TypeError("AgentVersion lacks Nuanu work-item capability");
+  if (typeof configuration.system_prompt !== "string" || configuration.system_prompt.length < 20) throw new TypeError("AgentVersion system prompt is empty");
+  if (/paydemo|payment|плат[её]ж|bank[_ -]?transfer|банковск|checkout endpoint/iu.test(configuration.system_prompt)) throw new TypeError("AgentVersion prompt must be generic and product-independent");
+  if (decision) {
+    const declaredModels = [configuration.base_model, agent.capabilities.base_model, worker.model].filter((value) => value !== undefined);
+    if (declaredModels.length !== 3 || new Set(declaredModels).size !== 1) throw new TypeError("decision AgentVersion model declarations do not match");
+    const [model] = declaredModels;
+    if (model !== metadata.requested_model || !/^openai\/gpt-5\.6-sol-pro$/.test(model)) throw new TypeError("decision AgentVersion is not the strongest requested OpenAI Codex model");
+  }
+  return structuredClone(response);
+}
+
+export async function verifyInstallPreconditions(rawBindings, rawInstall, dependencies) {
+  const bindings = normalizedBindings(rawBindings);
+  const install = normalizeInstallRequest(rawInstall);
+  if (!dependencies || typeof dependencies.resolveAgentVersion !== "function" || typeof dependencies.resolveArtifactVersion !== "function" || typeof dependencies.resolveProfileAtCommit !== "function") throw new TypeError("trusted live install resolvers are required");
+  const [qa, decision, artifact, committed] = await Promise.all([
+    dependencies.resolveAgentVersion({ workspace_id: install.workspace_id, employee_id: bindings.qa_agent_employee_id, version_id: bindings.qa_agent_version_id }),
+    dependencies.resolveAgentVersion({ workspace_id: install.workspace_id, employee_id: bindings.decision_agent_employee_id, version_id: bindings.decision_agent_version_id }),
+    dependencies.resolveArtifactVersion({ workspace_id: install.workspace_id, ref: bindings.profile_artifact, max_bytes: 262144 }),
+    dependencies.resolveProfileAtCommit({ repository_origin: install.repository_origin, commit: install.commit, path: "qa-harness.yaml", max_bytes: 262144 }),
+  ]);
+  const qaSnapshot = verifyAgentSnapshot(qa, bindings.qa_agent_employee_id, bindings.qa_agent_version_id, install, false, bindings.decision_agent_metadata);
+  const decisionSnapshot = verifyAgentSnapshot(decision, bindings.decision_agent_employee_id, bindings.decision_agent_version_id, install, true, bindings.decision_agent_metadata);
+  if (!artifact || artifact.workspace_id !== install.workspace_id || artifact.artifact_id !== bindings.profile_artifact.artifact_id || artifact.version_id !== bindings.profile_artifact.version_id || artifact.kind !== "document" || artifact.status !== "stored") throw new TypeError("profile resolver returned a foreign or unstored ArtifactVersion");
+  const artifactDigest = byteDigest(artifact.bytes);
+  if (!Number.isSafeInteger(artifact.size) || artifact.size !== artifact.bytes.byteLength || artifact.checksum !== artifactDigest.slice(7)) throw new TypeError("profile ArtifactVersion size/checksum does not match exact bytes");
+  if (!committed || committed.repository_origin !== install.repository_origin || committed.commit !== install.commit || committed.path !== "qa-harness.yaml") throw new TypeError("profile Git resolver returned a foreign commit/path");
+  const commitDigest = byteDigest(committed.bytes);
+  if (committed.sha256 !== commitDigest || !artifact.bytes.equals(committed.bytes) || artifactDigest !== commitDigest) throw new TypeError("profile ArtifactVersion bytes do not equal exact pinned Git bytes");
+  const attestation = Object.freeze({
+    verified: true,
+    bindings_sha256: sha256(bindings),
+    install_sha256: sha256(install),
+    qa_agent_sha256: sha256(qaSnapshot),
+    decision_agent_sha256: sha256(decisionSnapshot),
+    profile_blob_sha256: artifactDigest,
+  });
+  VERIFIED_INSTALL_ATTESTATIONS.add(attestation);
+  return attestation;
+}
+
+export function renderProcessForInstall(blueprint, bindings, attestation) {
+  if (!attestation || !VERIFIED_INSTALL_ATTESTATIONS.has(attestation) || attestation.bindings_sha256 !== sha256(normalizedBindings(bindings))) throw new TypeError("install attestation must be created by the trusted verifier for these exact bindings");
+  return { graph: renderProcess(blueprint, bindings), install_attestation: attestation };
+}
+
+export async function renderForInstall(blueprint, bindings, install, dependencies) {
+  const attestation = await verifyInstallPreconditions(bindings, install, dependencies);
+  return renderProcessForInstall(blueprint, bindings, attestation);
 }
 
 export function renderProcessJson(blueprint, bindings) {

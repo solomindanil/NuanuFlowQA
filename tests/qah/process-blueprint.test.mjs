@@ -25,7 +25,8 @@ const bindings = Object.freeze({
     required_capabilities: ["git", "nuanu_mcp", "tool_execution"],
   },
   platform_start_node: liveStart.node,
-  platform_start_edge_id: liveStart.edge.id,
+  platform_start_edge: liveStart.edge,
+  platform_start_edge_fingerprint: sha256(liveStart.edge),
   platform_start_fingerprint: sha256(liveStart.node),
   profile_artifact: {
     artifact_id: "88888888-8888-4888-8888-888888888888",
