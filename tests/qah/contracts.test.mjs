@@ -54,6 +54,16 @@ function profile(overrides = {}) {
       max_output_bytes: 1048576,
     },
     test_data: { profiles: ["default", "payment_sandbox"] },
+    areas: {
+      ui: { paths: ["apps/paydemo/public/**", "tests/**/ui/**"], labels: ["ui", "frontend"] },
+      api: { paths: ["apps/paydemo/server.mjs", "tests/**/api/**"], labels: ["api", "backend"] },
+      domain: { paths: ["apps/paydemo/**/payment*", "tests/**/domain/**"], labels: ["payments", "auth", "data"] },
+    },
+    risk: {
+      high_keywords: ["payment", "authentication", "authorization", "pii", "webhook"],
+      critical_keywords: ["real-money", "production-migration"],
+      confidence_threshold: 0.95,
+    },
     ...overrides,
   };
 }

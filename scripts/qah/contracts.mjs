@@ -97,7 +97,7 @@ function schema(value, expected) {
 
 export function validateProfile(value) {
   try {
-    exactKeys(value, ["schema_version", "project_key", "repository", "environment", "checks", "safety", "execution", "test_data"]);
+    exactKeys(value, ["schema_version", "project_key", "repository", "environment", "checks", "safety", "execution", "test_data", "areas", "risk"]);
     schema(value.schema_version, "nuanu.qa-project-profile.v1");
     projectKey(value.project_key);
     noSecrets(value);
@@ -130,6 +130,28 @@ export function validateProfile(value) {
 
     exactKeys(value.test_data, ["profiles"]);
     safeStringArray(value.test_data.profiles, "test_data.profiles");
+
+    exactKeys(value.areas, ["ui", "api", "domain"]);
+    for (const area of ["ui", "api", "domain"]) {
+      exactKeys(value.areas[area], ["paths", "labels"]);
+      safeStringArray(value.areas[area].paths, `areas.${area}.paths`);
+      for (const path of value.areas[area].paths) {
+        if (path.startsWith("/") || path.includes("\\") || path.split("/").includes("..")) throw new Error(`areas.${area}.paths must contain safe relative globs`);
+      }
+      safeStringArray(value.areas[area].labels, `areas.${area}.labels`);
+      for (const label of value.areas[area].labels) {
+        if (!/^[a-z][a-z0-9-]*$/.test(label)) throw new Error(`areas.${area}.labels must contain normalized labels`);
+      }
+    }
+
+    exactKeys(value.risk, ["high_keywords", "critical_keywords", "confidence_threshold"]);
+    for (const key of ["high_keywords", "critical_keywords"]) {
+      safeStringArray(value.risk[key], `risk.${key}`);
+      for (const keyword of value.risk[key]) {
+        if (!/^[a-z][a-z0-9-]*$/.test(keyword)) throw new Error(`risk.${key} must contain normalized keywords`);
+      }
+    }
+    if (typeof value.risk.confidence_threshold !== "number" || !Number.isFinite(value.risk.confidence_threshold) || value.risk.confidence_threshold < 0 || value.risk.confidence_threshold > 1) throw new Error("risk.confidence_threshold must be a number from zero through one");
     return value;
   } catch (error) {
     throw new Error(`exact profile contract: ${error.message}`);

@@ -3,7 +3,7 @@
   "title": "Nuanu QA project profile v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "project_key", "repository", "environment", "checks", "safety", "execution", "test_data"],
+  "required": ["schema_version", "project_key", "repository", "environment", "checks", "safety", "execution", "test_data", "areas", "risk"],
   "properties": {
     "schema_version": { "const": "nuanu.qa-project-profile.v1" },
     "project_key": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
@@ -12,7 +12,13 @@
     "checks": { "type": "object", "additionalProperties": false, "required": ["code", "api", "ui", "domain"], "properties": { "code": { "$ref": "#/$defs/command" }, "api": { "$ref": "#/$defs/command" }, "ui": { "$ref": "#/$defs/command" }, "domain": { "$ref": "#/$defs/command" } } },
     "safety": { "type": "object", "additionalProperties": false, "required": ["mutation_mode", "irreversible_actions", "secret_output", "allowed_origins"], "properties": { "mutation_mode": { "const": "sandbox_only" }, "irreversible_actions": { "const": "deny" }, "secret_output": { "const": "deny" }, "allowed_origins": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "format": "uri" } } } },
     "execution": { "type": "object", "additionalProperties": false, "required": ["shell", "environment", "timeout_ms", "max_output_bytes"], "properties": { "shell": { "const": false }, "environment": { "const": "minimal" }, "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 600000 }, "max_output_bytes": { "type": "integer", "minimum": 1, "maximum": 10485760 } } },
-    "test_data": { "type": "object", "additionalProperties": false, "required": ["profiles"], "properties": { "profiles": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } } } }
+    "test_data": { "type": "object", "additionalProperties": false, "required": ["profiles"], "properties": { "profiles": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } } } },
+    "areas": { "type": "object", "additionalProperties": false, "required": ["ui", "api", "domain"], "properties": { "ui": { "$ref": "#/$defs/area" }, "api": { "$ref": "#/$defs/area" }, "domain": { "$ref": "#/$defs/area" } } },
+    "risk": { "type": "object", "additionalProperties": false, "required": ["high_keywords", "critical_keywords", "confidence_threshold"], "properties": { "high_keywords": { "$ref": "#/$defs/keywordArray" }, "critical_keywords": { "$ref": "#/$defs/keywordArray" }, "confidence_threshold": { "type": "number", "minimum": 0, "maximum": 1 } } }
   },
-  "$defs": { "command": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } } }
+  "$defs": {
+    "command": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "area": { "type": "object", "additionalProperties": false, "required": ["paths", "labels"], "properties": { "paths": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }, "labels": { "$ref": "#/$defs/keywordArray" } } },
+    "keywordArray": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" } }
+  }
 }
