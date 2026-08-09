@@ -15,6 +15,8 @@ const EVIDENCE_KINDS = Object.freeze({ api: ["api-contract", "automated-api-test
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const DEFAULT_MAX_ARTIFACT_BYTES = 256 * 1024;
+const MAX_UI_REQUEST_BYTES = 4 * 1024;
+const MAX_UI_RECEIPT_BYTES = 1024;
 
 function exactKeys(value, keys, label) {
   if (!value || typeof value !== "object" || Array.isArray(value) || canonicalJson(Object.keys(value).sort()) !== canonicalJson([...keys].sort())) throw new Error(`${label} must have exact keys`);
@@ -76,6 +78,39 @@ function allowedWebSocketOrigin(httpOrigin) {
   return value.origin;
 }
 
+async function boundedCheckoutRequest(response, input, maximumBytes = MAX_UI_REQUEST_BYTES) {
+  const request = response.request();
+  const sizes = await request.sizes();
+  if (!sizes || typeof sizes !== "object" || Array.isArray(sizes) || !Number.isSafeInteger(sizes.requestBodySize) || sizes.requestBodySize < 1 || sizes.requestBodySize > maximumBytes) throw new Error("UI request body size metadata is missing or outside its bound");
+  const bytes = request.postDataBuffer();
+  if (!Buffer.isBuffer(bytes) || bytes.byteLength !== sizes.requestBodySize || bytes.byteLength > maximumBytes) throw new Error("UI request body bytes do not match bounded metadata");
+  let source;
+  let payload;
+  try {
+    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    payload = JSON.parse(source);
+  } catch { throw new Error("UI request body is not bounded valid UTF-8 JSON"); }
+  exactKeys(payload, ["runId", "planId", "amountCents", "paymentMethod"], "UI request body");
+  if (source !== JSON.stringify(payload) || payload.runId !== input.branch_namespace || payload.planId !== "starter" || payload.amountCents !== 1000 || !["bank", "card"].includes(payload.paymentMethod)) throw new Error("UI request body has an invalid closed shape");
+  return { paymentMethod: payload.paymentMethod };
+}
+
+async function boundedReceiptText(locator, maximumBytes = MAX_UI_RECEIPT_BYTES) {
+  const summary = await locator.evaluate((element, byteLimit) => {
+    const value = element.textContent;
+    if (typeof value !== "string") return { oversized: false };
+    if (new TextEncoder().encode(value).byteLength > byteLimit) return { oversized: true };
+    return { oversized: false, value };
+  }, maximumBytes);
+  if (summary?.oversized === true) {
+    exactKeys(summary, ["oversized"], "UI receipt summary");
+    throw new Error("UI receipt DOM value exceeds its UTF-8 bound");
+  }
+  exactKeys(summary, ["oversized", "value"], "UI receipt summary");
+  if (summary.oversized !== false || typeof summary.value !== "string" || Buffer.byteLength(summary.value, "utf8") > maximumBytes) throw new Error("UI receipt DOM summary has an invalid type or size");
+  return summary.value.trim();
+}
+
 export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = join(tmpdir(), "nuanu-qah-ui"), maxArtifactBytes = DEFAULT_MAX_ARTIFACT_BYTES } = {}) {
   const input = validateInput(rawInput);
   if (input.branch !== "ui") throw new Error("UI probe requires the UI branch");
@@ -128,10 +163,10 @@ export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = joi
     const responsePromise = page.waitForResponse((response) => exactCheckoutResponse(response, input.environment.base_url));
     await page.getByRole("button", { name: "Pay $10.00" }).click();
     const response = await responsePromise;
-    const requestBody = response.request().postDataJSON();
+    const requestBody = await boundedCheckoutRequest(response, input);
     const receipt = page.getByRole("status").filter({ hasText: /Payment (recorded|could not)/ });
     await receipt.waitFor({ state: "visible" });
-    const receiptText = (await receipt.textContent())?.trim() ?? "";
+    const receiptText = await boundedReceiptText(receipt);
     if (originViolation || new URL(page.url()).origin !== input.environment.base_url) throw new Error("UI interaction escaped the exact prepared origin");
     const observation = { selectedPaymentMethod, requestPaymentMethod: requestBody?.paymentMethod ?? null, receiptText, responseStatus: response.status() };
     const classification = classifyBoundedUi(observation);

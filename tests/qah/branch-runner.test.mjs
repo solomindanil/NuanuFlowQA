@@ -625,15 +625,25 @@ test("concurrent reset and fixture mutations remain isolated behind a real overl
   assert.equal(store.size, 5);
 });
 
-function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = "screenshot", traceBytes = "trace", requestUrl = "http://127.0.0.1:4173/app.js", interactionRequestUrl = "http://127.0.0.1:4173/api/checkout", webSocketUrl = null, responseBodyError = null, contextCloseError = null, browserCloseError = null } = {}) {
+function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = "screenshot", traceBytes = "trace", requestUrl = "http://127.0.0.1:4173/app.js", interactionRequestUrl = "http://127.0.0.1:4173/api/checkout", webSocketUrl = null, responseBodyError = null, contextCloseError = null, browserCloseError = null, requestBodyObject = { runId: paydemoInput("ui").branch_namespace, planId: "starter", amountCents: 1000, paymentMethod: "bank" }, requestSizes, requestBodyBytes, receiptText = "Payment recorded by bank transfer.", receiptEvaluation } = {}) {
   const events = [];
   let routeHandler;
   let webSocketHandler;
   const state = { contextOptions: null };
   const responseBody = Buffer.from(JSON.stringify({ paymentId: "id", amountCents: 1000, paymentMethod: "bank" }));
+  const defaultRequestBodyBytes = Buffer.from(JSON.stringify(requestBodyObject));
+  const request = {
+    method: () => "POST",
+    sizes: async () => {
+      events.push("request-sizes");
+      return requestSizes ?? { requestBodySize: defaultRequestBodyBytes.byteLength, requestHeadersSize: 128, responseBodySize: responseBody.byteLength, responseHeadersSize: 128 };
+    },
+    postDataBuffer: () => { events.push("post-data-buffer"); return requestBodyBytes ?? defaultRequestBodyBytes; },
+    postDataJSON: () => { events.push("post-data-json"); return requestBodyObject; },
+  };
   const response = {
     url: () => "http://127.0.0.1:4173/api/checkout", status: () => 201,
-    request: () => ({ method: () => "POST", postDataJSON: () => ({ paymentMethod: "bank" }) }),
+    request: () => request,
     headerValue: async (name) => name === "content-type" ? "application/json" : String(responseBody.byteLength),
     body: async () => { events.push("response-body"); if (responseBodyError) throw responseBodyError; return responseBody; },
   };
@@ -658,7 +668,14 @@ function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = 
         else if (webSocketUrl) events.push("websocket-unrouted");
         events.push("click");
       } };
-      return { filter: () => ({ waitFor: async () => events.push("receipt"), textContent: async () => "Payment recorded by bank transfer." }) };
+      return { filter: () => ({
+        waitFor: async () => events.push("receipt"),
+        evaluate: async (pageFunction, maximumBytes) => {
+          events.push("receipt-evaluate");
+          return receiptEvaluation ?? pageFunction({ textContent: receiptText }, maximumBytes);
+        },
+        textContent: async () => { events.push("receipt-text-content"); return receiptText; },
+      }) };
     },
     async screenshot({ path }) { events.push("screenshot"); await writeFile(path, screenshotBytes); },
   };
@@ -717,6 +734,52 @@ test("UI assertion never materializes an untrusted response body", async (t) => 
   assert.equal(result.classification.product_result, "PASS");
   assert.equal(harness.events.includes("response-body"), false);
   assert.deepEqual(await readdir(artifactRoot), []);
+});
+
+test("UI rejects oversized request metadata before any POST body crosses the Playwright boundary", async (t) => {
+  const artifactRoot = await mkdtemp(join(tmpdir(), "qah-ui-request-oversize-"));
+  t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+  const harness = fakeUiBrowser({ requestSizes: { requestBodySize: 4097, requestHeadersSize: 128, responseBodySize: 1, responseHeadersSize: 128 } });
+  await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /request|body|size/i);
+  assert.equal(harness.events.includes("post-data-buffer"), false);
+  assert.equal(harness.events.includes("post-data-json"), false);
+  assert.deepEqual(await readdir(artifactRoot), []);
+});
+
+test("UI rejects missing, mismatched, or non-closed bounded POST bodies", async (t) => {
+  const cases = [
+    { requestSizes: { requestHeadersSize: 128, responseBodySize: 1, responseHeadersSize: 128 }, expectedBufferRead: false },
+    { requestSizes: { requestBodySize: 2, requestHeadersSize: 128, responseBodySize: 1, responseHeadersSize: 128 }, expectedBufferRead: true },
+    { requestBodyObject: { runId: paydemoInput("ui").branch_namespace, planId: "starter", amountCents: 1000, paymentMethod: "bank", secret: "must-not-cross" }, expectedBufferRead: true },
+  ];
+  for (const [index, configuration] of cases.entries()) {
+    const artifactRoot = await mkdtemp(join(tmpdir(), `qah-ui-request-invalid-${index}-`));
+    t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+    const harness = fakeUiBrowser(configuration);
+    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /request|body|size|shape/i);
+    assert.equal(harness.events.includes("post-data-buffer"), configuration.expectedBufferRead);
+    assert.equal(harness.events.includes("post-data-json"), false);
+    assert.equal(canonicalJson(harness.events).includes("must-not-cross"), false);
+    assert.deepEqual(await readdir(artifactRoot), []);
+  }
+});
+
+test("UI measures receipt UTF-8 in-page and never transfers oversized or malformed DOM values", async (t) => {
+  const cases = [
+    { receiptText: "x".repeat(1025) },
+    { receiptEvaluation: { oversized: false } },
+    { receiptEvaluation: { oversized: false, value: 7 } },
+    { receiptEvaluation: { oversized: false, value: "ok", extra: "must-not-cross" } },
+  ];
+  for (const [index, configuration] of cases.entries()) {
+    const artifactRoot = await mkdtemp(join(tmpdir(), `qah-ui-receipt-invalid-${index}-`));
+    t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+    const harness = fakeUiBrowser(configuration);
+    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /receipt|DOM|size|shape|type/i);
+    assert.equal(harness.events.includes("receipt-text-content"), false);
+    assert.equal(canonicalJson(harness.events).includes("must-not-cross"), false);
+    assert.deepEqual(await readdir(artifactRoot), []);
+  }
 });
 
 test("UI cleanup failures reject the adapter, attempt all cleanup, and remove evidence", async (t) => {
