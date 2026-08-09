@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { canonicalJson, sha256 } from "./canonical.mjs";
 
 const execFile = promisify(execFileCallback);
-const STATE_SCHEMA = "qah.generic-environment-state.v1";
+const STATE_SCHEMA = "qah.generic-environment-state.v2";
 const DEFAULT_STATE_ROOT = join(tmpdir(), "nuanu-qah-environments");
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 32 * 1024;
@@ -27,7 +27,7 @@ function errorMessage(error) {
 }
 
 function dependencies(input) {
-  return {
+  const resolved = {
     execFile,
     spawn: spawnChild,
     processKill: process.kill.bind(process),
@@ -37,6 +37,8 @@ function dependencies(input) {
     sleep: (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
     ...input.dependencies,
   };
+  resolved.inspectProcess ??= (pid) => inspectLiveProcess(pid, resolved);
+  return resolved;
 }
 
 function requireId(value, label, pattern = ID_PATTERN) {
@@ -136,6 +138,9 @@ async function runChecked(deps, command, args, options = {}) {
       env: options.env,
       encoding: "utf8",
       maxBuffer: options.maxOutputBytes ?? 8 * 1024 * 1024,
+      timeout: options.timeoutMs,
+      killSignal: "SIGKILL",
+      shell: false,
     });
     return commandResult(result).trim();
   } catch (error) {
@@ -144,17 +149,37 @@ async function runChecked(deps, command, args, options = {}) {
   }
 }
 
-async function cloneExactCommit({ deps, repositoryOrigin, commit, checkout, maxOutputBytes }) {
-  await runChecked(deps, "git", ["-c", "http.followRedirects=false", "clone", "--quiet", "--no-checkout", "--filter=blob:none", "--", repositoryOrigin, checkout], { label: "Git clone", maxOutputBytes });
-  await runChecked(deps, "git", ["-c", "http.followRedirects=false", "-C", checkout, "fetch", "--quiet", "--no-tags", "--depth=1", "origin", commit], { label: "exact commit fetch", maxOutputBytes });
-  await runChecked(deps, "git", ["-C", checkout, "checkout", "--quiet", "--detach", commit], { label: "detached checkout", maxOutputBytes });
-  await verifyCheckout({ deps, checkout, commit, maxOutputBytes });
+async function inspectLiveProcess(pid, deps) {
+  const probe = { pid };
+  if (!processExists(probe, deps)) return null;
+  let executableRealpath;
+  try {
+    if (process.platform === "linux" && await exists(`/proc/${pid}/exe`)) {
+      executableRealpath = await realpath(`/proc/${pid}/exe`);
+    } else {
+      const executable = await runChecked(deps, "ps", ["-p", String(pid), "-o", "comm="], { label: "live executable verification", timeoutMs: 1_000, maxOutputBytes: 16 * 1024 });
+      executableRealpath = await realpath(executable);
+    }
+    const argvText = await runChecked(deps, "ps", ["-ww", "-p", String(pid), "-o", "command="], { label: "live argv verification", timeoutMs: 1_000, maxOutputBytes: 64 * 1024 });
+    const startToken = await runChecked(deps, "ps", ["-p", String(pid), "-o", "lstart="], { label: "live process start verification", timeoutMs: 1_000, maxOutputBytes: 16 * 1024 });
+    if (!startToken) return null;
+    return { executable_realpath: executableRealpath, argv_text: argvText, start_token: startToken };
+  } catch {
+    return processExists(probe, deps) ? { uncertain: true } : null;
+  }
 }
 
-async function verifyCheckout({ deps, checkout, commit, maxOutputBytes, allowedGeneratedEntries = [] }) {
-  const actualCommit = await runChecked(deps, "git", ["-C", checkout, "rev-parse", "HEAD"], { label: "commit verification", maxOutputBytes });
+async function cloneExactCommit({ deps, repositoryOrigin, commit, checkout, timeoutMs, maxOutputBytes }) {
+  await runChecked(deps, "git", ["-c", "http.followRedirects=false", "clone", "--quiet", "--no-checkout", "--filter=blob:none", "--", repositoryOrigin, checkout], { label: "Git clone", timeoutMs, maxOutputBytes });
+  await runChecked(deps, "git", ["-c", "http.followRedirects=false", "-C", checkout, "fetch", "--quiet", "--no-tags", "--depth=1", "origin", commit], { label: "exact commit fetch", timeoutMs, maxOutputBytes });
+  await runChecked(deps, "git", ["-C", checkout, "checkout", "--quiet", "--detach", commit], { label: "detached checkout", timeoutMs, maxOutputBytes });
+  await verifyCheckout({ deps, checkout, commit, timeoutMs, maxOutputBytes });
+}
+
+async function verifyCheckout({ deps, checkout, commit, timeoutMs, maxOutputBytes, allowedGeneratedEntries = [] }) {
+  const actualCommit = await runChecked(deps, "git", ["-C", checkout, "rev-parse", "HEAD"], { label: "commit verification", timeoutMs, maxOutputBytes });
   if (actualCommit !== commit) throw new Error(`exact commit verification failed: expected ${commit}, received ${actualCommit}`);
-  const status = await runChecked(deps, "git", ["-C", checkout, "status", "--porcelain", "--untracked-files=normal"], { label: "clean checkout verification", maxOutputBytes });
+  const status = await runChecked(deps, "git", ["-C", checkout, "status", "--porcelain", "--untracked-files=normal"], { label: "clean checkout verification", timeoutMs, maxOutputBytes });
   const allowed = new Set(allowedGeneratedEntries);
   const unexpected = status.split("\n").filter(Boolean).filter((entry) => !allowed.has(entry));
   if (unexpected.length > 0) throw new Error(`isolated checkout is not clean; unexpected tracked or untracked entries: ${unexpected.join(", ")}`);
@@ -166,16 +191,69 @@ function minimalEnvironment(overrides = {}) {
   return { ...environment, ...overrides };
 }
 
-function requestDigest({ input, fence, repositoryOrigin }) {
+function validateGeneratedEntries(entries) {
+  if (!Array.isArray(entries)) throw new Error("allowed generated entries must be an array");
+  const seen = new Set();
+  for (const entry of entries) {
+    if (typeof entry !== "string" || !entry.startsWith("?? ")) throw new Error("generated output policy may allow only explicit untracked paths");
+    const path = entry.slice(3);
+    if (!path || path.startsWith("/") || path.includes("\\") || path.split("/").includes("..")) throw new Error("generated output policy contains an unsafe path");
+    if (seen.has(entry)) throw new Error("generated output policy contains duplicate entries");
+    seen.add(entry);
+  }
+  return entries;
+}
+
+const FORBIDDEN_ENVIRONMENT_NAME = /^(?:PATH|NODE_OPTIONS|NODE_PATH|LD_PRELOAD|PYTHONPATH|RUBYOPT|PERL5OPT|BASH_ENV|ENV|IFS|SHELLOPTS)$|^(?:DYLD_|CODEX_|NUANU_|OPENAI_|QAH_)/;
+const CREDENTIAL_ENVIRONMENT_NAME = /(?:SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTHORIZATION|API_?KEY|PRIVATE_?KEY)/;
+
+function validateAdapterEnvironment(managed, environment) {
+  if (!environment || typeof environment !== "object" || Array.isArray(environment)) throw new Error("adapter environment must be an object");
+  const allowed = new Set(managed?.environment_allowlist ?? []);
+  for (const name of allowed) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(name)) throw new Error("adapter environment allowlist contains an invalid name");
+    if (FORBIDDEN_ENVIRONMENT_NAME.test(name) || CREDENTIAL_ENVIRONMENT_NAME.test(name)) throw new Error(`adapter environment name ${name} is forbidden`);
+  }
+  for (const [name, value] of Object.entries(environment)) {
+    if (!allowed.has(name)) throw new Error(`adapter environment name ${name} is not allowlisted`);
+    if (FORBIDDEN_ENVIRONMENT_NAME.test(name) || CREDENTIAL_ENVIRONMENT_NAME.test(name)) throw new Error(`adapter environment name ${name} is forbidden`);
+    if (typeof value !== "string" || value.length > 4096 || /[\0\r\n]/.test(value)) throw new Error(`adapter environment value ${name} is unsafe`);
+  }
+  return environment;
+}
+
+function validateManagedDeclaration(managed) {
+  requireId(managed.adapter_id, "adapter_id");
+  requireId(managed.adapter_version, "adapter_version");
+  if (!DIGEST_PATTERN.test(managed.adapter_digest ?? "")) throw new Error("adapter_digest must be an exact sha256 digest");
+  canonicalJson(managed.configuration ?? {});
+  canonicalJson(managed.runtime_identity ?? {});
+  if (!Array.isArray(managed.environment_allowlist) || managed.environment_allowlist.some((name) => typeof name !== "string")) throw new Error("adapter environment_allowlist must be a closed string array");
+}
+
+function requestDigest({ input, fence, repositoryOrigin, root }) {
   const managed = input.managed ?? {};
   return sha256(canonicalJson({
     fence,
+    state_root: root,
+    namespace_override: input.namespaceOverride ?? null,
+    allow_file_repository: input.allowFileRepository === true,
     repository_origin: repositoryOrigin,
     commit: input.commit,
     project_key: input.profile?.project_key,
+    profile_repository: input.profile?.repository,
     environment: input.profile?.environment,
+    execution: input.profile?.execution,
     adapter_id: managed.adapter_id ?? "profile-command-v1",
+    adapter_version: managed.adapter_version ?? "1",
+    adapter_digest: managed.adapter_digest ?? null,
     configuration: managed.configuration ?? {},
+    runtime_identity: managed.runtime_identity ?? {
+      base_url: input.baseUrl ?? null,
+      content_hash: input.contentHash ?? null,
+      command: input.profile?.environment?.prepare_command,
+    },
+    environment_allowlist: managed.environment_allowlist ?? [],
   }));
 }
 
@@ -209,12 +287,21 @@ function ownershipArguments(state) {
 
 async function processOwnership(state, deps) {
   if (!processExists(state, deps)) return "absent";
-  let command;
-  try { command = await runChecked(deps, "ps", ["-p", String(state.pid), "-o", "command="], { label: "process ownership verification" }); } catch {
-    return processExists(state, deps) ? "foreign" : "absent";
+  try {
+    if (await realpath(state.entrypoint_identity) !== state.entrypoint_realpath) return "foreign";
+  } catch {
+    return "foreign";
   }
-  const exactMarkers = [state.executable_identity, ...ownershipArguments(state)];
-  return exactMarkers.every((marker) => command.includes(marker)) ? "owned" : "foreign";
+  const live = await deps.inspectProcess(state.pid);
+  if (!live) return "absent";
+  if (live.uncertain || live.executable_realpath !== state.executable_realpath || live.start_token !== state.process_start_token) return "foreign";
+  const exactArguments = [state.entrypoint_identity, ...ownershipArguments(state)];
+  const containsExact = (argument) => {
+    if (Array.isArray(live.argv)) return live.argv.includes(argument);
+    const escaped = argument.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:^|\\s)${escaped}(?=\\s|$)`).test(live.argv_text ?? "");
+  };
+  return exactArguments.every(containsExact) ? "owned" : "foreign";
 }
 
 async function waitForExit(state, deps, timeoutMs = 3_000) {
@@ -274,8 +361,21 @@ async function readBoundedJson(response, maxOutputBytes) {
   if (type !== "application/json") throw new HealthProtocolError("health endpoint content-type must be application/json");
   const declared = response.headers.get("content-length");
   if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > maxOutputBytes)) throw new HealthProtocolError("health response exceeds output bound");
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.byteLength > maxOutputBytes) throw new HealthProtocolError("health response exceeds output bound");
+  if (!response.body?.getReader) throw new HealthProtocolError("health response body is unavailable");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxOutputBytes) {
+      await reader.cancel("health response exceeds output bound");
+      throw new HealthProtocolError("health response exceeds output bound");
+    }
+    chunks.push(Buffer.from(value));
+  }
+  const bytes = Buffer.concat(chunks, totalBytes);
   let text;
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new HealthProtocolError("health response is not valid UTF-8"); }
   try { return JSON.parse(text); } catch { throw new HealthProtocolError("health response is not valid JSON"); }
@@ -315,7 +415,9 @@ async function waitForIdentity(state, input, deps) {
 }
 
 function validateState(state, expected) {
-  if (state?.schema !== STATE_SCHEMA || state.state_root !== expected.root || state.checkout !== expected.paths.checkout || state.pid_file !== expected.paths.pidFile || !NONCE_PATTERN.test(state.instance_nonce) || typeof state.owner_token !== "string" || state.owner_token.length < 16 || !Number.isSafeInteger(state.pid) || state.pid <= 1 || !isAbsolute(state.executable_identity) || !isAbsolute(state.executable_realpath)) {
+  const phase = state?.phase;
+  const started = phase === "STARTED" || phase === "READY";
+  if (state?.schema !== STATE_SCHEMA || !["PREPARING", "STARTED", "READY"].includes(phase) || state.state_root !== expected.root || state.checkout !== expected.paths.checkout || state.state_file !== expected.paths.stateFile || state.pid_file !== expected.paths.pidFile || !/^[a-f0-9]{64}$/.test(state.target_namespace) || !NONCE_PATTERN.test(state.instance_nonce) || typeof state.owner_token !== "string" || state.owner_token.length < 16 || !isAbsolute(state.executable_identity) || !isAbsolute(state.executable_realpath) || !isAbsolute(state.entrypoint_identity) || !isAbsolute(state.entrypoint_realpath) || (started && (!Number.isSafeInteger(state.pid) || state.pid <= 1 || typeof state.process_start_token !== "string" || state.process_start_token.length === 0))) {
     throw new Error("environment ownership state is malformed");
   }
   if (canonicalJson(state.fence) !== canonicalJson(expected.fence) || state.repository_origin !== expected.repositoryOrigin) throw new Error("environment ownership tuple does not match the requested fence, repository, and state root");
@@ -326,11 +428,34 @@ async function readState(paths, expected) {
   return validateState(JSON.parse(await readFile(paths.stateFile, "utf8")), expected);
 }
 
+function validReadyReceipt(receipt, state) {
+  const expectedKeys = ["attempt_id", "base_url", "commit", "content_hash", "environment_id", "environment_status", "instance_nonce", "pid_file", "repository_origin", "run_id", "state_file", "target_namespace"];
+  return receipt && JSON.stringify(Object.keys(receipt).sort()) === JSON.stringify(expectedKeys)
+    && receipt.environment_status === "READY"
+    && receipt.run_id === state.fence.run_id
+    && receipt.attempt_id === state.fence.attempt_id
+    && receipt.environment_id === state.fence.environment_id
+    && receipt.repository_origin === state.repository_origin
+    && receipt.commit === state.commit
+    && receipt.content_hash === state.content_hash
+    && receipt.instance_nonce === state.instance_nonce
+    && receipt.base_url === state.base_url
+    && receipt.pid_file === state.pid_file
+    && receipt.state_file === state.state_file
+    && receipt.target_namespace === state.target_namespace;
+}
+
 async function resolveExecutable(command) {
   if (!Array.isArray(command) || command.length === 0 || command.some((part) => typeof part !== "string" || part.length === 0)) throw new Error("managed command must be a non-empty argv array");
-  const candidate = command.length > 1 && isAbsolute(command[1]) ? command[1] : command[0];
-  if (!isAbsolute(candidate)) throw new Error("managed executable identity must be absolute");
-  return { executableIdentity: candidate, executableRealpath: await realpath(candidate) };
+  const executableIdentity = command[0];
+  const entrypointIdentity = command.length > 1 && isAbsolute(command[1]) ? command[1] : command[0];
+  if (!isAbsolute(executableIdentity) || !isAbsolute(entrypointIdentity)) throw new Error("managed executable and entrypoint identities must be absolute");
+  return {
+    executableIdentity,
+    executableRealpath: await realpath(executableIdentity),
+    entrypointIdentity,
+    entrypointRealpath: await realpath(entrypointIdentity),
+  };
 }
 
 async function defaultPrepareCheckout({ input, checkout }) {
@@ -341,11 +466,13 @@ async function defaultPrepareCheckout({ input, checkout }) {
 async function startManaged(state, runtime, deps) {
   const args = [...runtime.command.slice(1), ...ownershipArguments(state)];
   const identityEnvironment = runtime.environment_for_identity?.(state) ?? {};
+  const adapterEnvironment = validateAdapterEnvironment(runtime.managed_declaration, { ...runtime.environment, ...identityEnvironment });
   const child = deps.spawn(runtime.command[0], args, {
     cwd: state.checkout,
-    env: minimalEnvironment({ ...runtime.environment, ...identityEnvironment }),
+    env: minimalEnvironment(adapterEnvironment),
     detached: true,
     stdio: "ignore",
+    shell: false,
   });
   await new Promise((resolvePromise, rejectPromise) => {
     child.once("spawn", resolvePromise);
@@ -353,7 +480,17 @@ async function startManaged(state, runtime, deps) {
   });
   child.unref();
   if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error("managed product did not provide a valid PID");
-  return child.pid;
+  const live = await deps.inspectProcess(child.pid);
+  const exactArguments = [state.entrypoint_identity, ...ownershipArguments(state)];
+  const hasArgument = (argument) => Array.isArray(live?.argv)
+    ? live.argv.includes(argument)
+    : new RegExp(`(?:^|\\s)${argument.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=\\s|$)`).test(live?.argv_text ?? "");
+  if (!live || live.uncertain || live.executable_realpath !== state.executable_realpath || typeof live.start_token !== "string" || !exactArguments.every(hasArgument)) {
+    const error = new Error("spawned process live executable or ownership tuple could not be verified");
+    error.ownershipUncertain = true;
+    throw error;
+  }
+  return { pid: child.pid, processStartToken: live.start_token };
 }
 
 function executionBounds(profile) {
@@ -368,6 +505,7 @@ async function normalizedInput(input) {
   if (!input?.profile?.environment || !input.profile.repository) throw new Error("validated profile is required");
   const strategy = input.profile.environment.strategy;
   if (!["none", "managed_command"].includes(strategy)) throw new Error("unsupported environment strategy");
+  if (strategy === "managed_command" && input.managed) validateManagedDeclaration(input.managed);
   const fence = fenceFrom(input);
   const namespace = targetNamespace(input);
   const root = stateRoot(input.stateRoot);
@@ -392,17 +530,26 @@ export async function prepareEnvironment(input) {
   const { strategy, fence, namespace, root, paths, repositoryOrigin, commit, timeoutMs, maxOutputBytes } = normalized;
   if (strategy === "none") return { environment_status: "NOT_REQUIRED", ...fence, target_namespace: namespace };
   const deps = dependencies(input);
-  const digest = requestDigest({ input: { ...input, commit }, fence, repositoryOrigin });
+  const digest = requestDigest({ input: { ...input, commit }, fence, repositoryOrigin, root });
   await mkdir(root, { recursive: true, mode: 0o700 });
   try {
     return await withLock(paths, async () => {
       if (await exists(paths.stateFile)) {
-        const state = await readState(paths, { root, paths, fence, repositoryOrigin });
+        let state;
+        try { state = await readState(paths, { root, paths, fence, repositoryOrigin }); } catch (error) {
+          const quarantinePath = await quarantine(paths, deps);
+          throw new Error(`RECOVERY_REQUIRED: malformed ownership state was quarantined at ${quarantinePath}: ${errorMessage(error)}`);
+        }
         if (state.request_digest !== digest) throw new Error("attempt fence conflicts with a different request body");
+        if (state.phase !== "READY") {
+          const quarantinePath = await quarantine(paths, deps);
+          throw new Error(`RECOVERY_REQUIRED: ${state.phase} environment attempt is not replayable and was quarantined at ${quarantinePath}`);
+        }
+        if (!validReadyReceipt(state.receipt, state)) throw new Error("instance identity receipt is invalid; recovery is required before replay");
         if ((await readFile(paths.pidFile, "utf8")).trim() !== String(state.pid)) throw new Error("PID file does not match ownership state");
         const ownership = await processOwnership(state, deps);
         if (ownership !== "owned") throw new Error(ownership === "foreign" ? "instance identity ownership failed: foreign PID prevents safe idempotent replay" : "owned process is absent; recovery is required");
-        await verifyCheckout({ deps, checkout: paths.checkout, commit, maxOutputBytes, allowedGeneratedEntries: state.allowed_generated_entries });
+        await verifyCheckout({ deps, checkout: paths.checkout, commit, timeoutMs, maxOutputBytes, allowedGeneratedEntries: state.allowed_generated_entries });
         await waitForIdentity(state, input, deps);
         return state.receipt;
       }
@@ -410,18 +557,21 @@ export async function prepareEnvironment(input) {
       await mkdir(paths.environmentDirectory, { mode: 0o700 });
       let state;
       try {
-        await cloneExactCommit({ deps, repositoryOrigin, commit, checkout: paths.checkout, maxOutputBytes });
+        await cloneExactCommit({ deps, repositoryOrigin, commit, checkout: paths.checkout, timeoutMs, maxOutputBytes });
         const prepareCheckout = input.managed?.prepareCheckout ?? defaultPrepareCheckout;
-        const runtime = await prepareCheckout({ input, checkout: paths.checkout, repositoryOrigin, commit, fence });
+        let runtime = await prepareCheckout({ input, checkout: paths.checkout, repositoryOrigin, commit, fence, timeout_ms: timeoutMs, max_output_bytes: maxOutputBytes });
         if (!runtime || !DIGEST_PATTERN.test(runtime.content_hash) || typeof runtime.base_url !== "string") throw new Error("managed adapter returned an invalid runtime identity");
+        const allowedGeneratedEntries = validateGeneratedEntries(runtime.allowed_generated_entries ?? []);
+        await verifyCheckout({ deps, checkout: paths.checkout, commit, timeoutMs, maxOutputBytes, allowedGeneratedEntries });
+        runtime = { ...runtime, allowed_generated_entries: allowedGeneratedEntries, managed_declaration: input.managed ?? { environment_allowlist: [] } };
         const baseUrl = new URL(runtime.base_url);
         if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") throw new Error("managed base URL must use HTTP or HTTPS");
-        const { executableIdentity, executableRealpath } = await resolveExecutable(runtime.command);
+        const { executableIdentity, executableRealpath, entrypointIdentity, entrypointRealpath } = await resolveExecutable(runtime.command);
         const instanceNonce = deps.randomUUID();
         const ownerToken = deps.randomUUID();
         const stateFields = runtime.state_fields ?? {};
         if (!stateFields || typeof stateFields !== "object" || Array.isArray(stateFields)) throw new Error("managed adapter state fields must be an object");
-        const protectedStateFields = new Set(["schema", "phase", "fence", "request_digest", "repository_origin", "commit", "state_root", "checkout", "pid_file", "executable_identity", "executable_realpath", "instance_nonce", "owner_token", "content_hash", "base_url", "health_path", "timeout_ms", "max_output_bytes", "allowed_generated_entries", "pid", "receipt"]);
+        const protectedStateFields = new Set(["schema", "phase", "fence", "request_digest", "repository_origin", "commit", "state_root", "checkout", "state_file", "target_namespace", "pid_file", "executable_identity", "executable_realpath", "entrypoint_identity", "entrypoint_realpath", "process_start_token", "instance_nonce", "owner_token", "content_hash", "base_url", "health_path", "timeout_ms", "max_output_bytes", "allowed_generated_entries", "pid", "receipt"]);
         if (Object.keys(stateFields).some((key) => protectedStateFields.has(key))) throw new Error("managed adapter attempted to override generic ownership state");
         state = {
           schema: STATE_SCHEMA,
@@ -432,9 +582,13 @@ export async function prepareEnvironment(input) {
           commit,
           state_root: root,
           checkout: paths.checkout,
+          state_file: paths.stateFile,
+          target_namespace: namespace,
           pid_file: paths.pidFile,
           executable_identity: executableIdentity,
           executable_realpath: executableRealpath,
+          entrypoint_identity: entrypointIdentity,
+          entrypoint_realpath: entrypointRealpath,
           instance_nonce: instanceNonce,
           owner_token: ownerToken,
           content_hash: runtime.content_hash,
@@ -442,12 +596,12 @@ export async function prepareEnvironment(input) {
           health_path: input.profile.environment.health_path,
           timeout_ms: timeoutMs,
           max_output_bytes: maxOutputBytes,
-          allowed_generated_entries: runtime.allowed_generated_entries ?? [],
+          allowed_generated_entries: allowedGeneratedEntries,
           ...stateFields,
         };
         await writeAtomic(paths.stateFile, `${JSON.stringify(state, null, 2)}\n`, deps);
-        const pid = await startManaged(state, runtime, deps);
-        state = { ...state, phase: "STARTED", pid };
+        const { pid, processStartToken } = await startManaged(state, runtime, deps);
+        state = { ...state, phase: "STARTED", pid, process_start_token: processStartToken };
         await writeAtomic(paths.stateFile, `${JSON.stringify(state, null, 2)}\n`, deps);
         await writeAtomic(paths.pidFile, `${pid}\n`, deps);
         await waitForIdentity(state, input, deps);
@@ -467,6 +621,10 @@ export async function prepareEnvironment(input) {
         await writeAtomic(paths.stateFile, `${JSON.stringify(state, null, 2)}\n`, deps);
         return receipt;
       } catch (error) {
+        if (error?.ownershipUncertain) {
+          await quarantine(paths, deps);
+          throw new Error(`${errorMessage(error)}; uncertain spawned process was quarantined without a signal`);
+        }
         if (state?.pid) {
           const stopped = await stopOwned(state, deps);
           if (stopped === "uncertain") {
@@ -505,6 +663,9 @@ export async function cleanupEnvironment(input) {
       let state;
       try { state = await readState(paths, { root, paths, fence, repositoryOrigin }); } catch (error) {
         return recoveryReceipt(input, paths, deps, fence, namespace, error);
+      }
+      if (state.phase !== "READY" || !validReadyReceipt(state.receipt, state)) {
+        return recoveryReceipt(input, paths, deps, fence, namespace, `${state.phase} environment attempt is not safe for automatic cleanup`);
       }
       if (!(await exists(paths.pidFile)) || (await readFile(paths.pidFile, "utf8")).trim() !== String(state.pid)) {
         return recoveryReceipt(input, paths, deps, fence, namespace, "PID file does not match ownership state");

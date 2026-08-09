@@ -8,6 +8,7 @@ import { isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { prepareEnvironment, cleanupEnvironment } from "./qah/environment.mjs";
+import { canonicalJson, sha256 } from "./qah/canonical.mjs";
 
 const execFile = promisify(execFileCallback);
 const ALLOWED_VARIANTS = new Set(["buggy-v1", "fixed-v2"]);
@@ -129,7 +130,15 @@ function legacyPaths(root, environmentId) {
 
 async function runChecked(command, args, options = {}) {
   try {
-    const result = await execFile(command, args, { cwd: options.cwd, env: options.env, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+    const result = await execFile(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      encoding: "utf8",
+      maxBuffer: options.maxOutputBytes ?? MAX_BUILD_INFO_BYTES,
+      timeout: options.timeoutMs ?? STARTUP_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+      shell: false,
+    });
     return result.stdout.trim();
   } catch (error) {
     const detail = String(error?.stderr ?? error?.message ?? error).trim();
@@ -137,25 +146,27 @@ async function runChecked(command, args, options = {}) {
   }
 }
 
-async function verifyPayDemoCheckout(checkout, commit, { allowBuild = false } = {}) {
-  const actual = await runChecked("git", ["-C", checkout, "rev-parse", "HEAD"], { label: "Commit verification" });
+async function verifyPayDemoCheckout(checkout, commit, { allowBuild = false, timeoutMs = STARTUP_TIMEOUT_MS, maxOutputBytes = MAX_BUILD_INFO_BYTES } = {}) {
+  const actual = await runChecked("git", ["-C", checkout, "rev-parse", "HEAD"], { label: "Commit verification", timeoutMs, maxOutputBytes });
   if (actual !== commit) fail(`exact commit verification failed: expected ${commit}, received ${actual}`);
-  const status = await runChecked("git", ["-C", checkout, "status", "--porcelain", "--untracked-files=normal"], { label: "Clean checkout verification" });
+  const status = await runChecked("git", ["-C", checkout, "status", "--porcelain", "--untracked-files=normal"], { label: "Clean checkout verification", timeoutMs, maxOutputBytes });
   const unexpected = status.split("\n").filter(Boolean).filter((entry) => !(allowBuild && entry === "?? dist/"));
   if (unexpected.length > 0) fail(`isolated checkout is not clean; unexpected tracked or untracked entries: ${unexpected.join(", ")}`);
 }
 
-async function buildPayDemo(checkout, variant, commit) {
+async function buildPayDemo(checkout, variant, commit, { timeoutMs, maxOutputBytes }) {
   await runChecked(process.execPath, ["scripts/build-paydemo.mjs"], {
     cwd: checkout,
     env: { PATH: process.env.PATH, LANG: process.env.LANG, TMPDIR: process.env.TMPDIR, PAYDEMO_VARIANT: variant },
     label: "PayDemo build",
+    timeoutMs,
+    maxOutputBytes,
   });
   const manifest = JSON.parse(await readFile(join(checkout, "dist/paydemo/build-manifest.json"), "utf8"));
   if (manifest?.app !== "PayDemo" || manifest.variant !== variant || manifest.commit !== commit || !/^sha256:[a-f0-9]{64}$/.test(manifest.contentHash)) {
     fail("built PayDemo manifest does not match the requested exact build identity");
   }
-  await verifyPayDemoCheckout(checkout, commit, { allowBuild: true });
+  await verifyPayDemoCheckout(checkout, commit, { allowBuild: true, timeoutMs, maxOutputBytes });
   return manifest;
 }
 
@@ -224,12 +235,24 @@ function profile(repositoryOrigin) {
 }
 
 function adapter({ repositoryOrigin, variant, port, environmentId }) {
+  const runtimeIdentity = {
+    protocol: "paydemo-build-info-v1",
+    executable: "node apps/paydemo/server.mjs",
+    base_url: `http://127.0.0.1:${port}`,
+    environment_names: ["PAYDEMO_PORT", "PAYDEMO_VARIANT", "PAYDEMO_ENVIRONMENT_ID", "PAYDEMO_INSTANCE_NONCE"],
+    content_hash_source: "exact-commit-build-manifest",
+    variant,
+  };
   return {
     adapter_id: "paydemo-environment-v1",
+    adapter_version: "1",
+    adapter_digest: sha256(canonicalJson({ adapter: "paydemo-environment", version: 1, runtime_identity: runtimeIdentity })),
     configuration: { variant, port },
-    async prepareCheckout({ checkout, commit }) {
+    runtime_identity: runtimeIdentity,
+    environment_allowlist: ["PAYDEMO_PORT", "PAYDEMO_VARIANT", "PAYDEMO_ENVIRONMENT_ID", "PAYDEMO_INSTANCE_NONCE"],
+    async prepareCheckout({ checkout, commit, timeout_ms: timeoutMs, max_output_bytes: maxOutputBytes }) {
       if (await isPortInUse(port)) fail(`port ${port} is already in use; refusing to stop its owner`);
-      const manifest = await buildPayDemo(checkout, variant, commit);
+      const manifest = await buildPayDemo(checkout, variant, commit, { timeoutMs, maxOutputBytes });
       if (await isPortInUse(port)) fail(`port ${port} became occupied before startup`);
       const executable = join(checkout, "apps/paydemo/server.mjs");
       await access(executable);

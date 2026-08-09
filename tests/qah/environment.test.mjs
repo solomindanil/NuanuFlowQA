@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn as spawnChild } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareEnvironment, cleanupEnvironment, targetNamespace } from "../../scripts/qah/environment.mjs";
@@ -42,6 +43,9 @@ async function createHarness(t, options = {}) {
   let requestedCommit = commit;
   let checkoutStatus = options.checkoutStatus ?? "";
   let healthMode = options.healthMode ?? "ok";
+  let healthPulls = 0;
+  let healthCancelled = false;
+  const nodeRealpath = await realpath(process.execPath);
 
   const dependencies = {
     async execFile(commandName, args) {
@@ -63,7 +67,14 @@ async function createHarness(t, options = {}) {
       child.pid = nextPid++;
       child.unref = () => {};
       const command = [commandName, ...args].join(" ");
-      processes.set(child.pid, { alive: true, command, spawnOptions });
+      processes.set(child.pid, {
+        alive: true,
+        command,
+        argv: [commandName, ...args],
+        executableRealpath: nodeRealpath,
+        startToken: `fixture-start-${child.pid}`,
+        spawnOptions,
+      });
       calls.spawn.push({ command: commandName, args: [...args], options: spawnOptions, pid: child.pid });
       queueMicrotask(() => child.emit("spawn"));
       return child;
@@ -77,6 +88,15 @@ async function createHarness(t, options = {}) {
         throw error;
       }
       if (signal === "SIGTERM") process.alive = false;
+    },
+    async inspectProcess(pid) {
+      const process = processes.get(pid);
+      if (!process?.alive) return null;
+      return {
+        executable_realpath: process.executableRealpath,
+        argv: [...process.argv],
+        start_token: process.startToken,
+      };
     },
     async fetch(_url, fetchOptions) {
       if (healthMode === "timeout") throw Object.assign(new Error("timed out"), { name: "AbortError" });
@@ -93,6 +113,17 @@ async function createHarness(t, options = {}) {
       if (healthMode === "redirect") {
         return new Response("", { status: 302, headers: { location: "https://attacker.invalid/identity" } });
       }
+      if (healthMode === "oversized-chunked") {
+        const chunk = new Uint8Array(1024).fill(0x20);
+        return new Response(new ReadableStream({
+          pull(controller) {
+            healthPulls += 1;
+            if (healthPulls > 20) return controller.close();
+            controller.enqueue(chunk);
+          },
+          cancel() { healthCancelled = true; },
+        }), { headers: { "content-type": "application/json" } });
+      }
       assert.equal(fetchOptions.redirect, "error");
       return new Response(JSON.stringify(identity), { headers: { "content-type": "application/json" } });
     },
@@ -100,7 +131,11 @@ async function createHarness(t, options = {}) {
 
   const managed = {
     adapter_id: "generic-fixture-v1",
+    adapter_version: "1",
+    adapter_digest: "sha256:" + "d".repeat(64),
     configuration: { release: "fixture" },
+    runtime_identity: { release: "fixture", protocol: "fixture-v1" },
+    environment_allowlist: [],
     async prepareCheckout({ checkout }) {
       const executable = join(checkout, "server.mjs");
       await writeFile(executable, "// fixture executable\n");
@@ -138,6 +173,7 @@ async function createHarness(t, options = {}) {
     input,
     setCheckoutStatus(value) { checkoutStatus = value; },
     setHealthMode(value) { healthMode = value; },
+    healthStats() { return { pulls: healthPulls, cancelled: healthCancelled }; },
   };
 }
 
@@ -236,6 +272,7 @@ test("cleanup quarantines state for a foreign PID and never signals it", async (
   const ready = await prepareEnvironment(harness.input());
   const state = JSON.parse(await readFile(ready.state_file, "utf8"));
   harness.processes.get(state.pid).command = "foreign-daemon --unrelated";
+  harness.processes.get(state.pid).argv = ["foreign-daemon", "--unrelated"];
   harness.calls.signals.length = 0;
 
   const receipt = await cleanupEnvironment(harness.input());
@@ -243,6 +280,165 @@ test("cleanup quarantines state for a foreign PID and never signals it", async (
   assert.equal(harness.calls.signals.some(([, signal]) => signal === "SIGTERM"), false);
   await assert.rejects(access(ready.state_file));
   assert.match(receipt.quarantine_path, /\.quarantine-/);
+});
+
+test("cleanup rejects a foreign live executable even when its argv copies every ownership marker", async (t) => {
+  const harness = await createHarness(t);
+  const ready = await prepareEnvironment(harness.input());
+  const state = JSON.parse(await readFile(ready.state_file, "utf8"));
+  harness.processes.get(state.pid).executableRealpath = "/foreign/bin/not-node";
+  harness.calls.signals.length = 0;
+
+  const receipt = await cleanupEnvironment(harness.input());
+  assert.equal(receipt.environment_status, "RECOVERY_REQUIRED");
+  assert.equal(harness.calls.signals.some(([, signal]) => signal === "SIGTERM"), false);
+  assert.equal(harness.processes.get(state.pid).alive, true);
+});
+
+test("STARTED crash state is never replayed as READY or respawned", async (t) => {
+  const harness = await createHarness(t);
+  const ready = await prepareEnvironment(harness.input());
+  const state = JSON.parse(await readFile(ready.state_file, "utf8"));
+  delete state.receipt;
+  state.phase = "STARTED";
+  await writeFile(ready.state_file, `${JSON.stringify(state)}\n`);
+  harness.calls.signals.length = 0;
+
+  const replay = await prepareEnvironment(harness.input());
+  assert.equal(replay.environment_status, "INFRA_FAILURE");
+  assert.match(replay.reason, /recovery|required|started/i);
+  assert.equal(harness.calls.spawn.length, 1);
+  assert.equal(harness.calls.signals.some(([, signal]) => signal === "SIGTERM"), false);
+  await assert.rejects(access(ready.state_file));
+  assert.equal((await readdir(join(harness.root, "state"))).some((entry) => entry.includes(".quarantine-")), true);
+});
+
+test("Git child execution receives a finite profile timeout and leaves no hanging child", { timeout: 4_000 }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "qah-environment-timeout-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = join(root, "bin");
+  await mkdir(bin);
+  const fakeGit = join(bin, "git");
+  await writeFile(fakeGit, "#!/bin/sh\nwhile :; do :; done\n");
+  await chmod(fakeGit, 0o755);
+  const observedTimeouts = [];
+  let spawnedPid;
+  const startedAt = Date.now();
+  const receipt = await prepareEnvironment({
+    profile: { ...managedProfile(), execution: { timeout_ms: 250, max_output_bytes: 4096 } },
+    repositoryOrigin: origin,
+    commit,
+    runId: "run-timeout",
+    attemptId: "attempt-1",
+    environmentId: "timeout-env",
+    stateRoot: join(root, "state"),
+    managed: {
+      adapter_id: "timeout-fixture",
+      adapter_version: "1",
+      adapter_digest: "sha256:" + "e".repeat(64),
+      configuration: {},
+      runtime_identity: {},
+      environment_allowlist: [],
+      async prepareCheckout() { throw new Error("clone must time out first"); },
+    },
+    dependencies: {
+      execFile(commandName, args, execOptions) {
+        observedTimeouts.push(execOptions.timeout);
+        const child = spawnChild(commandName === "git" ? fakeGit : commandName, args, {
+          cwd: execOptions.cwd,
+          env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+          stdio: "ignore",
+        });
+        spawnedPid = child.pid;
+        return new Promise((resolvePromise, rejectPromise) => {
+          const timeout = execOptions.timeout ?? 1_500;
+          const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
+          child.once("close", () => {
+            clearTimeout(timer);
+            const error = new Error(`timed out after ${timeout}ms`);
+            error.stderr = error.message;
+            rejectPromise(error);
+          });
+          child.once("error", rejectPromise);
+        });
+      },
+    },
+  });
+  const elapsed = Date.now() - startedAt;
+  assert.equal(receipt.environment_status, "INFRA_FAILURE");
+  assert.equal(observedTimeouts.every((value) => Number.isInteger(value) && value > 0 && value <= 250), true);
+  assert.equal(elapsed < 700, true, `unbounded Git child took ${elapsed}ms`);
+  assert.equal(Number.isSafeInteger(spawnedPid), true);
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  assert.throws(() => process.kill(spawnedPid, 0), (error) => error?.code === "ESRCH");
+});
+
+test("chunked health body is cancelled as soon as the decompressed byte bound is crossed", async (t) => {
+  const harness = await createHarness(t, { healthMode: "oversized-chunked" });
+  const receipt = await prepareEnvironment(harness.input());
+  assert.equal(receipt.environment_status, "INFRA_FAILURE");
+  assert.match(receipt.reason, /output bound|exceeds/i);
+  assert.equal(harness.healthStats().cancelled, true);
+  assert.equal(harness.healthStats().pulls <= 6, true);
+});
+
+test("idempotency conflicts when declared adapter runtime identity changes", async (t) => {
+  const harness = await createHarness(t);
+  const first = await prepareEnvironment(harness.input());
+  assert.equal(first.environment_status, "READY");
+  const changedManaged = { ...harness.managed, adapter_digest: "sha256:" + "f".repeat(64) };
+  const replay = await prepareEnvironment(harness.input({ managed: changedManaged }));
+  assert.equal(replay.environment_status, "INFRA_FAILURE");
+  assert.match(replay.reason, /different request body|conflict/i);
+  assert.equal(harness.calls.spawn.length, 1);
+});
+
+test("adapter tracked-source mutation is rejected by the generic post-build cleanliness check", async (t) => {
+  const harness = await createHarness(t);
+  const originalPrepare = harness.managed.prepareCheckout;
+  harness.managed.prepareCheckout = async (context) => {
+    const runtime = await originalPrepare(context);
+    harness.setCheckoutStatus(" M tracked-source.mjs\n");
+    return runtime;
+  };
+  const receipt = await prepareEnvironment(harness.input());
+  assert.equal(receipt.environment_status, "INFRA_FAILURE");
+  assert.match(receipt.reason, /clean|tracked-source/i);
+  assert.equal(harness.calls.spawn.length, 0);
+});
+
+test("adapter environment rejects secret channels, preload controls, PATH override, and non-allowlisted names", async (t) => {
+  const cases = [
+    ["CODEX_TOKEN", "value", "runtime"],
+    ["NUANU_SESSION", "value", "identity"],
+    ["API_KEY", "value", "runtime"],
+    ["NODE_OPTIONS", "--require=/tmp/evil.cjs", "runtime"],
+    ["LD_PRELOAD", "/tmp/evil.so", "runtime"],
+    ["PATH", "/tmp/evil-bin", "runtime"],
+    ["UNDECLARED_RUNTIME_FLAG", "value", "runtime"],
+  ];
+  for (const [index, [name, value, source]] of cases.entries()) {
+    const harness = await createHarness(t);
+    const originalPrepare = harness.managed.prepareCheckout;
+    harness.managed.environment_allowlist = name === "UNDECLARED_RUNTIME_FLAG" ? [] : [name];
+    harness.managed.prepareCheckout = async (context) => {
+      const runtime = await originalPrepare(context);
+      return source === "identity"
+        ? { ...runtime, environment_for_identity: () => ({ [name]: value }) }
+        : { ...runtime, environment: { [name]: value } };
+    };
+    const receipt = await prepareEnvironment(harness.input({ attemptId: `attempt-env-${index}` }));
+    assert.equal(receipt.environment_status, "INFRA_FAILURE", name);
+    assert.match(receipt.reason, /environment|forbidden|allowlist|credential|preload|PATH/i, name);
+    assert.equal(harness.calls.spawn.length, 0, name);
+  }
+});
+
+test("spawn explicitly disables shell execution", async (t) => {
+  const harness = await createHarness(t);
+  const receipt = await prepareEnvironment(harness.input());
+  assert.equal(receipt.environment_status, "READY");
+  assert.equal(harness.calls.spawn[0].options.shell, false);
 });
 
 test("cleanup after interrupted prepare quarantines uncertain state without blind kill", async (t) => {
