@@ -1,9 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
-import { runBranch } from "../../scripts/qah/run-branch.mjs";
+import { runBranch as productionRunBranch } from "../../scripts/qah/run-branch.mjs";
 import { runPaydemoAdapter } from "../../scripts/qah/adapters/paydemo.mjs";
+import * as paydemoAdapterModule from "../../scripts/qah/adapters/paydemo.mjs";
+import { targetNamespace } from "../../scripts/qah/environment.mjs";
+import { validateProfile } from "../../scripts/qah/contracts.mjs";
+import YAML from "yaml";
 
 const commit = "a".repeat(40);
 const contentHash = `sha256:${"c".repeat(64)}`;
@@ -61,7 +67,7 @@ function plan(rawProfile = profile(), applicability = { code: "REQUIRED", api: "
     content_hash: contentHash,
     applicability,
     branch_reasons: Object.fromEntries(Object.entries(applicability).map(([branch, value]) => [branch, value === "REQUIRED" ? [{ code: branch === "code" ? "ALWAYS_CODE" : "PATH_RULE" }] : []])),
-    expected_evidence: Object.fromEntries(Object.entries(applicability).map(([branch, value]) => [branch, value === "REQUIRED" ? [branch === "ui" ? "playwright" : `${branch}-contract`] : []])),
+    expected_evidence: Object.fromEntries(Object.entries(applicability).map(([branch, value]) => [branch, value === "REQUIRED" ? evidenceKinds(branch) : []])),
     risk_level: "MEDIUM",
     artifact_slot: artifactSlot,
   };
@@ -69,28 +75,47 @@ function plan(rawProfile = profile(), applicability = { code: "REQUIRED", api: "
 }
 
 function environmentReceipt(overrides = {}) {
-  return {
+  const fence = {
+    runId: overrides.run_id ?? "run-1",
+    attemptId: overrides.attempt_id ?? "attempt-1",
+    environmentId: overrides.environment_id ?? "generic-env",
+  };
+  const namespace = targetNamespace(fence);
+  const stateRoot = overrides.state_root ?? "/tmp/qah-fixture";
+  const environmentDirectory = join(stateRoot, namespace);
+  const value = {
     environment_status: "READY",
-    run_id: "run-1",
-    attempt_id: "attempt-1",
-    environment_id: "generic-env",
-    target_namespace: "e".repeat(64),
+    run_id: fence.runId,
+    attempt_id: fence.attemptId,
+    environment_id: fence.environmentId,
+    target_namespace: namespace,
     repository_origin: "https://example.test/generic/product.git",
     commit,
     content_hash: contentHash,
     instance_nonce: instanceNonce,
     base_url: "http://127.0.0.1:4173",
-    pid_file: "/tmp/qah-fixture/server.pid",
-    state_file: "/tmp/qah-fixture/environment.json",
-    ...overrides,
+    pid_file: join(environmentDirectory, "server.pid"),
+    state_file: join(environmentDirectory, "environment.json"),
   };
+  for (const [key, entry] of Object.entries(overrides)) if (key !== "state_root") value[key] = entry;
+  return value;
 }
 
-function adapterResult(branch, overrides = {}) {
-  const artifacts = branch === "ui" ? [
-    { kind: "screenshot", name: "ui-main.png", version: 1, sha256: artifactDigest },
-    { kind: "trace", name: "ui-trace.zip", version: 1, sha256: `sha256:${"e".repeat(64)}` },
-  ] : [];
+function evidenceKinds(branch) {
+  return {
+    code: ["repository-diff", "static-analysis"],
+    api: ["api-contract", "automated-api-test"],
+    ui: ["playwright", "screenshot"],
+    domain: ["domain-data", "sandbox-test"],
+  }[branch];
+}
+
+function evidenceCandidate(kind, name, content = `${kind}-bytes`) {
+  const bytes = Buffer.from(content);
+  return { kind, name, media_type: kind === "screenshot" ? "image/png" : kind === "trace" ? "application/zip" : "text/markdown", size_bytes: bytes.byteLength, sha256: sha256(content), content_base64: bytes.toString("base64") };
+}
+
+function reviewAdapterResult(branch, overrides = {}) {
   return {
     schema_version: "nuanu.qa-branch-adapter-result.v1",
     branch,
@@ -100,18 +125,75 @@ function adapterResult(branch, overrides = {}) {
     confidence: ({ api: 0.99, ui: 0.98, domain: 0.97 })[branch],
     code: `${branch.toUpperCase()}_${branch === "ui" ? "FLOW" : branch === "domain" ? "RULE" : "CONTRACT"}_VERIFIED`,
     observations: [{ code: "ASSERTION_PASSED", status: "PASS", value_sha256: artifactDigest }],
-    artifacts,
+    evidence_kinds: evidenceKinds(branch),
+    candidates: branch === "ui" ? [evidenceCandidate("screenshot", "ui-main.png"), evidenceCandidate("trace", "ui-trace.zip")] : [evidenceCandidate("document", `${branch}-evidence.md`)],
     ...overrides,
   };
+}
+
+function paydemoInput(branch, overrides = {}) {
+  const value = {
+    schema_version: "nuanu.qa-branch-adapter-input.v1", branch, run_id: "run-1", attempt_id: "attempt-1",
+    attempt_namespace: sha256({ run_id: "run-1", attempt_id: "attempt-1" }).slice("sha256:".length),
+    branch_namespace: sha256({ run_id: "run-1", attempt_id: "attempt-1", branch }).slice("sha256:".length),
+    test_data_profile: branch === "domain" ? "payment_sandbox" : null,
+    environment: { base_url: "http://127.0.0.1:4173", commit, content_hash: contentHash, environment_id: "generic-env", instance_nonce: instanceNonce },
+    ...overrides,
+  };
+  return value;
+}
+
+async function persistedEnvironmentFixture(t, { runId = "run-1", attemptId = "attempt-1", environmentId = "generic-env" } = {}) {
+  const root = await mkdtemp(join(tmpdir(), "qah-branch-state-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const receipt = environmentReceipt({ run_id: runId, attempt_id: attemptId, environment_id: environmentId, state_root: root });
+  const environmentDirectory = dirname(receipt.state_file);
+  const checkout = join(environmentDirectory, "checkout");
+  await mkdir(checkout, { recursive: true });
+  const runtimeContract = {
+    command: [process.execPath, join(checkout, "server.mjs")], base_url: receipt.base_url, content_hash: receipt.content_hash,
+    environment: {}, identity_environment: {}, allowed_generated_entries: [], state_fields: {}, configuration: {},
+  };
+  const declaredRequestDigest = `sha256:${"8".repeat(64)}`;
+  const state = {
+    schema: "qah.generic-environment-state.v3", phase: "READY",
+    fence: { run_id: runId, attempt_id: attemptId, environment_id: environmentId },
+    declared_request_digest: declaredRequestDigest,
+    request_digest: sha256({ declared_request_digest: declaredRequestDigest, actual_runtime_contract: runtimeContract }),
+    runtime_contract_digest: sha256(runtimeContract), runtime_contract: runtimeContract,
+    repository_origin: receipt.repository_origin, commit: receipt.commit, state_root: root, checkout,
+    state_file: receipt.state_file, target_namespace: receipt.target_namespace, pid_file: receipt.pid_file,
+    executable_identity: process.execPath, executable_realpath: process.execPath, entrypoint_identity: process.execPath,
+    entrypoint_realpath: process.execPath, process_start_token: "fixture-start", instance_nonce: receipt.instance_nonce,
+    owner_token: "fixture-owner-token", content_hash: receipt.content_hash, base_url: receipt.base_url,
+    health_path: "/build-info", timeout_ms: 2_000, max_output_bytes: 16_384,
+    allowed_generated_entries: [], pid: process.pid, receipt,
+  };
+  await writeFile(receipt.state_file, `${JSON.stringify(state)}\n`);
+  await writeFile(receipt.pid_file, `${process.pid}\n`);
+  return { root, receipt, state, checkout };
 }
 
 function successfulExecute(calls) {
   return async (file, args, options) => {
     const input = JSON.parse(options.stdin);
     calls.push({ file, args, options, input });
-    if (input.branch === "code") return { exitCode: 0, stdout: "typecheck passed", stderr: "" };
-    return { exitCode: 0, stdout: canonicalJson(adapterResult(input.branch)), stderr: "" };
+    if (input.branch === "code") return { exitCode: 0, signal: null, stdout: "typecheck passed", stderr: "" };
+    return { exitCode: 0, signal: null, stdout: canonicalJson(reviewAdapterResult(input.branch)), stderr: "" };
   };
+}
+
+function runBranch(input) {
+  const receipt = input.environmentReceipt;
+  const trustedStateRoot = receipt?.state_file ? dirname(dirname(receipt.state_file)) : "/tmp/qah-fixture";
+  if (input.dependencies) return productionRunBranch({ ...input, dependencies: { trustedStateRoot, ...input.dependencies } });
+  return productionRunBranch({
+    ...input,
+    dependencies: {
+      trustedStateRoot,
+      verifyEnvironment: async ({ receipt: verifiedReceipt }) => ({ receipt: verifiedReceipt, checkout: join(dirname(verifiedReceipt.state_file), "checkout") }),
+    },
+  });
 }
 
 async function fixture(name) {
@@ -119,7 +201,16 @@ async function fixture(name) {
 }
 
 function projection(result) {
-  return Object.fromEntries(["branch", "applicability", "product_result", "environment_status", "evidence_status", "confidence", "code"].map((key) => [key, result[key]]));
+  const data = result.envelope.item.data;
+  return {
+    branch: result.branch_result.branch,
+    applicability: result.branch_result.applicability,
+    product_result: result.branch_result.product_result,
+    environment_status: data.environment_status,
+    evidence_status: result.branch_result.evidence_status,
+    confidence: data.confidence,
+    code: data.code,
+  };
 }
 
 test("all four branches produce the closed fixture result and one evidence-report slot", async () => {
@@ -139,13 +230,9 @@ test("all four branches produce the closed fixture result and one evidence-repor
       environment: { PATH: "/usr/bin", LANG: "C", HOME: "/secret-home", ACCESS_TOKEN: "must-not-leak" },
     });
     assert.deepEqual(projection(result), await fixture(`${branch}-pass`));
-    assert.deepEqual(Object.keys(result).sort(), [
-      "applicability", "artifact_slot", "attempt_id", "branch", "branch_namespace", "code", "commit", "confidence",
-      "environment_identity", "environment_status", "evidence_report", "evidence_status", "product_result", "profile_digest",
-      "project_key", "run_id", "schema_version",
-    ]);
-    assert.equal(result.evidence_report.schema_version, "nuanu.qa-evidence-report.v1");
-    assert.equal(result.evidence_report.sha256, sha256(result.evidence_report.document));
+    assert.deepEqual(Object.keys(result).sort(), ["branch_result", "envelope"]);
+    assert.equal(result.envelope.artifact_outputs["item.artifacts.evidence_report"], null);
+    assert.equal(result.envelope.item.data.evidence_sha256, sha256(result.envelope.item.data.evidence_candidate));
   }
 });
 
@@ -154,10 +241,10 @@ test("NOT_APPLICABLE UI emits verified SKIPPED without executing Playwright", as
   const rawPlan = plan(rawProfile, { code: "REQUIRED", api: "NOT_APPLICABLE", ui: "NOT_APPLICABLE", domain: "NOT_APPLICABLE" });
   const forbiddenExecute = async () => { throw new Error("Playwright must not execute"); };
   const result = await runBranch({ branch: "ui", plan: rawPlan, profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1", execute: forbiddenExecute });
-  assert.equal(result.product_result, "SKIPPED");
-  assert.equal(result.environment_status, "HEALTHY");
-  assert.equal(result.evidence_status, "VERIFIED");
-  assert.equal(result.code, "NOT_APPLICABLE");
+  assert.equal(result.branch_result.product_result, "SKIPPED");
+  assert.equal(result.envelope.item.data.environment_status, "HEALTHY");
+  assert.equal(result.branch_result.evidence_status, "VERIFIED");
+  assert.equal(result.envelope.item.data.code, "NOT_APPLICABLE");
 });
 
 test("transport failure is INCONCLUSIVE plus INFRA_FAILURE and never a product defect", async () => {
@@ -169,7 +256,7 @@ test("transport failure is INCONCLUSIVE plus INFRA_FAILURE and never a product d
     execute: async () => { throw timeout; },
   });
   assert.deepEqual(projection(result), await fixture("infra-failure"));
-  assert.equal("defect" in result, false);
+  assert.equal(canonicalJson(result).includes("defect"), false);
 });
 
 test("profile, full plan, receipt, branch, run, and attempt are exact before side effects", async () => {
@@ -203,7 +290,7 @@ test("executes only declared argv with shell false, a minimal environment, finit
   assert.deepEqual(calls[0].options.env, { PATH: "/usr/bin", LANG: "C" });
   assert.equal(calls[0].options.timeoutMs, 2_000);
   assert.equal(calls[0].options.maxOutputBytes, 16_384);
-  assert.equal(calls[0].options.cwd, "/tmp/qah-fixture/checkout");
+  assert.equal(calls[0].options.cwd, join(dirname(environmentReceipt().state_file), "checkout"));
   assert.equal(calls[0].options.stdin, canonicalJson(calls[0].input));
   assert.equal(Buffer.byteLength(calls[0].options.stdin) <= 65_536, true);
 });
@@ -228,9 +315,9 @@ test("UI requires the prepared exact origin and versioned screenshot plus trace 
     branch: "ui", plan: plan(rawProfile), profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
     execute: successfulExecute([]),
   });
-  assert.deepEqual(result.evidence_report.document.artifacts.map(({ kind, version }) => ({ kind, version })), [
-    { kind: "screenshot", version: 1 }, { kind: "trace", version: 1 },
-  ]);
+  const uiEvidence = JSON.parse(result.envelope.item.data.evidence_candidate);
+  assert.deepEqual(uiEvidence.candidates.map(({ kind }) => kind), ["screenshot", "trace"]);
+  assert.equal(uiEvidence.candidates.some((candidate) => "version" in candidate), false);
 });
 
 test("domain accepts only a declared profile name and never serializes test-data values", async () => {
@@ -257,8 +344,8 @@ test("concurrent branches and overlapping attempts receive isolated namespaces",
   const execute = async (_file, _args, options) => {
     const input = JSON.parse(options.stdin);
     state.set(input.branch_namespace, (state.get(input.branch_namespace) ?? 0) + 1);
-    if (input.branch === "code") return { exitCode: 0, stdout: "ok", stderr: "" };
-    return { exitCode: 0, stdout: canonicalJson(adapterResult(input.branch)), stderr: "" };
+    if (input.branch === "code") return { exitCode: 0, signal: null, stdout: "ok", stderr: "" };
+    return { exitCode: 0, signal: null, stdout: canonicalJson(reviewAdapterResult(input.branch)), stderr: "" };
   };
   const firstAttempt = ["code", "api", "ui", "domain"].map((branch) => runBranch({
     branch, plan: rawPlan, profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
@@ -269,20 +356,20 @@ test("concurrent branches and overlapping attempts receive isolated namespaces",
     runId: "run-1", attemptId: "attempt-2", execute,
   });
   const results = await Promise.all([...firstAttempt, secondAttempt]);
-  assert.equal(new Set(results.map((result) => result.branch_namespace)).size, 5);
+  assert.equal(new Set(results.map((result) => result.envelope.item.data.branch_namespace)).size, 5);
   assert.deepEqual([...state.values()], [1, 1, 1, 1, 1]);
 });
 
 test("closed adapter output rejects extra keys and oversized stdout as infrastructure uncertainty", async () => {
   const rawProfile = profile();
   for (const execute of [
-    async () => ({ exitCode: 0, stdout: canonicalJson({ ...adapterResult("api"), secret: "leak" }), stderr: "" }),
-    async () => ({ exitCode: 0, stdout: "x".repeat(16_385), stderr: "" }),
-    async () => ({ exitCode: 0, stdout: canonicalJson(adapterResult("api")) + " ".repeat(8_000), stderr: "x".repeat(9_000) }),
+    async () => ({ exitCode: 0, signal: null, stdout: canonicalJson({ ...reviewAdapterResult("api"), secret: "leak" }), stderr: "" }),
+    async () => ({ exitCode: 0, signal: null, stdout: "x".repeat(16_385), stderr: "" }),
+    async () => ({ exitCode: 0, signal: null, stdout: canonicalJson(reviewAdapterResult("api")) + " ".repeat(8_000), stderr: "x".repeat(9_000) }),
   ]) {
     const result = await runBranch({ branch: "api", plan: plan(rawProfile), profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1", execute });
-    assert.equal(result.product_result, "INCONCLUSIVE");
-    assert.equal(result.environment_status, "INFRA_FAILURE");
+    assert.equal(result.branch_result.product_result, "INCONCLUSIVE");
+    assert.equal(result.envelope.item.data.environment_status, "INFRA_FAILURE");
   }
 });
 
@@ -295,14 +382,14 @@ test("PayDemo adapter is the only wrapper that maps generic branches to the exis
     occurrence: { observed: { unsafe: "not forwarded" } },
     evidence: { sha256: artifactDigest, markdown_path: "/private/evidence.md" },
   };
-  const input = {
-    schema_version: "nuanu.qa-branch-adapter-input.v1", branch: "api", run_id: "run-1", attempt_id: "attempt-1",
-    branch_namespace: "f".repeat(64), test_data_profile: null,
-    environment: { base_url: "http://127.0.0.1:4173", commit, content_hash: contentHash, environment_id: "generic-env", instance_nonce: instanceNonce },
-  };
+  const input = paydemoInput("api");
   const result = await runPaydemoAdapter(input, {
-    runProbe: async (options) => { calls.push(options); return probeResult; },
-    artifactReferences: async () => [],
+    runProbe: async (options) => {
+      calls.push(options);
+      const markdownPath = join(options.evidenceDirectory, "api.md");
+      await writeFile(markdownPath, "api evidence");
+      return { ...probeResult, evidence: { sha256: artifactDigest, markdown_path: markdownPath } };
+    },
   });
   assert.equal(calls[0].mode, "amount");
   assert.equal(result.branch, "api");
@@ -310,53 +397,279 @@ test("PayDemo adapter is the only wrapper that maps generic branches to the exis
   assert.equal(canonicalJson(result).includes("not forwarded"), false);
 });
 
-test("PayDemo UI wrapper captures screenshot and trace in a second isolated evidence context", async () => {
-  const uiInput = {
-    schema_version: "nuanu.qa-branch-adapter-input.v1", branch: "ui", run_id: "run-1", attempt_id: "attempt-1",
-    branch_namespace: "1".repeat(64), test_data_profile: null,
-    environment: { base_url: "http://127.0.0.1:4173", commit, content_hash: contentHash, environment_id: "generic-env", instance_nonce: instanceNonce },
-  };
+test("PayDemo UI wrapper returns candidates captured by the asserted interaction", async () => {
+  const uiInput = paydemoInput("ui");
   const captured = [];
   const result = await runPaydemoAdapter(uiInput, {
-    runProbe: async () => ({
-      axes: { product_result: "PASS", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1 },
-      code: "BANK_TRANSFER_CONFIRMED", occurrence_key: artifactDigest,
-      evidence: { sha256: artifactDigest, markdown_path: "/private/evidence.md" },
-    }),
-    captureUiArtifacts: async (input) => {
+    runUiProbe: async (input) => {
       captured.push(input.branch_namespace);
-      return [
-        { kind: "screenshot", name: "ui-main.png", version: 1, sha256: artifactDigest },
-        { kind: "trace", name: "ui-trace.zip", version: 1, sha256: `sha256:${"e".repeat(64)}` },
-      ];
+      return {
+        classification: { product_result: "PASS", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1, code: "BANK_TRANSFER_CONFIRMED" },
+        observation_sha256: artifactDigest,
+        candidates: [evidenceCandidate("screenshot", "ui-main.png"), evidenceCandidate("trace", "ui-trace.zip")],
+      };
     },
   });
   assert.deepEqual(captured, [uiInput.branch_namespace]);
-  assert.deepEqual(result.artifacts.map((artifact) => artifact.kind), ["screenshot", "trace"]);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.kind), ["screenshot", "trace"]);
 });
 
-test("PayDemo UI wrapper provisions its browser inside the adapter instead of inheriting worker capabilities", async () => {
-  const uiInput = {
-    schema_version: "nuanu.qa-branch-adapter-input.v1", branch: "ui", run_id: "run-1", attempt_id: "attempt-1",
-    branch_namespace: "2".repeat(64), test_data_profile: null,
-    environment: { base_url: "http://127.0.0.1:4173", commit, content_hash: contentHash, environment_id: "generic-env", instance_nonce: instanceNonce },
-  };
+test("PayDemo UI wrapper does not require inherited worker browser capabilities", async () => {
+  const uiInput = paydemoInput("ui");
   const environments = [];
   await runPaydemoAdapter(uiInput, {
-    createUiProbeEnvironment: async () => ({ environment: { NUANU_QA_PLAYWRIGHT_MODULE: "fixture", NUANU_QA_BROWSER_CDP_URL: "fixture" }, dispose: async () => {} }),
-    runProbe: async (options) => {
+    runUiProbe: async (_input, options) => {
       environments.push(options.environment);
       return {
-        axes: { product_result: "PASS", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1 },
-        code: "BANK_TRANSFER_CONFIRMED", occurrence_key: artifactDigest, evidence: { sha256: artifactDigest, markdown_path: null },
+        classification: { product_result: "PASS", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1, code: "BANK_TRANSFER_CONFIRMED" },
+        observation_sha256: artifactDigest,
+        candidates: [evidenceCandidate("screenshot", "ui-main.png"), evidenceCandidate("trace", "ui-trace.zip")],
       };
     },
-    captureUiArtifacts: async () => [
-      { kind: "screenshot", name: "ui-main.png", version: 1, sha256: artifactDigest },
-      { kind: "trace", name: "ui-trace.zip", version: 1, sha256: `sha256:${"e".repeat(64)}` },
-    ],
     environment: { PATH: "/usr/bin" },
   });
-  assert.equal(environments[0].NUANU_QA_PLAYWRIGHT_MODULE, "fixture");
   assert.equal(environments[0].PATH, "/usr/bin");
+  assert.equal("NUANU_QA_BROWSER_CDP_URL" in environments[0], false);
+});
+
+test("persisted Task 3 state is the sole source of checkout trust and retry paths cannot be reused", async (t) => {
+  const fixture = await persistedEnvironmentFixture(t);
+  const rawProfile = profile();
+  const rawPlan = plan(rawProfile);
+  const calls = [];
+  const dependencies = {
+    trustedStateRoot: fixture.root,
+    verifyCheckout: async ({ checkout, expectedCommit }) => {
+      assert.equal(checkout, fixture.checkout);
+      assert.equal(expectedCommit, commit);
+    },
+  };
+  const result = await runBranch({
+    branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt,
+    runId: "run-1", attemptId: "attempt-1", execute: async (file, args, options) => {
+      calls.push({ file, args, options });
+      return { exitCode: 0, signal: null, stdout: canonicalJson(reviewAdapterResult("api")), stderr: "" };
+    }, dependencies,
+  });
+  assert.equal(calls[0].options.cwd, fixture.checkout);
+  assert.equal(result.branch_result.product_result, "PASS");
+
+  const forgedPath = { ...fixture.receipt, state_file: "/tmp/attacker/environment.json", pid_file: "/tmp/attacker/server.pid" };
+  await assert.rejects(runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: forgedPath, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("forged"); }, dependencies }), /state|path|namespace/);
+
+  const retryReuse = { ...fixture.receipt, attempt_id: "attempt-2" };
+  await assert.rejects(runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: retryReuse, runId: "run-1", attemptId: "attempt-2", execute: async () => { calls.push("retry"); }, dependencies }), /namespace|path|state/);
+
+  const tamperedState = structuredClone(fixture.state);
+  tamperedState.receipt = { ...tamperedState.receipt, base_url: "http://127.0.0.1:4174" };
+  await writeFile(fixture.receipt.state_file, JSON.stringify(tamperedState));
+  await assert.rejects(runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("state"); }, dependencies }), /persisted|receipt|state/);
+
+  await writeFile(fixture.receipt.state_file, JSON.stringify({ ...fixture.state, owner_token: "" }));
+  await assert.rejects(runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("owner"); }, dependencies }), /persisted|ownership|state/);
+
+  await writeFile(fixture.receipt.state_file, JSON.stringify(fixture.state));
+  await writeFile(fixture.receipt.pid_file, `${process.pid + 1}\n`);
+  await assert.rejects(runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("pid"); }, dependencies }), /PID|pid|state/);
+  assert.deepEqual(calls.filter((entry) => typeof entry === "string"), []);
+});
+
+test("code requires a verified READY checkout and never falls back to the worker cwd", async () => {
+  const rawProfile = profile();
+  const rawPlan = plan(rawProfile);
+  const failureReceipt = {
+    environment_status: "INFRA_FAILURE", run_id: "run-1", attempt_id: "attempt-1", environment_id: "generic-env",
+    target_namespace: targetNamespace({ runId: "run-1", attemptId: "attempt-1", environmentId: "generic-env" }), reason: "prepare failed",
+  };
+  let calls = 0;
+  const result = await runBranch({ branch: "code", plan: rawPlan, profile: rawProfile, environmentReceipt: failureReceipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls += 1; } });
+  assert.equal(result.branch_result.product_result, "INCONCLUSIVE");
+  assert.equal(result.envelope.item.data.environment_status, "INFRA_FAILURE");
+  assert.equal(calls, 0);
+});
+
+test("PASS cannot be forged without nonempty assertions, every planned evidence kind, and verified candidate bytes", async () => {
+  const rawProfile = profile();
+  const rawPlan = plan(rawProfile);
+  const cases = [
+    reviewAdapterResult("api", { observations: [] }),
+    reviewAdapterResult("api", { observations: [{ code: "ASSERTION_FAILED", status: "FAIL", value_sha256: artifactDigest }] }),
+    reviewAdapterResult("api", { evidence_kinds: ["api-contract"] }),
+    reviewAdapterResult("api", { evidence_kinds: [...evidenceKinds("api"), "unplanned-evidence"] }),
+    reviewAdapterResult("api", { candidates: [{ ...evidenceCandidate("document", "api.md"), sha256: artifactDigest }] }),
+  ];
+  for (const adapter of cases) {
+    const result = await runBranch({
+      branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+      execute: async () => ({ exitCode: 0, signal: null, stdout: canonicalJson(adapter), stderr: "" }),
+      dependencies: { verifyEnvironment: async ({ receipt }) => ({ receipt, checkout: dirname(receipt.state_file) + "/checkout" }) },
+    });
+    assert.equal(result.branch_result.product_result, "INCONCLUSIVE");
+    assert.equal(result.envelope.item.data.environment_status, "INFRA_FAILURE");
+  }
+});
+
+test("branch output is an exact validator-backed envelope with honest null materialization slots", async () => {
+  const rawProfile = profile();
+  const result = await runBranch({
+    branch: "api", plan: plan(rawProfile), profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+    execute: async () => ({ exitCode: 0, signal: null, stdout: canonicalJson(reviewAdapterResult("api")), stderr: "" }),
+    dependencies: { verifyEnvironment: async ({ receipt }) => ({ receipt, checkout: dirname(receipt.state_file) + "/checkout" }) },
+  });
+  assert.deepEqual(Object.keys(result).sort(), ["branch_result", "envelope"]);
+  assert.deepEqual(Object.keys(result.branch_result).sort(), ["applicability", "branch", "commit", "evidence_status", "product_result", "profile_digest", "project_key", "schema_version"]);
+  assert.deepEqual(result.envelope.artifact_outputs, { "item.artifacts.evidence_report": null });
+  assert.deepEqual(result.envelope.item.artifacts, {});
+  assert.equal(canonicalJson(result).includes('"version":1'), false);
+});
+
+test("code VERIFIED output contains a bounded candidate bound to the executed command digests", async () => {
+  const rawProfile = profile();
+  const result = await runBranch({
+    branch: "code", plan: plan(rawProfile), profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+    execute: async () => ({ exitCode: 0, signal: null, stdout: "typecheck passed", stderr: "" }),
+    dependencies: { verifyEnvironment: async ({ receipt }) => ({ receipt, checkout: dirname(receipt.state_file) + "/checkout" }) },
+  });
+  const evidence = JSON.parse(result.envelope.item.data.evidence_candidate);
+  assert.deepEqual(evidence.evidence_kinds, evidenceKinds("code"));
+  assert.equal(evidence.candidates.length, 1);
+  assert.equal(evidence.candidates[0].kind, "document");
+  assert.equal(Buffer.from(evidence.candidates[0].content_base64, "base64").toString("utf8").includes("typecheck passed"), false);
+});
+
+test("signal, null exit, and missing exit code are transport failures for every branch", async () => {
+  const rawProfile = profile();
+  for (const branch of ["code", "api"]) {
+    for (const execution of [
+      { exitCode: null, signal: "SIGKILL", stdout: "", stderr: "" },
+      { signal: null, stdout: "", stderr: "" },
+    ]) {
+      const result = await runBranch({
+        branch, plan: plan(rawProfile), profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+        execute: async () => execution,
+        dependencies: { verifyEnvironment: async ({ receipt }) => ({ receipt, checkout: dirname(receipt.state_file) + "/checkout" }) },
+      });
+      assert.equal(result.branch_result.product_result, "INCONCLUSIVE");
+      assert.equal(result.envelope.item.data.environment_status, "INFRA_FAILURE");
+    }
+  }
+});
+
+test("adapter stdout must be exact canonical bytes with no trailing whitespace", async () => {
+  const rawProfile = profile();
+  const result = await runBranch({
+    branch: "api", plan: plan(rawProfile), profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+    execute: async () => ({ exitCode: 0, signal: null, stdout: `${canonicalJson(reviewAdapterResult("api"))}\n`, stderr: "" }),
+    dependencies: { verifyEnvironment: async ({ receipt }) => ({ receipt, checkout: dirname(receipt.state_file) + "/checkout" }) },
+  });
+  assert.equal(result.branch_result.product_result, "INCONCLUSIVE");
+});
+
+test("concurrent reset and fixture mutations remain isolated behind a real overlap barrier", async () => {
+  const rawProfile = profile();
+  const rawPlan = plan(rawProfile);
+  const store = new Map();
+  let arrivals = 0;
+  let releaseBarrier;
+  const barrier = new Promise((resolvePromise) => { releaseBarrier = resolvePromise; });
+  const execute = async (_file, _args, options) => {
+    const input = JSON.parse(options.stdin);
+    assert.match(input.attempt_namespace, /^[a-f0-9]{64}$/);
+    assert.match(input.branch_namespace, /^[a-f0-9]{64}$/);
+    store.set(input.branch_namespace, { owner: input.attempt_namespace, reset: true, fixtures: [input.branch] });
+    arrivals += 1;
+    if (arrivals === 5) releaseBarrier();
+    await barrier;
+    const own = store.get(input.branch_namespace);
+    assert.equal(own.owner, input.attempt_namespace);
+    assert.deepEqual(own.fixtures, [input.branch]);
+    if (input.branch === "code") return { exitCode: 0, signal: null, stdout: "ok", stderr: "" };
+    return { exitCode: 0, signal: null, stdout: canonicalJson(reviewAdapterResult(input.branch)), stderr: "" };
+  };
+  const verifyEnvironment = async ({ receipt }) => ({ receipt, checkout: dirname(receipt.state_file) + "/checkout" });
+  const first = ["code", "api", "ui", "domain"].map((branch) => runBranch({
+    branch, plan: rawPlan, profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+    testDataProfile: branch === "domain" ? "sandbox" : undefined, execute, dependencies: { verifyEnvironment },
+  }));
+  const retry = runBranch({
+    branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: environmentReceipt({ attempt_id: "attempt-2" }),
+    runId: "run-1", attemptId: "attempt-2", execute, dependencies: { verifyEnvironment },
+  });
+  const results = await Promise.all([...first, retry]);
+  assert.equal(new Set(results.map((entry) => entry.envelope.item.data.branch_namespace)).size, 5);
+  assert.equal(store.size, 5);
+});
+
+function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = "screenshot", traceBytes = "trace", requestUrl = "http://127.0.0.1:4173/app.js", interactionRequestUrl = "http://127.0.0.1:4173/api/checkout" } = {}) {
+  const events = [];
+  let routeHandler;
+  const responseBody = Buffer.from(JSON.stringify({ paymentId: "id", amountCents: 1000, paymentMethod: "bank" }));
+  const response = {
+    url: () => "http://127.0.0.1:4173/api/checkout", status: () => 201,
+    request: () => ({ method: () => "POST", postDataJSON: () => ({ paymentMethod: "bank" }) }),
+    headerValue: async (name) => name === "content-type" ? "application/json" : String(responseBody.byteLength),
+    body: async () => responseBody,
+  };
+  const page = {
+    async goto() {
+      const route = { request: () => ({ url: () => requestUrl }), continue: async () => events.push("route-continue"), abort: async () => events.push("route-abort") };
+      await routeHandler(route);
+      events.push("goto");
+    },
+    url: () => finalUrl,
+    getByLabel: () => ({ check: async () => events.push("check"), isChecked: async () => true }),
+    waitForResponse: async (predicate) => { assert.equal(predicate(response), true); return response; },
+    getByRole(role) {
+      if (role === "button") return { click: async () => {
+        const route = { request: () => ({ url: () => interactionRequestUrl }), continue: async () => events.push("interaction-continue"), abort: async () => events.push("interaction-abort") };
+        await routeHandler(route);
+        events.push("click");
+      } };
+      return { filter: () => ({ waitFor: async () => events.push("receipt"), textContent: async () => "Payment recorded by bank transfer." }) };
+    },
+    async screenshot({ path }) { events.push("screenshot"); await writeFile(path, screenshotBytes); },
+  };
+  const context = {
+    tracing: { start: async () => events.push("trace-start"), stop: async ({ path }) => { events.push("trace-stop"); await writeFile(path, traceBytes); } },
+    route: async (_pattern, handler) => { routeHandler = handler; }, newPage: async () => page,
+    close: async () => events.push("context-close"), setDefaultTimeout: () => {},
+  };
+  const browser = { newContext: async () => context, close: async () => events.push("browser-close") };
+  return { chromium: { launch: async () => browser }, events };
+}
+
+test("UI assertion, screenshot, and trace share one isolated context and clean temporary files", async (t) => {
+  const artifactRoot = await mkdtemp(join(tmpdir(), "qah-ui-same-context-"));
+  t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+  const harness = fakeUiBrowser();
+  const input = paydemoInput("ui");
+  const result = await paydemoAdapterModule.runPaydemoUiProbe(input, { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 });
+  assert.equal(harness.events.indexOf("click") < harness.events.indexOf("screenshot"), true);
+  assert.equal(harness.events.indexOf("screenshot") < harness.events.indexOf("trace-stop"), true);
+  assert.deepEqual(result.candidates.map((entry) => entry.kind), ["screenshot", "trace"]);
+  assert.deepEqual(await readdir(artifactRoot), []);
+  assert.deepEqual(harness.events.slice(-2), ["context-close", "browser-close"]);
+});
+
+test("UI rejects cross-origin navigation or requests and removes oversized evidence on every path", async (t) => {
+  for (const [index, configuration] of [
+    { finalUrl: "https://evil.example/" },
+    { requestUrl: "https://evil.example/script.js" },
+    { interactionRequestUrl: "https://evil.example/exfiltrate" },
+    { screenshotBytes: "x".repeat(1025) },
+  ].entries()) {
+    const artifactRoot = await mkdtemp(join(tmpdir(), `qah-ui-reject-${index}-`));
+    t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+    const harness = fakeUiBrowser(configuration);
+    const input = paydemoInput("ui");
+    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(input, { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /origin|artifact|size|scope/i);
+    assert.deepEqual(await readdir(artifactRoot), []);
+    assert.equal(harness.events.includes("context-close"), true);
+    assert.equal(harness.events.includes("browser-close"), true);
+  }
+});
+
+test("committed PayDemo profile validates the exact managed runtime origin including port 4173", async () => {
+  const committedProfile = validateProfile(YAML.parse(await readFile("qa-harness.yaml", "utf8")));
+  assert.deepEqual(committedProfile.safety.allowed_origins, ["http://127.0.0.1:4173"]);
 });

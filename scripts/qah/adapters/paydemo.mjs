@@ -1,28 +1,42 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { canonicalJson } from "../canonical.mjs";
-import { runProbe as existingPaydemoProbe } from "../../paydemo-qah-probe.mjs";
+import { canonicalJson, sha256 } from "../canonical.mjs";
+import { classifyUi, runProbe as existingPaydemoProbe } from "../../paydemo-qah-probe.mjs";
 
-const INPUT_KEYS = ["schema_version", "branch", "run_id", "attempt_id", "branch_namespace", "test_data_profile", "environment"];
+const INPUT_KEYS = ["schema_version", "branch", "run_id", "attempt_id", "attempt_namespace", "branch_namespace", "test_data_profile", "environment"];
 const ENVIRONMENT_KEYS = ["base_url", "commit", "content_hash", "environment_id", "instance_nonce"];
-const MODES = Object.freeze({ api: "amount", ui: "ui", domain: "idempotency" });
+const MODES = Object.freeze({ api: "amount", domain: "idempotency" });
+const EVIDENCE_KINDS = Object.freeze({ api: ["api-contract", "automated-api-test"], ui: ["playwright", "screenshot"], domain: ["domain-data", "sandbox-test"] });
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const DEFAULT_MAX_ARTIFACT_BYTES = 256 * 1024;
 
 function exactKeys(value, keys, label) {
   if (!value || typeof value !== "object" || Array.isArray(value) || canonicalJson(Object.keys(value).sort()) !== canonicalJson([...keys].sort())) throw new Error(`${label} must have exact keys`);
 }
 
+function digestBytes(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function expectedAttemptNamespace(input) {
+  return sha256({ run_id: input.run_id, attempt_id: input.attempt_id }).slice("sha256:".length);
+}
+
+function expectedBranchNamespace(input) {
+  return sha256({ run_id: input.run_id, attempt_id: input.attempt_id, branch: input.branch }).slice("sha256:".length);
+}
+
 function validateInput(input) {
   exactKeys(input, INPUT_KEYS, "adapter input");
-  if (input.schema_version !== "nuanu.qa-branch-adapter-input.v1" || !Object.hasOwn(MODES, input.branch)) throw new Error("adapter branch identity is invalid");
+  if (input.schema_version !== "nuanu.qa-branch-adapter-input.v1" || !["api", "ui", "domain"].includes(input.branch)) throw new Error("adapter branch identity is invalid");
   for (const [label, value] of [["run_id", input.run_id], ["attempt_id", input.attempt_id]]) if (typeof value !== "string" || !ID.test(value)) throw new Error(`${label} is invalid`);
-  if (typeof input.branch_namespace !== "string" || !/^[a-f0-9]{64}$/.test(input.branch_namespace)) throw new Error("branch namespace is invalid");
+  if (input.attempt_namespace !== expectedAttemptNamespace(input) || input.branch_namespace !== expectedBranchNamespace(input)) throw new Error("adapter attempt and branch namespaces do not match the exact fence");
   if (input.branch === "domain") {
     if (input.test_data_profile !== "payment_sandbox") throw new Error("PayDemo domain checks require the named payment_sandbox profile");
   } else if (input.test_data_profile !== null) throw new Error("test-data profile is valid only for the domain branch");
@@ -34,143 +48,144 @@ function validateInput(input) {
   return input;
 }
 
-async function defaultArtifactReferences(result, input) {
-  if (!DIGEST.test(result.evidence?.sha256 ?? "")) return [];
-  return [{ kind: "document", name: `${input.branch}-evidence.md`, version: 1, sha256: result.evidence.sha256 }];
+async function boundedCandidate(path, { kind, name, mediaType, maximumBytes }) {
+  const metadata = await stat(path);
+  if (!metadata.isFile() || metadata.size < 1 || metadata.size > maximumBytes) throw new Error(`${kind} artifact size exceeds its bound`);
+  const bytes = await readFile(path);
+  if (bytes.byteLength !== metadata.size || bytes.byteLength > maximumBytes) throw new Error(`${kind} artifact size changed or exceeds its bound`);
+  return { kind, name, media_type: mediaType, size_bytes: bytes.byteLength, sha256: digestBytes(bytes), content_base64: bytes.toString("base64") };
 }
 
-async function loadChromium(environment) {
-  const specifier = environment.NUANU_QA_PLAYWRIGHT_MODULE;
-  const loaded = specifier
-    ? await import(isAbsolute(specifier) ? pathToFileURL(specifier).href : specifier)
-    : await import("@playwright/test");
-  const chromium = loaded.chromium ?? loaded.default?.chromium;
-  if (!chromium) throw new Error("Playwright chromium is unavailable");
-  return chromium;
+async function boundedPlaywrightResponse(response, maximumBytes = 32_768) {
+  const [contentType, rawLength] = await Promise.all([response.headerValue("content-type"), response.headerValue("content-length")]);
+  if (contentType?.split(";", 1)[0].trim().toLowerCase() !== "application/json" || !/^[0-9]+$/.test(rawLength ?? "") || Number(rawLength) > maximumBytes) throw new Error("UI response evidence is invalid or oversized");
+  const bytes = Buffer.from(await response.body());
+  if (bytes.byteLength > maximumBytes) throw new Error("UI response evidence is oversized");
+  try { return JSON.parse(bytes.toString("utf8")); } catch { throw new Error("UI response evidence is invalid JSON"); }
 }
 
-function fileDigest(bytes) {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+function exactCheckoutResponse(response, origin) {
+  try {
+    const url = new URL(response.url());
+    return url.origin === origin && url.pathname === "/api/checkout" && url.search === "" && url.hash === "" && response.request().method() === "POST";
+  } catch { return false; }
 }
 
-export async function captureUiArtifactReferences(input, { environment = process.env, evidenceDirectory = join(tmpdir(), "nuanu-qah-paydemo", input.branch_namespace) } = {}) {
-  const chromium = await loadChromium(environment);
-  const ownsBrowser = !environment.NUANU_QA_BROWSER_CDP_URL;
-  const browser = ownsBrowser
-    ? await chromium.launch({ headless: true })
-    : await chromium.connectOverCDP(environment.NUANU_QA_BROWSER_CDP_URL);
-  await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 });
+export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = join(tmpdir(), "nuanu-qah-ui"), maxArtifactBytes = DEFAULT_MAX_ARTIFACT_BYTES } = {}) {
+  const input = validateInput(rawInput);
+  if (input.branch !== "ui") throw new Error("UI probe requires the UI branch");
+  if (!chromium) ({ chromium } = await import("@playwright/test"));
+  if (!Number.isInteger(maxArtifactBytes) || maxArtifactBytes < 1 || maxArtifactBytes > 1024 * 1024) throw new Error("UI artifact bound is invalid");
+  await mkdir(artifactRoot, { recursive: true, mode: 0o700 });
+  const temporary = await mkdtemp(join(artifactRoot, `${input.branch_namespace}-`));
   const screenshotName = "ui-main.png";
   const traceName = "ui-trace.zip";
-  const screenshotPath = join(evidenceDirectory, screenshotName);
-  const tracePath = join(evidenceDirectory, traceName);
-  const context = await browser.newContext();
+  const screenshotPath = join(temporary, screenshotName);
+  const tracePath = join(temporary, traceName);
+  let browser;
+  let context;
+  let traceStarted = false;
+  let traceStopped = false;
+  let originViolation = false;
   try {
+    browser = await chromium.launch({ headless: true, timeout: 10_000 });
+    context = await browser.newContext();
     context.setDefaultTimeout(10_000);
+    await context.route("**/*", async (route) => {
+      let allowed = false;
+      try { allowed = new URL(route.request().url()).origin === input.environment.base_url; } catch {}
+      if (!allowed) { originViolation = true; await route.abort(); return; }
+      await route.continue();
+    });
     await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+    traceStarted = true;
     const page = await context.newPage();
-    await page.goto(input.environment.base_url, { waitUntil: "domcontentloaded", timeout: 10_000 });
-    const finalUrl = new URL(page.url());
-    if (finalUrl.origin !== input.environment.base_url) throw new Error("UI evidence navigation escaped the exact prepared origin");
+    const target = `${input.environment.base_url}/?runId=${encodeURIComponent(input.branch_namespace)}`;
+    await page.goto(target, { waitUntil: "domcontentloaded", timeout: 10_000 });
+    if (originViolation || new URL(page.url()).origin !== input.environment.base_url) throw new Error("UI navigation or request escaped the exact prepared origin");
+    const bank = page.getByLabel("Bank transfer");
+    await bank.check();
+    const selectedPaymentMethod = await bank.isChecked() ? "bank" : "unknown";
+    const responsePromise = page.waitForResponse((response) => exactCheckoutResponse(response, input.environment.base_url));
+    await page.getByRole("button", { name: "Pay $10.00" }).click();
+    const response = await responsePromise;
+    const requestBody = response.request().postDataJSON();
+    const responseBody = await boundedPlaywrightResponse(response);
+    const receipt = page.getByRole("status").filter({ hasText: /Payment (recorded|could not)/ });
+    await receipt.waitFor({ state: "visible" });
+    const receiptText = (await receipt.textContent())?.trim() ?? "";
+    if (originViolation || new URL(page.url()).origin !== input.environment.base_url) throw new Error("UI interaction escaped the exact prepared origin");
+    const observation = { selectedPaymentMethod, requestPaymentMethod: requestBody?.paymentMethod ?? null, receiptText, responseStatus: response.status(), responseBody };
+    const classification = classifyUi(observation);
     await page.screenshot({ path: screenshotPath, fullPage: true });
+    const screenshot = await boundedCandidate(screenshotPath, { kind: "screenshot", name: screenshotName, mediaType: "image/png", maximumBytes: maxArtifactBytes });
     await context.tracing.stop({ path: tracePath });
+    traceStopped = true;
+    const trace = await boundedCandidate(tracePath, { kind: "trace", name: traceName, mediaType: "application/zip", maximumBytes: maxArtifactBytes });
+    return { classification, observation_sha256: sha256({ selected_payment_method: selectedPaymentMethod, request_payment_method: observation.requestPaymentMethod, response_status: observation.responseStatus, receipt_sha256: sha256(receiptText) }), candidates: [screenshot, trace] };
   } finally {
-    await context.close();
-    await browser.close();
+    if (traceStarted && !traceStopped && context) await context.tracing.stop({ path: tracePath }).catch(() => {});
+    await context?.close().catch(() => {});
+    await browser?.close().catch(() => {});
+    await rm(temporary, { recursive: true, force: true });
   }
-  const [screenshot, trace] = await Promise.all([readFile(screenshotPath), readFile(tracePath)]);
-  return [
-    { kind: "screenshot", name: screenshotName, version: 1, sha256: fileDigest(screenshot) },
-    { kind: "trace", name: traceName, version: 1, sha256: fileDigest(trace) },
-  ];
 }
 
-async function createLocalUiProbeEnvironment(input, baseEnvironment) {
-  const loaded = await import("@playwright/test");
-  const browser = await loaded.chromium.launch({ headless: true });
-  const fixtureKey = `__nuanuQahBrowser_${input.branch_namespace}`;
-  globalThis[fixtureKey] = { chromium: { connectOverCDP: async () => browser } };
-  return {
-    environment: {
-      NUANU_QA_PLAYWRIGHT_MODULE: `data:text/javascript,export const chromium=globalThis[${JSON.stringify(fixtureKey)}].chromium`,
-      NUANU_QA_BROWSER_CDP_URL: "adapter-local://chromium",
-    },
-    async dispose() {
-      delete globalThis[fixtureKey];
-      await browser.close().catch(() => {});
-    },
-  };
+async function runDocumentProbe(input, dependencies) {
+  const evidenceRoot = dependencies.artifactRoot ?? join(tmpdir(), "nuanu-qah-paydemo");
+  await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
+  const evidenceDirectory = await mkdtemp(join(evidenceRoot, `${input.branch_namespace}-`));
+  try {
+    const result = await (dependencies.runProbe ?? existingPaydemoProbe)({
+      mode: MODES[input.branch], baseUrl: input.environment.base_url,
+      expectedBuild: { app: "PayDemo", variant: "fixed-v2", commit: input.environment.commit, contentHash: input.environment.content_hash, environmentId: input.environment.environment_id, instanceNonce: input.environment.instance_nonce },
+      runId: input.branch_namespace, evidenceDirectory, environment: dependencies.environment ?? process.env,
+    });
+    if (typeof result.evidence?.markdown_path !== "string" || !result.evidence.markdown_path.startsWith(`${evidenceDirectory}/`)) throw new Error("PayDemo probe evidence path is outside its isolated directory");
+    const candidate = await boundedCandidate(result.evidence.markdown_path, { kind: "document", name: `${input.branch}-evidence.md`, mediaType: "text/markdown", maximumBytes: dependencies.maxArtifactBytes ?? DEFAULT_MAX_ARTIFACT_BYTES });
+    return { result, candidates: [candidate] };
+  } finally {
+    await rm(evidenceDirectory, { recursive: true, force: true });
+  }
 }
 
 export async function runPaydemoAdapter(rawInput, dependencies = {}) {
   const input = validateInput(rawInput);
-  const runProbe = dependencies.runProbe ?? existingPaydemoProbe;
-  const artifactReferences = dependencies.artifactReferences ?? (input.branch === "ui"
-    ? async () => (dependencies.captureUiArtifacts ?? captureUiArtifactReferences)(input, {
-      environment: dependencies.environment ?? process.env,
-      evidenceDirectory: dependencies.evidenceDirectory ?? join(tmpdir(), "nuanu-qah-paydemo", input.branch_namespace),
-    })
-    : defaultArtifactReferences);
-  const baseEnvironment = dependencies.environment ?? process.env;
-  const needsProvisionedUi = input.branch === "ui" && (dependencies.createUiProbeEnvironment || !dependencies.runProbe);
-  const provisionedUi = needsProvisionedUi
-    ? await (dependencies.createUiProbeEnvironment ?? createLocalUiProbeEnvironment)(input, baseEnvironment)
-    : null;
-  let result;
-  try {
-    result = await runProbe({
-      mode: MODES[input.branch],
-      baseUrl: input.environment.base_url,
-      expectedBuild: {
-        app: "PayDemo",
-        variant: "fixed-v2",
-        commit: input.environment.commit,
-        contentHash: input.environment.content_hash,
-        environmentId: input.environment.environment_id,
-        instanceNonce: input.environment.instance_nonce,
-      },
-      runId: input.branch_namespace,
-      evidenceDirectory: dependencies.evidenceDirectory ?? join(tmpdir(), "nuanu-qah-paydemo", input.branch_namespace),
-      environment: provisionedUi ? { ...baseEnvironment, ...provisionedUi.environment } : baseEnvironment,
-    });
-  } finally {
-    await provisionedUi?.dispose();
+  if (input.branch === "ui") {
+    const ui = await (dependencies.runUiProbe ?? runPaydemoUiProbe)(input, dependencies);
+    return {
+      schema_version: "nuanu.qa-branch-adapter-result.v1", branch: "ui",
+      product_result: ui.classification.product_result, environment_status: ui.classification.environment_status,
+      evidence_status: ui.classification.evidence_status, confidence: ui.classification.confidence, code: ui.classification.code,
+      observations: [{ code: "UI_ASSERTION", status: ui.classification.product_result, value_sha256: ui.observation_sha256 }],
+      evidence_kinds: EVIDENCE_KINDS.ui, candidates: ui.candidates,
+    };
   }
-  const artifacts = await artifactReferences(result, input);
+  const { result, candidates } = dependencies.documentProbe
+    ? await dependencies.documentProbe(input)
+    : await runDocumentProbe(input, dependencies);
   return {
-    schema_version: "nuanu.qa-branch-adapter-result.v1",
-    branch: input.branch,
-    product_result: result.axes.product_result,
-    environment_status: result.axes.environment_status,
-    evidence_status: result.axes.evidence_status,
-    confidence: result.axes.confidence,
-    code: result.code,
+    schema_version: "nuanu.qa-branch-adapter-result.v1", branch: input.branch,
+    product_result: result.axes.product_result, environment_status: result.axes.environment_status,
+    evidence_status: result.axes.evidence_status, confidence: result.axes.confidence, code: result.code,
     observations: [{ code: "PROBE_RESULT", status: result.axes.product_result, value_sha256: result.occurrence_key }],
-    artifacts,
+    evidence_kinds: EVIDENCE_KINDS[input.branch], candidates,
   };
 }
 
 async function readBoundedStdin(stream, maximumBytes = 65_536) {
-  const chunks = [];
-  let total = 0;
-  for await (const chunk of stream) {
-    total += chunk.byteLength;
-    if (total > maximumBytes) throw new Error("adapter stdin exceeds bound");
-    chunks.push(Buffer.from(chunk));
-  }
+  const chunks = []; let total = 0;
+  for await (const chunk of stream) { total += chunk.byteLength; if (total > maximumBytes) throw new Error("adapter stdin exceeds bound"); chunks.push(Buffer.from(chunk)); }
   return Buffer.concat(chunks, total).toString("utf8");
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  if (argv.length !== 1 || !Object.hasOwn(MODES, argv[0])) throw new Error("exactly one PayDemo adapter branch is required");
-  const input = JSON.parse(await readBoundedStdin(process.stdin));
-  if (input.branch !== argv[0]) throw new Error("adapter argv branch must match canonical stdin");
-  const result = await runPaydemoAdapter(input);
-  process.stdout.write(`${canonicalJson(result)}\n`);
+  if (argv.length !== 1 || !["api", "ui", "domain"].includes(argv[0])) throw new Error("exactly one PayDemo adapter branch is required");
+  const source = await readBoundedStdin(process.stdin);
+  const input = JSON.parse(source);
+  if (canonicalJson(input) !== source || input.branch !== argv[0]) throw new Error("adapter argv and exact canonical stdin must match");
+  process.stdout.write(canonicalJson(await runPaydemoAdapter(input)));
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 2;
-});
+if (isMain) main().catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 2; });

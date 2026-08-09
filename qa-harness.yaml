@@ -16,7 +16,7 @@ safety:
   mutation_mode: sandbox_only
   irreversible_actions: deny
   secret_output: deny
-  allowed_origins: [http://127.0.0.1]
+  allowed_origins: [http://127.0.0.1:4173]
 execution:
   shell: false
   environment: minimal
