@@ -29,6 +29,12 @@ const ARTIFACT_REF_KEYS = ["artifact_id", "version_id", "kind", "role"];
 const RESOLVED_ARTIFACT_KEYS = ["workspace_id", "enforced_max_bytes", "byte_length", "links", "artifact", "bytes"];
 const RESOLVED_ARTIFACT_META_KEYS = ["id", "workspace_id", "status", "current_version", "kind", "name", "mime_type", "versions"];
 const RESOLVED_VERSION_KEYS = ["id", "version", "file_asset", "size", "checksum"];
+const PLATFORM_RESULT_KEYS = ["workspace_id", "enforced_max_bytes", "observed_bytes", "artifact"];
+const PLATFORM_ARTIFACT_KEYS = ["id", "workspace_id", "status", "current_version", "kind", "name", "mime_type", "metadata", "links", "versions"];
+const PLATFORM_METADATA_KEYS = ["project_id", "work_item_id"];
+const PLATFORM_VERSION_KEYS = ["id", "version", "file_asset", "representation"];
+const PLATFORM_REPRESENTATION_KEYS = ["type", "entityType", "entityId", "snapshot"];
+const PLATFORM_SNAPSHOT_KEYS = ["id", "project_id"];
 const ARTIFACT_LINK_KEYS = ["entity_type", "entity_id", "relation"];
 const ARTIFACT_LINK_TYPES = new Set(["project", "work_item", "process_run"]);
 const ARTIFACT_LINK_RELATIONS = new Set(["about", "source", "output", "attachment"]);
@@ -39,7 +45,7 @@ const ENVIRONMENT_IDENTITY_KEYS = ["environment_id", "target_namespace", "reposi
 const SYSTEM_ROLES = new Set(["output", "implementation", "evidence", "source"]);
 const PROFILE_PATH = "qa-harness.yaml";
 export const ARTIFACT_SLOT_POLICY = Object.freeze({
-  source_flow_item: Object.freeze({ kind: "flow_item", role: "source", name: "flow-item.json", media_type: "application/json" }),
+  source_flow_item: Object.freeze({ kind: "flow_item", role: "source", media_type: "application/vnd.nuanu.flow-item+json" }),
   plan: Object.freeze({ kind: "document", role: "output", name: "test-plan.json", media_type: "application/json" }),
   profile: Object.freeze({ kind: "document", role: "implementation", name: PROFILE_PATH, media_type: "application/yaml" }),
   branch_payload: Object.freeze({ kind: "document", role: "output", name: "branch-payload.json", media_type: "application/json" }),
@@ -211,6 +217,47 @@ export async function resolveArtifactVersionForSlot(refValue, slot, context, max
     if (canonicalJson(payload) !== text) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
   }
   return { reference: ref, checksum: version.checksum, version_number: version.version, payload, bytes, byte_length: byteLength, links: structuredClone(result.links) };
+}
+
+export async function resolvePlatformEntityVersion(refValue, context, maximumBytes) {
+  const ref = slotReference(refValue, "source_flow_item");
+  if (!ref) throw new PolicyError("INVALID_ARTIFACT_REFERENCE");
+  if (typeof context.resolvePlatformEntityVersion !== "function") throw new PolicyError("TRUSTED_PLATFORM_ENTITY_RESOLVER_REQUIRED");
+  let result;
+  try { result = await context.resolvePlatformEntityVersion({ workspace_id: context.workspaceId, ref, max_bytes: maximumBytes }); }
+  catch { throw new PolicyError("INVALID_PLATFORM_ENTITY_ARTIFACT"); }
+  if (!exactKeys(result, PLATFORM_RESULT_KEYS) || result.workspace_id !== context.workspaceId
+    || result.enforced_max_bytes !== maximumBytes || !Number.isSafeInteger(result.observed_bytes)
+    || result.observed_bytes < 2 || result.observed_bytes > maximumBytes
+    || !exactKeys(result.artifact, PLATFORM_ARTIFACT_KEYS)) throw new PolicyError("INVALID_PLATFORM_ENTITY_ARTIFACT");
+  const artifact = result.artifact;
+  if (artifact.id !== ref.artifact_id || artifact.workspace_id !== context.workspaceId || artifact.status !== "stored"
+    || !UUID.test(artifact.current_version ?? "") || artifact.kind !== "flow_item" || typeof artifact.name !== "string" || artifact.name.length > 500
+    || artifact.mime_type !== "application/vnd.nuanu.flow-item+json" || !exactKeys(artifact.metadata, PLATFORM_METADATA_KEYS)
+    || !UUID.test(artifact.metadata.project_id ?? "") || !UUID.test(artifact.metadata.work_item_id ?? "")
+    || !Array.isArray(artifact.versions) || artifact.versions.length < 1 || artifact.versions.length > 64) throw new PolicyError("INVALID_PLATFORM_ENTITY_ARTIFACT");
+  const version = artifact.versions.find((candidate) => candidate?.id === ref.version_id);
+  if (!exactKeys(version, PLATFORM_VERSION_KEYS) || !Number.isSafeInteger(version.version) || version.version < 1 || version.file_asset !== null
+    || !exactKeys(version.representation, PLATFORM_REPRESENTATION_KEYS)) throw new PolicyError("INVALID_PLATFORM_ENTITY_ARTIFACT");
+  const representation = version.representation;
+  if (representation.type !== "platform_entity" || representation.entityType !== "work_item"
+    || representation.entityId !== artifact.metadata.work_item_id || !exactKeys(representation.snapshot, PLATFORM_SNAPSHOT_KEYS)
+    || representation.snapshot.id !== artifact.metadata.work_item_id || representation.snapshot.project_id !== artifact.metadata.project_id
+    || Buffer.byteLength(canonicalJson(representation), "utf8") !== result.observed_bytes) throw new PolicyError("INVALID_PLATFORM_ENTITY_ARTIFACT");
+  const expectedLinks = [
+    { entity_type: "project", entity_id: artifact.metadata.project_id, relation: "about" },
+    { entity_type: "work_item", entity_id: artifact.metadata.work_item_id, relation: "about" },
+  ].map((link) => canonicalJson(link)).sort();
+  if (!Array.isArray(artifact.links) || artifact.links.length !== 2 || artifact.links.some((link) => !exactKeys(link, ARTIFACT_LINK_KEYS))
+    || !same(artifact.links.map((link) => canonicalJson(link)).sort(), expectedLinks)) throw new PolicyError("INVALID_PLATFORM_ENTITY_ARTIFACT");
+  return {
+    reference: ref,
+    project_id: artifact.metadata.project_id,
+    work_item_id: artifact.metadata.work_item_id,
+    version_number: version.version,
+    representation: structuredClone(representation),
+    links: structuredClone(artifact.links),
+  };
 }
 
 export async function resolveCommitProfile(context, repositoryOrigin, commit) {
@@ -495,19 +542,20 @@ async function aggregateUnsafe(input, dependencies) {
   const exactInput = exactKeys(input, INPUT_KEYS);
   if (!exactInput) globalReasons.add("INVALID_AGGREGATE_INPUT");
   if (typeof dependencies?.resolveArtifactVersion !== "function") return failureAggregate("TRUSTED_ARTIFACT_RESOLVER_REQUIRED");
+  if (typeof dependencies?.resolvePlatformEntityVersion !== "function") return failureAggregate("TRUSTED_PLATFORM_ENTITY_RESOLVER_REQUIRED");
   if (typeof dependencies?.resolveProfileAtCommit !== "function") return failureAggregate("TRUSTED_PROFILE_RESOLVER_REQUIRED");
   if (!exactInput && (!slotReference(input?.profile_artifact, "profile") || !slotReference(input?.plan_artifact, "plan"))) return failureAggregate("INVALID_AGGREGATE_INPUT");
   if (!UUID.test(input?.workspace_id ?? "") || !ID.test(input?.run_id ?? "") || !ID.test(input?.attempt_id ?? "") || !exactHttps(input?.repository_origin)) globalReasons.add("INVALID_AGGREGATE_INPUT");
   if (!Array.isArray(input?.branches) || input.branches.length > MAX_BRANCH_INPUTS) globalReasons.add("INVALID_AGGREGATE_INPUT");
   if (!slotReference(input?.profile_artifact, "profile") || !slotReference(input?.plan_artifact, "plan")) globalReasons.add("INVALID_ARTIFACT_REFERENCE");
-  const resolutionContext = { resolveArtifactVersion: dependencies.resolveArtifactVersion, resolveProfileAtCommit: dependencies.resolveProfileAtCommit, workspaceId: input?.workspace_id };
+  const resolutionContext = { resolveArtifactVersion: dependencies.resolveArtifactVersion, resolvePlatformEntityVersion: dependencies.resolvePlatformEntityVersion, resolveProfileAtCommit: dependencies.resolveProfileAtCommit, workspaceId: input?.workspace_id };
   let profileArtifact; let planArtifact;
   try { planArtifact = await resolveArtifactVersionForSlot(input?.plan_artifact, "plan", resolutionContext, FIXED_ARTIFACT_LIMIT); } catch (error) { return failureAggregate(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
   const trustedPlan = planArtifact.payload;
   for (const reason of validateFullTestPlan(trustedPlan)) globalReasons.add(reason);
   if (globalReasons.has("INVALID_FULL_PLAN")) return failureAggregate("INVALID_FULL_PLAN");
   if ([input.plan_artifact, input.profile_artifact].some((ref) => ref?.artifact_id === trustedPlan.source_artifact.artifact_id && ref?.version_id === trustedPlan.source_artifact.version_id)) return failureAggregate("REUSED_ARTIFACT_VERSION");
-  try { await resolveArtifactVersionForSlot(trustedPlan.source_artifact, "source_flow_item", resolutionContext, FIXED_ARTIFACT_LIMIT); } catch (error) { return failureAggregate(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+  try { await resolvePlatformEntityVersion(trustedPlan.source_artifact, resolutionContext, FIXED_ARTIFACT_LIMIT); } catch (error) { return failureAggregate(error.code ?? "INVALID_PLATFORM_ENTITY_ARTIFACT"); }
   try { profileArtifact = await resolveArtifactVersionForSlot(input?.profile_artifact, "profile", resolutionContext, FIXED_ARTIFACT_LIMIT, false); } catch (error) { return failureAggregate(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
   let artifactProfile;
   try { artifactProfile = parseProfileBytes(profileArtifact.bytes); } catch { return failureAggregate("INVALID_TRUSTED_PROFILE"); }
@@ -614,10 +662,10 @@ export const AGGREGATE_REASON_CODES = Object.freeze([
   "EVIDENCE_LINK_MISMATCH", "EVIDENCE_NOT_VERIFIED", "INAPPLICABLE_BRANCH_NOT_SKIPPED", "INFRA_FAILURE",
   "INSTANCE_NONCE_MISMATCH", "INVALID_AGGREGATE_INPUT", "INVALID_ARTIFACT_REFERENCE", "INVALID_BRANCH_OUTPUT",
   "INVALID_BRANCH_RECORD", "INVALID_COMMIT_PROFILE", "INVALID_EVIDENCE_CANDIDATE", "INVALID_ENVIRONMENT_RECEIPT", "INVALID_FULL_PLAN",
-  "INVALID_MATERIALIZED_ARTIFACT", "INVALID_TRUSTED_ARTIFACT", "INVALID_TRUSTED_PROFILE", "LOW_CONFIDENCE",
+  "INVALID_MATERIALIZED_ARTIFACT", "INVALID_PLATFORM_ENTITY_ARTIFACT", "INVALID_TRUSTED_ARTIFACT", "INVALID_TRUSTED_PROFILE", "LOW_CONFIDENCE",
   "MATERIALIZATION_REF_MISMATCH", "MISSING_BRANCH", "NOT_APPLICABLE_EVIDENCE_MISMATCH", "OCCURRENCE_KEY_MISMATCH",
   "OCCURRENCE_LINK_MISMATCH", "PASS_ASSERTION_MISMATCH", "PLAN_DIGEST_MISMATCH", "PLAN_MATERIAL_MISMATCH",
   "PRODUCT_FAILURE", "PROFILE_COMMIT_MISMATCH", "PROFILE_DIGEST_MISMATCH", "PROFILE_POLICY_MISMATCH", "REPOSITORY_MISMATCH",
   "REQUIRED_BRANCH_NOT_PASS", "REUSED_ARTIFACT_VERSION", "RUN_MISMATCH", "SOURCE_ARTIFACT_MISMATCH",
-  "TRUSTED_ARTIFACT_RESOLVER_REQUIRED", "TRUSTED_PROFILE_RESOLVER_REQUIRED", "UNATTESTED_ARTIFACT_BOUND", "UNEXPECTED_BRANCH", "UNKNOWN_CODE",
+  "TRUSTED_ARTIFACT_RESOLVER_REQUIRED", "TRUSTED_PLATFORM_ENTITY_RESOLVER_REQUIRED", "TRUSTED_PROFILE_RESOLVER_REQUIRED", "UNATTESTED_ARTIFACT_BOUND", "UNEXPECTED_BRANCH", "UNKNOWN_CODE",
 ]);

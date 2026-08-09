@@ -88,8 +88,8 @@ export async function finalizeTransition(input, dependencies = {}) {
     artifactReference(input.source_artifact, "flow_item", "source");
     artifactReference(input.review_bundle, "document", "evidence");
     trusted = await resolveTrustedPublication(input, dependencies);
-  } catch {
-    return result(null, ["TRUSTED_REVIEW_INVALID"]);
+  } catch (error) {
+    return result(null, [error?.message === "INVALID_AGGREGATE" ? "INVALID_AGGREGATE" : "TRUSTED_REVIEW_INVALID"]);
   }
   try {
     const rendered = renderComment({ source_artifact: input.source_artifact, decision: trusted.decision, review_bundle: input.review_bundle, review_summary: trusted.review_summary });

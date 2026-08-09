@@ -13,9 +13,11 @@ const commit = "a".repeat(40);
 const contentHash = `sha256:${"c".repeat(64)}`;
 const nonce = "11111111-1111-4111-8111-111111111111";
 const repositoryOrigin = "https://example.test/generic/product.git";
-const runId = "run-1";
+const runId = "99999999-9999-4999-8999-999999999999";
 const attemptId = "attempt-1";
 const workspaceId = "22222222-2222-4222-8222-222222222222";
+const projectId = "55555555-5555-4555-8555-555555555555";
+const workItemId = "66666666-6666-4666-8666-666666666666";
 const sourceArtifact = {
   artifact_id: "33333333-3333-4333-8333-333333333333",
   version_id: "44444444-4444-4444-8444-444444444444",
@@ -144,12 +146,17 @@ export function material(store, ref) {
 }
 
 function registerSourceMaterial(store) {
-  const bytes = Buffer.from(canonicalJson({ schema_version: "nuanu.flow-item.v1", key: "QA-1" }));
+  const representation = {
+    type: "platform_entity",
+    entityType: "work_item",
+    entityId: workItemId,
+    snapshot: { id: workItemId, project_id: projectId },
+  };
+  const observedBytes = Buffer.byteLength(canonicalJson(representation), "utf8");
   store.set(refKey(sourceArtifact), {
     workspace_id: workspaceId,
     enforced_max_bytes: null,
-    byte_length: bytes.byteLength,
-    links: [],
+    observed_bytes: observedBytes,
     artifact: {
       id: sourceArtifact.artifact_id,
       workspace_id: workspaceId,
@@ -157,17 +164,24 @@ function registerSourceMaterial(store) {
       current_version: sourceArtifact.version_id,
       kind: "flow_item",
       name: "flow-item.json",
-      mime_type: "application/json",
+      mime_type: "application/vnd.nuanu.flow-item+json",
+      metadata: { project_id: projectId, work_item_id: workItemId },
+      links: [
+        { entity_type: "project", entity_id: projectId, relation: "about" },
+        { entity_type: "work_item", entity_id: workItemId, relation: "about" },
+      ],
       versions: [{
         id: sourceArtifact.version_id,
         version: 1,
-        file_asset: uuidFor(9),
-        size: bytes.byteLength,
-        checksum: createHash("sha256").update(bytes).digest("hex"),
+        file_asset: null,
+        representation,
       }],
     },
-    bytes,
   });
+}
+
+export function platformMaterial(store, ref) {
+  return store.get(refKey(ref));
 }
 
 export function rewriteMaterial(store, ref, payload, metadata = {}) {
@@ -294,7 +308,8 @@ function branchEntry(store, branch, rawPlan, receipt, index, overrides = {}) {
 
 export function aggregateFixture({ applicability, receipt = readyReceipt(), entryOverrides = {}, inputOverrides = {}, profileOverrides = {} } = {}) {
   const store = new Map();
-  registerSourceMaterial(store);
+  const platformStore = new Map();
+  registerSourceMaterial(platformStore);
   const rawProfile = profile(profileOverrides);
   const rawPlan = plan(rawProfile, applicability);
   const committedProfileBytes = Buffer.from(YAML.stringify(rawProfile));
@@ -305,6 +320,11 @@ export function aggregateFixture({ applicability, receipt = readyReceipt(), entr
     const record = store.get(`${ref.artifact_id}@${ref.version_id}`);
     if (!record || workspace_id !== workspaceId || record.byte_length > max_bytes) return null;
     return { ...record, enforced_max_bytes: max_bytes, bytes: Buffer.from(record.bytes) };
+  };
+  const resolvePlatformEntityVersion = async ({ workspace_id, ref, max_bytes }) => {
+    const record = platformStore.get(`${ref.artifact_id}@${ref.version_id}`);
+    if (!record || workspace_id !== workspaceId || record.observed_bytes > max_bytes) return null;
+    return structuredClone({ ...record, enforced_max_bytes: max_bytes });
   };
   const resolveProfileAtCommit = async ({ repository_origin, commit: requestedCommit, path, max_bytes }) => {
     if (repository_origin !== repositoryOrigin || requestedCommit !== commit || path !== PROFILE_PATH || committedProfileBytes.byteLength > max_bytes) return null;
@@ -331,11 +351,12 @@ export function aggregateFixture({ applicability, receipt = readyReceipt(), entr
       attempt_id: attemptId,
       ...inputOverrides,
     },
-    dependencies: { resolveArtifactVersion, resolveProfileAtCommit },
+    dependencies: { resolveArtifactVersion, resolvePlatformEntityVersion, resolveProfileAtCommit },
     profile: rawProfile,
     plan: rawPlan,
     branches,
     store,
+    platformStore,
   };
 }
 
@@ -516,7 +537,7 @@ qtest("materialized profile must equal a second read from the pinned Git commit"
   assert.equal(aggregate.invariants_passed, false);
   assert.equal(reasons(aggregate).has("INVALID_COMMIT_PROFILE"), true);
 
-  aggregate = await aggregateEvidence(fixture.input, { resolveArtifactVersion: fixture.dependencies.resolveArtifactVersion });
+  aggregate = await aggregateEvidence(fixture.input, { resolveArtifactVersion: fixture.dependencies.resolveArtifactVersion, resolvePlatformEntityVersion: fixture.dependencies.resolvePlatformEntityVersion });
   assert.equal(aggregate.invariants_passed, false);
   assert.equal(reasons(aggregate).has("TRUSTED_PROFILE_RESOLVER_REQUIRED"), true);
 });
@@ -543,6 +564,7 @@ qtest("trusted resolvers receive and attest hard prefetch byte limits", async ()
   const artifactRequests = [];
   const profileRequests = [];
   let aggregate = await aggregateEvidence(fixture.input, {
+    resolvePlatformEntityVersion: fixture.dependencies.resolvePlatformEntityVersion,
     resolveArtifactVersion: async (request) => {
       artifactRequests.push(structuredClone(request));
       return fixture.dependencies.resolveArtifactVersion(request);
@@ -801,7 +823,7 @@ qtest("circular and hostile Proxy inputs never escape the public aggregation bou
   const hostile = new Proxy({}, { ownKeys() { throw new Error("hostile ownKeys"); }, get() { throw new Error("hostile get"); } });
   for (const input of [circular, hostile]) {
     let aggregate;
-    await assert.doesNotReject(async () => { aggregate = await aggregateEvidence(input, { resolveArtifactVersion: async () => null, resolveProfileAtCommit: async () => null }); });
+    await assert.doesNotReject(async () => { aggregate = await aggregateEvidence(input, { resolveArtifactVersion: async () => null, resolvePlatformEntityVersion: async () => null, resolveProfileAtCommit: async () => null }); });
     assert.equal(aggregate.invariants_passed, false);
     assert.equal(reasons(aggregate).has("INVALID_AGGREGATE_INPUT"), true);
   }

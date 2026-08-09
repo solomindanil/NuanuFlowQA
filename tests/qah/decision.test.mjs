@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
 import { aggregateEvidence } from "../../scripts/qah/aggregate.mjs";
-import { decideRelease } from "../../scripts/qah/decide.mjs";
+import { decideRelease, validateAggregateForDecision } from "../../scripts/qah/decide.mjs";
 import { aggregateFixture, aggregateFixtureResult, material, rewriteMaterial } from "./aggregate.test.mjs?fixtures-only";
 
 const classes = {
@@ -46,6 +46,42 @@ test("all four clean ticket classes route READY_FOR_PRODUCTION", async () => {
     assert.equal(decision.policy_override_rejected, false, name);
     assert.deepEqual(decision.reason_codes, [], name);
   }
+});
+
+test("complete decision validator returns only authentic aggregate cleanup identity", async () => {
+  const fixture = aggregateFixture({
+    entryOverrides: { api: { product_result: "FAIL", code: "API_CONTRACT_VIOLATION", observations: [{ code: "CONTRACT_FAILED", status: "FAIL", value_sha256: sha256("fail") }] } },
+  });
+  const aggregate = await aggregateFixtureResult(fixture);
+  const authentic = await validateAggregateForDecision(aggregate, fixture.dependencies);
+  assert.equal(authentic.valid, true);
+  assert.deepEqual(authentic.aggregate, aggregate);
+
+  const forged = structuredClone(aggregate);
+  forged.attempt_id = "forged-attempt";
+  forged.environment_id = "forged-env";
+  forged.target_namespace = sha256({ run_id: forged.run_id, attempt_id: forged.attempt_id, environment_id: forged.environment_id }).slice(7);
+  forged.instance_nonce = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  delete forged.aggregate_sha256;
+  forged.aggregate_sha256 = sha256(forged);
+  const rejected = await validateAggregateForDecision(forged, fixture.dependencies);
+  assert.equal(rejected.valid, false);
+  assert.equal(rejected.aggregate, null);
+  assert.equal(rejected.profile, null);
+});
+
+test("caller-only non-ready policy fields cannot masquerade as an authenticated outcome", async () => {
+  const fixture = aggregateFixture();
+  const aggregate = await aggregateFixtureResult(fixture);
+  const forged = structuredClone(aggregate);
+  forged.invariants_passed = false;
+  delete forged.aggregate_sha256;
+  forged.aggregate_sha256 = sha256(forged);
+
+  const validation = await validateAggregateForDecision(forged, fixture.dependencies);
+  assert.equal(validation.valid, false);
+  assert.equal(validation.aggregate, null);
+  assert.equal(validation.profile, null);
 });
 
 test("Codex explanation cannot override deterministic failure with malicious READY proposal", async () => {
@@ -274,16 +310,22 @@ test("decision independently resolves every exact ArtifactVersion and rejects re
   assert.equal(withoutResolver.reason_codes.includes("TRUSTED_ARTIFACT_RESOLVER_REQUIRED"), true);
 
   const requests = [];
+  const platformRequests = [];
   const independentlyVerified = await decideRelease(aggregate, {}, {
     resolveArtifactVersion: async (request) => {
       requests.push(structuredClone(request));
       return fixture.dependencies.resolveArtifactVersion(request);
     },
+    resolvePlatformEntityVersion: async (request) => {
+      platformRequests.push(structuredClone(request));
+      return fixture.dependencies.resolvePlatformEntityVersion(request);
+    },
     resolveProfileAtCommit: fixture.dependencies.resolveProfileAtCommit,
   });
   assert.equal(independentlyVerified.route, "READY_FOR_PRODUCTION");
-  assert.equal(requests.length, 15);
-  assert.equal(new Set(requests.map(({ ref }) => `${ref.artifact_id}@${ref.version_id}`)).size, 15);
+  assert.equal(requests.length, 14);
+  assert.equal(platformRequests.length, 1);
+  assert.equal(new Set([...requests, ...platformRequests].map(({ ref }) => `${ref.artifact_id}@${ref.version_id}`)).size, 15);
   assert.equal(requests.every((request) => Object.keys(request).sort().join(",") === "max_bytes,ref,workspace_id"), true);
 
   for (const mutate of [
@@ -310,6 +352,8 @@ test("decision independently resolves every exact ArtifactVersion and rejects re
       boundedRequests.push(structuredClone(request));
       return null;
     },
+    resolvePlatformEntityVersion: async () => null,
+    resolveProfileAtCommit: async () => null,
   });
   assert.equal(boundedRequests.every(({ max_bytes }) => max_bytes <= 10_485_760), true);
 });

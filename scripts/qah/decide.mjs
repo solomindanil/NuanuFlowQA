@@ -5,6 +5,7 @@ import {
   ARTIFACT_SLOT_POLICY,
   resolveArtifactVersionForSlot,
   resolveCommitProfile,
+  resolvePlatformEntityVersion,
   validateFullTestPlan,
   validateMaterializedBranch,
 } from "./aggregate.mjs";
@@ -32,6 +33,10 @@ const PASS_CODES = Object.freeze({
   ui: new Set(["UI_FLOW_VERIFIED", "BANK_TRANSFER_CONFIRMED"]),
   domain: new Set(["DOMAIN_RULE_VERIFIED", "IDEMPOTENT_REPLAY"]),
 });
+const AUTHENTICATED_OUTCOME_REASONS = new Set([
+  "CONFIRMED_FINDINGS", "EVIDENCE_NOT_VERIFIED", "INFRA_FAILURE", "LOW_CONFIDENCE",
+  "PRODUCT_FAILURE", "REQUIRED_BRANCH_NOT_PASS",
+]);
 
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -201,11 +206,13 @@ function digestBytes(bytes) {
 async function validateTrustedArtifactBindings(aggregate, dependencies) {
   const reasons = new Set();
   if (typeof dependencies?.resolveArtifactVersion !== "function") reasons.add("TRUSTED_ARTIFACT_RESOLVER_REQUIRED");
+  if (typeof dependencies?.resolvePlatformEntityVersion !== "function") reasons.add("TRUSTED_PLATFORM_ENTITY_RESOLVER_REQUIRED");
   if (typeof dependencies?.resolveProfileAtCommit !== "function") reasons.add("TRUSTED_PROFILE_RESOLVER_REQUIRED");
-  if (reasons.size > 0) return [...reasons].sort();
+  if (reasons.size > 0) return { reasons: [...reasons].sort(), profile: null };
   const context = {
     workspaceId: aggregate?.workspace_id,
     resolveArtifactVersion: dependencies.resolveArtifactVersion,
+    resolvePlatformEntityVersion: dependencies.resolvePlatformEntityVersion,
     resolveProfileAtCommit: dependencies.resolveProfileAtCommit,
   };
   const resolved = {};
@@ -217,7 +224,8 @@ async function validateTrustedArtifactBindings(aggregate, dependencies) {
   const evidenceLimit = Number.isSafeInteger(aggregate?.max_evidence_bytes) && aggregate.max_evidence_bytes > 0 && aggregate.max_evidence_bytes <= 10_485_760
     ? aggregate.max_evidence_bytes
     : fixedLimit;
-  await read("source", aggregate?.source_artifact, "source_flow_item", fixedLimit);
+  try { resolved.source = await resolvePlatformEntityVersion(aggregate?.source_artifact, context, fixedLimit); }
+  catch (error) { reasons.add(error?.code ?? "INVALID_PLATFORM_ENTITY_ARTIFACT"); }
   await read("plan", aggregate?.plan_artifact, "plan", fixedLimit);
   await read("profile", aggregate?.profile_artifact, "profile", fixedLimit, false);
   let commitProfile;
@@ -294,7 +302,7 @@ async function validateTrustedArtifactBindings(aggregate, dependencies) {
     for (const reason of normalized.reasons) reasons.add(reason);
     if (!same(normalized.record, branch)) reasons.add("INVALID_AGGREGATE_POLICY");
   }
-  return [...reasons].sort();
+  return { reasons: [...reasons].sort(), profile: commitProfile?.payload ?? null };
 }
 
 function decisionFrom(aggregateSha, route, reasonCodes, proposal) {
@@ -312,13 +320,35 @@ function decisionFrom(aggregateSha, route, reasonCodes, proposal) {
 
 export async function decideRelease(aggregate, proposal = {}, dependencies = {}) {
   try {
-    const validationReasons = validateAggregate(aggregate);
-    const trustedArtifactReasons = await validateTrustedArtifactBindings(aggregate, dependencies);
-    const aggregateReasons = Array.isArray(aggregate?.reason_codes) ? aggregate.reason_codes.filter((code) => AGGREGATE_REASON_CODES.includes(code)) : [];
-    const reasonCodes = [...new Set([...aggregateReasons, ...validationReasons, ...trustedArtifactReasons])].sort();
-    const localReady = validationReasons.length === 0 && trustedArtifactReasons.length === 0 && aggregate.invariants_passed === true && reasonCodes.length === 0;
-    return decisionFrom(aggregate.aggregate_sha256, localReady ? "READY_FOR_PRODUCTION" : "RETURN_TO_IN_PROGRESS", reasonCodes, proposal);
+    const validated = await validateAggregateForDecision(aggregate, dependencies);
+    return decisionFrom(validated.aggregate_sha256, validated.valid && validated.reason_codes.length === 0 && validated.aggregate.invariants_passed === true
+      ? "READY_FOR_PRODUCTION" : "RETURN_TO_IN_PROGRESS", validated.reason_codes, proposal);
   } catch {
     return decisionFrom(null, "RETURN_TO_IN_PROGRESS", ["INVALID_AGGREGATE_INPUT"], {});
+  }
+}
+
+export async function validateAggregateForDecision(aggregate, dependencies = {}) {
+  try {
+    const validationReasons = validateAggregate(aggregate);
+    const trusted = await validateTrustedArtifactBindings(aggregate, dependencies);
+    const aggregateReasons = Array.isArray(aggregate?.reason_codes) ? aggregate.reason_codes.filter((code) => AGGREGATE_REASON_CODES.includes(code)) : [];
+    const reasonCodes = [...new Set([...aggregateReasons, ...validationReasons, ...trusted.reasons])].sort();
+    const fatalValidation = validationReasons.filter((code) => code !== "INVALID_AGGREGATE_POLICY");
+    const fatalTrusted = trusted.reasons.filter((code) => !AUTHENTICATED_OUTCOME_REASONS.has(code));
+    const fatalLocal = aggregateReasons.filter((code) => !AUTHENTICATED_OUTCOME_REASONS.has(code));
+    const policyShapeIsAuthenticated = !validationReasons.includes("INVALID_AGGREGATE_POLICY")
+      || trusted.reasons.some((code) => AUTHENTICATED_OUTCOME_REASONS.has(code));
+    const valid = fatalValidation.length === 0 && fatalTrusted.length === 0 && fatalLocal.length === 0
+      && policyShapeIsAuthenticated && trusted.profile !== null;
+    return {
+      valid,
+      aggregate: valid ? structuredClone(aggregate) : null,
+      profile: valid ? structuredClone(trusted.profile) : null,
+      aggregate_sha256: DIGEST.test(aggregate?.aggregate_sha256 ?? "") ? aggregate.aggregate_sha256 : null,
+      reason_codes: reasonCodes,
+    };
+  } catch {
+    return { valid: false, aggregate: null, profile: null, aggregate_sha256: null, reason_codes: ["INVALID_AGGREGATE_INPUT"] };
   }
 }

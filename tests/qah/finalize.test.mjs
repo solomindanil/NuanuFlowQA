@@ -21,7 +21,7 @@ import {
   aggregateFixture,
   aggregateFixtureResult,
   material,
-  rewriteMaterial,
+  platformMaterial,
 } from "./aggregate.test.mjs?fixtures-only";
 
 const workspaceId = "22222222-2222-4222-8222-222222222222";
@@ -35,14 +35,9 @@ const reviewBundle = {
   kind: "document",
   role: "evidence",
 };
-const sourceLinks = [
-  { entity_type: "project", entity_id: projectId, relation: "source" },
-  { entity_type: "work_item", entity_id: issueId, relation: "source" },
-  { entity_type: "process_run", entity_id: processRunId, relation: "source" },
-];
 const reviewLinks = [
-  { entity_type: "project", entity_id: projectId, relation: "about" },
-  { entity_type: "work_item", entity_id: issueId, relation: "about" },
+  { entity_type: "project", entity_id: projectId, relation: "output" },
+  { entity_type: "work_item", entity_id: issueId, relation: "output" },
   { entity_type: "process_run", entity_id: processRunId, relation: "output" },
 ];
 
@@ -54,25 +49,12 @@ function digestBytes(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function sourcePayload(sourceArtifact, runId) {
-  return {
-    schema_version: "nuanu.flow-item.v1",
-    workspace_id: workspaceId,
-    project_id: projectId,
-    work_item_id: issueId,
-    process_run_id: processRunId,
-    qa_run_id: runId,
-  };
-}
-
 function reviewPayload(sourceArtifact, aggregate, storedDecision) {
   return {
     schema_version: "nuanu.qa-review-bundle.v1",
     workspace_id: workspaceId,
     project_id: projectId,
     work_item_id: issueId,
-    process_run_id: processRunId,
-    qa_run_id: aggregate.run_id,
     source_artifact: structuredClone(sourceArtifact),
     aggregate: structuredClone(aggregate),
     stored_decision: storedDecision === undefined ? null : structuredClone(storedDecision),
@@ -106,7 +88,7 @@ function installReviewMaterial(store, payload, links = reviewLinks) {
   });
 }
 
-function noneReceipt(runId = "run-1", attemptId = "attempt-1") {
+function noneReceipt(runId = processRunId, attemptId = "attempt-1") {
   const environmentId = "generic-env";
   return {
     environment_status: "NOT_REQUIRED",
@@ -126,12 +108,11 @@ async function trustedFixture({ none = false, storedDecision = "derived", review
     profileOverrides: none ? { environment: { strategy: "none" } } : {},
   });
   const sourceArtifact = aggregateBase.plan.source_artifact;
-  const source = sourcePayload(sourceArtifact, aggregateBase.input.run_id);
-  rewriteMaterial(aggregateBase.store, sourceArtifact, sourceMutator ? sourceMutator(source) : source, { links: structuredClone(sourceLinks) });
   const aggregate = await aggregateFixtureResult(aggregateBase);
-  assert.equal(aggregate.invariants_passed, expectedRoute === "READY_FOR_PRODUCTION");
+  if (expectedRoute === "READY_FOR_PRODUCTION") assert.equal(aggregate.invariants_passed, true);
   const decision = await decideRelease(aggregate, {}, aggregateBase.dependencies);
   assert.equal(decision.route, expectedRoute);
+  if (sourceMutator) sourceMutator(platformMaterial(aggregateBase.platformStore, sourceArtifact));
   const stored = storedDecision === "derived" ? decision : storedDecision;
   const review = reviewPayload(sourceArtifact, aggregate, stored);
   installReviewMaterial(aggregateBase.store, reviewMutator ? reviewMutator(review) : review);
@@ -145,6 +126,7 @@ async function trustedFixture({ none = false, storedDecision = "derived", review
       if (!record || request.workspace_id !== workspaceId || record.byte_length > request.max_bytes) return null;
       return { ...record, enforced_max_bytes: request.max_bytes, links: structuredClone(record.links), bytes: Buffer.from(record.bytes) };
     },
+    resolvePlatformEntityVersion: async (request) => aggregateBase.dependencies.resolvePlatformEntityVersion(request),
     resolveProfileAtCommit: async (request) => {
       calls.profile += 1;
       return aggregateBase.dependencies.resolveProfileAtCommit(request);
@@ -195,6 +177,10 @@ function boundedCommentList(comments, overrides = {}) {
   const cloned = structuredClone(comments);
   return {
     comments: cloned,
+    source_operation: "get_issue_comments",
+    complete: true,
+    total_count: cloned.length,
+    truncated: false,
     enforced_max_bytes: COMMENT_LIST_MAX_BYTES,
     enforced_max_comments: COMMENT_LIST_MAX_COMMENTS,
     observed_bytes: Buffer.byteLength(canonicalJson(cloned), "utf8"),
@@ -266,19 +252,61 @@ test("trusted review aggregate is independently revalidated and stored decision 
   assert.ok(fixture.calls.profile > 0, "profile was re-read at pinned commit");
 });
 
+test("invalid aggregate axes never become cleanup authority even with null or matching stored decision", async () => {
+  for (const stored of ["null", "matching"]) {
+    const fixture = await trustedFixture();
+    const receipt = await publishComment(publicationInput(fixture), fixture.dependencies);
+    const forged = structuredClone(fixture.aggregate);
+    forged.attempt_id = "forged-attempt";
+    forged.environment_id = "forged-env";
+    forged.target_namespace = sha256({ run_id: forged.run_id, attempt_id: forged.attempt_id, environment_id: forged.environment_id }).slice(7);
+    forged.instance_nonce = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    delete forged.aggregate_sha256;
+    forged.aggregate_sha256 = sha256(forged);
+    const storedDecision = stored === "matching" ? await decideRelease(forged, {}, fixture.dependencies) : null;
+    installReviewMaterial(fixture.aggregateBase.store, reviewPayload(fixture.sourceArtifact, forged, storedDecision));
+    const cleanup = stoppedReceipt(forged);
+    await assert.rejects(publishComment(publicationInput(fixture), fixture.dependencies), /INVALID_AGGREGATE/);
+    const result = await finalizeTransition(finalizationInput(fixture, receipt, cleanup), fixture.dependencies);
+    assert.equal(result.transition_allowed, false);
+    assert.equal(result.target_state, "in_progress");
+    assert.deepEqual(result.reason_codes, ["INVALID_AGGREGATE"]);
+  }
+});
+
 test("unrelated source/review bundles and wrong entity/version identity fail before comments", async () => {
   for (const setup of [
-    { sourceMutator: (value) => ({ ...value, project_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }) },
-    { reviewMutator: (value) => ({ ...value, qa_run_id: "unrelated-run" }) },
+    { sourceMutator: (value) => { value.artifact.metadata.project_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"; } },
+    { reviewMutator: (value) => ({ ...value, project_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }) },
   ]) {
     const fixture = await trustedFixture(setup);
     await assert.rejects(publishComment(publicationInput(fixture), fixture.dependencies), /SOURCE_IDENTITY_MISMATCH|REVIEW_BUNDLE_MISMATCH/);
     assert.equal(fixture.calls.list, 0);
   }
   const fixture = await trustedFixture();
-  material(fixture.aggregateBase.store, reviewBundle).links = [{ entity_type: "project", entity_id: projectId, relation: "about" }];
+  material(fixture.aggregateBase.store, reviewBundle).links = [{ entity_type: "project", entity_id: projectId, relation: "output" }];
   await assert.rejects(publishComment(publicationInput(fixture), fixture.dependencies), /REVIEW_BUNDLE_MISMATCH|INVALID_TRUSTED_ARTIFACT/);
   await assert.rejects(publishComment(publicationInput(fixture, { review_bundle: { ...reviewBundle, version_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" } }), fixture.dependencies), /INVALID_TRUSTED_ARTIFACT|REVIEW_BUNDLE_MISMATCH/);
+});
+
+test("live Column Start source requires exact platform entity version, MIME, snapshot, metadata, and about links", async () => {
+  const mutations = [
+    (record) => { record.artifact.mime_type = "application/json"; },
+    (record) => { record.artifact.versions[0].file_asset = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"; },
+    (record) => { record.artifact.versions[0].representation.type = "file"; },
+    (record) => { record.artifact.versions[0].representation.entityId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"; },
+    (record) => { record.artifact.versions[0].representation.snapshot.project_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"; },
+    (record) => { record.artifact.links[0].relation = "source"; },
+    (record) => { record.artifact.links.push({ entity_type: "process_run", entity_id: processRunId, relation: "source" }); },
+  ];
+  for (const mutate of mutations) {
+    const fixture = await trustedFixture({ sourceMutator: mutate });
+    await assert.rejects(publishComment(publicationInput(fixture), fixture.dependencies), /SOURCE_IDENTITY_MISMATCH|INVALID_AGGREGATE/);
+    assert.equal(fixture.calls.list, 0);
+  }
+  const immutable = await trustedFixture({ sourceMutator: (record) => { record.artifact.current_version = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"; } });
+  const receipt = await publishComment(publicationInput(immutable), immutable.dependencies);
+  assert.equal(receipt.source_artifact.version_id, immutable.sourceArtifact.version_id);
 });
 
 test("already-present is idempotent; zero markers uses add plus authoritative global read-back", async () => {
@@ -338,6 +366,10 @@ test("comment adapter must attest exact global bounds/bytes and reject cyclic ou
     { comments: [], enforced_max_bytes: COMMENT_LIST_MAX_BYTES, enforced_max_comments: COMMENT_LIST_MAX_COMMENTS },
     boundedCommentList([], { observed_bytes: 99 }),
     boundedCommentList([], { enforced_max_bytes: COMMENT_LIST_MAX_BYTES + 1 }),
+    boundedCommentList([], { complete: false }),
+    boundedCommentList([], { total_count: 1 }),
+    boundedCommentList([], { truncated: true }),
+    boundedCommentList([], { source_operation: "search_issue_comments" }),
   ]) {
     const fixture = await trustedFixture();
     fixture.dependencies.listIssueComments = async () => result;
@@ -345,7 +377,7 @@ test("comment adapter must attest exact global bounds/bytes and reject cyclic ou
   }
   const fixture = await trustedFixture();
   const cyclic = []; cyclic.push(cyclic);
-  fixture.dependencies.listIssueComments = async () => ({ comments: cyclic, enforced_max_bytes: COMMENT_LIST_MAX_BYTES, enforced_max_comments: COMMENT_LIST_MAX_COMMENTS, observed_bytes: 1 });
+  fixture.dependencies.listIssueComments = async () => ({ comments: cyclic, source_operation: "get_issue_comments", complete: true, total_count: 1, truncated: false, enforced_max_bytes: COMMENT_LIST_MAX_BYTES, enforced_max_comments: COMMENT_LIST_MAX_COMMENTS, observed_bytes: 1 });
   await assert.rejects(publishComment(publicationInput(fixture), fixture.dependencies), /INVALID_COMMENT_READBACK/);
 
   const hostile = await trustedFixture();
@@ -360,8 +392,11 @@ test("managed STOPPED exact lease plus one trusted global marker gates READY tra
   assert.deepEqual(result, { schema_version: "nuanu.qa-finalization-result.v1", transition_allowed: true, target_state: "ready_for_production", reason_codes: [] });
 });
 
-test("independently derived non-ready decision maps only to in_progress", async () => {
-  const fixture = await trustedFixture({ entryOverrides: { api: { confirmed_findings: 1 } }, expectedRoute: "RETURN_TO_IN_PROGRESS" });
+test("a structurally and authentically valid FAIL aggregate still cleans up and maps to in_progress", async () => {
+  const fixture = await trustedFixture({
+    entryOverrides: { api: { product_result: "FAIL", code: "API_CONTRACT_VIOLATION", observations: [{ code: "CONTRACT_FAILED", status: "FAIL", value_sha256: sha256("fail") }] } },
+    expectedRoute: "RETURN_TO_IN_PROGRESS",
+  });
   const receipt = await publishComment(publicationInput(fixture), fixture.dependencies);
   const result = await finalizeTransition(finalizationInput(fixture, receipt, stoppedReceipt(fixture.aggregate)), fixture.dependencies);
   assert.deepEqual(result, { schema_version: "nuanu.qa-finalization-result.v1", transition_allowed: true, target_state: "in_progress", reason_codes: [] });
@@ -419,6 +454,15 @@ test("finalizer performs a fresh full global read and catches TOCTOU UUID/body/m
     assert.equal(result.transition_allowed, false);
     assert.ok(result.reason_codes.some((code) => code.startsWith("COMMENT_")));
   }
+});
+
+test("finalizer rejects a comment adapter that stops attesting complete get_issue_comments output", async () => {
+  const fixture = await trustedFixture();
+  const receipt = await publishComment(publicationInput(fixture), fixture.dependencies);
+  fixture.dependencies.listIssueComments = async () => boundedCommentList(fixture.state.comments, { complete: false });
+  const result = await finalizeTransition(finalizationInput(fixture, receipt, stoppedReceipt(fixture.aggregate)), fixture.dependencies);
+  assert.equal(result.transition_allowed, false);
+  assert.deepEqual(result.reason_codes, ["COMMENT_READBACK_INVALID"]);
 });
 
 test("final output is closed and no caller mutation callback is invoked", async () => {

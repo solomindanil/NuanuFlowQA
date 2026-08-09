@@ -1,6 +1,6 @@
 import { canonicalJson, sha256 } from "./canonical.mjs";
-import { resolveArtifactVersionForSlot, resolveCommitProfile } from "./aggregate.mjs";
-import { decideRelease } from "./decide.mjs";
+import { resolveArtifactVersionForSlot, resolvePlatformEntityVersion } from "./aggregate.mjs";
+import { decideRelease, validateAggregateForDecision } from "./decide.mjs";
 
 export const COMMENT_HTML_MAX_BYTES = 8_192;
 export const COMMENT_LIST_MAX_BYTES = 1_048_576;
@@ -16,10 +16,9 @@ const ANY_MARKER_LIKE = /<!--\s*nuanu-qah-comment:v1:[\s\S]{0,128}?-->/g;
 const ARTIFACT_KEYS = ["artifact_id", "version_id", "kind", "role"];
 const DECISION_KEYS = ["schema_version", "aggregate_sha256", "route", "reason_codes", "policy_override_rejected", "explanation", "decision_sha256"];
 const SUMMARY_KEYS = ["selected_checks", "skipped_checks", "commit", "content_hash", "finding_count"];
-const SOURCE_PAYLOAD_KEYS = ["schema_version", "workspace_id", "project_id", "work_item_id", "process_run_id", "qa_run_id"];
-const REVIEW_PAYLOAD_KEYS = [...SOURCE_PAYLOAD_KEYS, "source_artifact", "aggregate", "stored_decision"];
+const REVIEW_PAYLOAD_KEYS = ["schema_version", "workspace_id", "project_id", "work_item_id", "source_artifact", "aggregate", "stored_decision"];
 const COMMENT_KEYS = ["comment_id", "workspace_id", "project_id", "issue_id", "comment_html"];
-const COMMENT_LIST_KEYS = ["comments", "enforced_max_bytes", "enforced_max_comments", "observed_bytes"];
+const COMMENT_LIST_KEYS = ["comments", "source_operation", "complete", "total_count", "truncated", "enforced_max_bytes", "enforced_max_comments", "observed_bytes"];
 
 class CommentPolicyError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -132,25 +131,12 @@ function exactLinkSet(links, expected) {
   return same(normalize(links), normalize(expected));
 }
 
-function expectedLinks(input, review = false) {
-  return review
-    ? [
-        { entity_type: "project", entity_id: input.project_id, relation: "about" },
-        { entity_type: "work_item", entity_id: input.issue_id, relation: "about" },
-        { entity_type: "process_run", entity_id: input.process_run_id, relation: "output" },
-      ]
-    : [
-        { entity_type: "project", entity_id: input.project_id, relation: "source" },
-        { entity_type: "work_item", entity_id: input.issue_id, relation: "source" },
-        { entity_type: "process_run", entity_id: input.process_run_id, relation: "source" },
-      ];
-}
-
-function identityFromSource(payload, input) {
-  if (!exactKeys(payload, SOURCE_PAYLOAD_KEYS) || payload.schema_version !== "nuanu.flow-item.v1"
-    || payload.workspace_id !== input.workspace_id || payload.project_id !== input.project_id || payload.work_item_id !== input.issue_id
-    || !UUID.test(payload.process_run_id ?? "") || typeof payload.qa_run_id !== "string") throw new CommentPolicyError("SOURCE_IDENTITY_MISMATCH");
-  return payload;
+function expectedReviewLinks(input, runId) {
+  return [
+    { entity_type: "project", entity_id: input.project_id, relation: "output" },
+    { entity_type: "work_item", entity_id: input.issue_id, relation: "output" },
+    { entity_type: "process_run", entity_id: runId, relation: "output" },
+  ];
 }
 
 function reviewSummary(aggregate) {
@@ -164,31 +150,34 @@ function reviewSummary(aggregate) {
 }
 
 export async function resolveTrustedPublication(input, dependencies) {
-  if (typeof dependencies?.resolveArtifactVersion !== "function" || typeof dependencies?.resolveProfileAtCommit !== "function") throw new CommentPolicyError("TRUSTED_RESOLVER_REQUIRED");
-  const context = { workspaceId: input.workspace_id, resolveArtifactVersion: dependencies.resolveArtifactVersion, resolveProfileAtCommit: dependencies.resolveProfileAtCommit };
+  if (typeof dependencies?.resolveArtifactVersion !== "function" || typeof dependencies?.resolvePlatformEntityVersion !== "function"
+    || typeof dependencies?.resolveProfileAtCommit !== "function") throw new CommentPolicyError("TRUSTED_RESOLVER_REQUIRED");
+  const context = {
+    workspaceId: input.workspace_id,
+    resolveArtifactVersion: dependencies.resolveArtifactVersion,
+    resolvePlatformEntityVersion: dependencies.resolvePlatformEntityVersion,
+    resolveProfileAtCommit: dependencies.resolveProfileAtCommit,
+  };
   let source;
-  try { source = await resolveArtifactVersionForSlot(input.source_artifact, "source_flow_item", context, TRUSTED_ARTIFACT_MAX_BYTES); }
+  try { source = await resolvePlatformEntityVersion(input.source_artifact, context, TRUSTED_ARTIFACT_MAX_BYTES); }
   catch { throw new CommentPolicyError("SOURCE_IDENTITY_MISMATCH"); }
-  const sourceIdentity = identityFromSource(source.payload, input);
-  if (!exactLinkSet(source.links, expectedLinks({ ...input, process_run_id: sourceIdentity.process_run_id }))) throw new CommentPolicyError("SOURCE_IDENTITY_MISMATCH");
+  if (source.project_id !== input.project_id || source.work_item_id !== input.issue_id) throw new CommentPolicyError("SOURCE_IDENTITY_MISMATCH");
   let review;
   try { review = await resolveArtifactVersionForSlot(input.review_bundle, "review_bundle", context, TRUSTED_ARTIFACT_MAX_BYTES); }
   catch { throw new CommentPolicyError("REVIEW_BUNDLE_MISMATCH"); }
   const payload = review.payload;
   if (!exactKeys(payload, REVIEW_PAYLOAD_KEYS) || payload.schema_version !== "nuanu.qa-review-bundle.v1"
     || payload.workspace_id !== input.workspace_id || payload.project_id !== input.project_id || payload.work_item_id !== input.issue_id
-    || payload.process_run_id !== sourceIdentity.process_run_id || payload.qa_run_id !== sourceIdentity.qa_run_id
     || !same(payload.source_artifact, input.source_artifact)
-    || !exactLinkSet(review.links, expectedLinks({ ...input, process_run_id: sourceIdentity.process_run_id }, true))
     || payload.aggregate?.workspace_id !== input.workspace_id || !same(payload.aggregate?.source_artifact, input.source_artifact)
-    || payload.aggregate?.run_id !== sourceIdentity.qa_run_id) throw new CommentPolicyError("REVIEW_BUNDLE_MISMATCH");
-  const decision = await decideRelease(payload.aggregate, {}, dependencies);
+    || !UUID.test(payload.aggregate?.run_id ?? "")
+    || !exactLinkSet(review.links, expectedReviewLinks(input, payload.aggregate.run_id))) throw new CommentPolicyError("REVIEW_BUNDLE_MISMATCH");
+  const validated = await validateAggregateForDecision(payload.aggregate, dependencies);
+  if (!validated.valid) throw new CommentPolicyError("INVALID_AGGREGATE");
+  const decision = await decideRelease(validated.aggregate, {}, dependencies);
   validateDecision(decision);
   if (payload.stored_decision !== null && !same(payload.stored_decision, decision)) throw new CommentPolicyError("STORED_DECISION_MISMATCH");
-  let profile;
-  try { profile = (await resolveCommitProfile(context, payload.aggregate.repository_origin, payload.aggregate.commit)).payload; }
-  catch { throw new CommentPolicyError("REVIEW_BUNDLE_MISMATCH"); }
-  return { sourceIdentity, aggregate: payload.aggregate, decision, profile, review_summary: normalizeSummary(reviewSummary(payload.aggregate)) };
+  return { sourceIdentity: source, aggregate: validated.aggregate, decision, profile: validated.profile, review_summary: normalizeSummary(reviewSummary(validated.aggregate)) };
 }
 
 function validateComment(value, input) {
@@ -209,8 +198,10 @@ export async function readGlobalComments(input, dependencies) {
   } catch { throw new CommentPolicyError("COMMENT_READBACK_UNCERTAIN"); }
   try {
     if (!exactKeys(result, COMMENT_LIST_KEYS) || result.enforced_max_bytes !== COMMENT_LIST_MAX_BYTES
-      || result.enforced_max_comments !== COMMENT_LIST_MAX_COMMENTS) throw new CommentPolicyError("UNATTESTED_COMMENT_BOUND");
+      || result.enforced_max_comments !== COMMENT_LIST_MAX_COMMENTS || result.source_operation !== "get_issue_comments"
+      || result.complete !== true || result.truncated !== false) throw new CommentPolicyError("UNATTESTED_COMMENT_BOUND");
     if (!Array.isArray(result.comments) || result.comments.length > COMMENT_LIST_MAX_COMMENTS
+      || result.total_count !== result.comments.length
       || !Number.isSafeInteger(result.observed_bytes) || result.observed_bytes < 2 || result.observed_bytes > COMMENT_LIST_MAX_BYTES) throw new CommentPolicyError("INVALID_COMMENT_READBACK");
     const comments = structuredClone(result.comments);
     if (Buffer.byteLength(canonicalJson(comments), "utf8") !== result.observed_bytes) throw new CommentPolicyError("INVALID_COMMENT_READBACK");
