@@ -274,6 +274,29 @@ test("invalid aggregate axes never become cleanup authority even with null or ma
   }
 });
 
+test("authenticated FAIL cannot publish or finalize with caller-forged invariants", async () => {
+  const fixture = await trustedFixture({
+    entryOverrides: { api: { product_result: "FAIL", code: "API_CONTRACT_VIOLATION", observations: [{ code: "CONTRACT_FAILED", status: "FAIL", value_sha256: sha256("fail") }] } },
+    expectedRoute: "RETURN_TO_IN_PROGRESS",
+  });
+  const receipt = await publishComment(publicationInput(fixture), fixture.dependencies);
+  const forged = structuredClone(fixture.aggregate);
+  forged.invariants_passed = true;
+  delete forged.aggregate_sha256;
+  forged.aggregate_sha256 = sha256(forged);
+  const matchingFailClosedDecision = await decideRelease(forged, {}, fixture.dependencies);
+  installReviewMaterial(fixture.aggregateBase.store, reviewPayload(fixture.sourceArtifact, forged, matchingFailClosedDecision));
+
+  await assert.rejects(publishComment(publicationInput(fixture), fixture.dependencies), /INVALID_AGGREGATE/);
+  const result = await finalizeTransition(finalizationInput(fixture, receipt, stoppedReceipt(forged)), fixture.dependencies);
+  assert.deepEqual(result, {
+    schema_version: "nuanu.qa-finalization-result.v1",
+    transition_allowed: false,
+    target_state: "in_progress",
+    reason_codes: ["INVALID_AGGREGATE"],
+  });
+});
+
 test("unrelated source/review bundles and wrong entity/version identity fail before comments", async () => {
   for (const setup of [
     { sourceMutator: (value) => { value.artifact.metadata.project_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"; } },

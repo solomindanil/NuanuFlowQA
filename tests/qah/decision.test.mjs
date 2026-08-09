@@ -84,6 +84,29 @@ test("caller-only non-ready policy fields cannot masquerade as an authenticated 
   assert.equal(validation.profile, null);
 });
 
+test("authenticated FAIL materials cannot authorize caller-forged aggregate policy fields", async () => {
+  const fixture = aggregateFixture({
+    entryOverrides: { api: { product_result: "FAIL", code: "API_CONTRACT_VIOLATION", observations: [{ code: "CONTRACT_FAILED", status: "FAIL", value_sha256: sha256("fail") }] } },
+  });
+  const aggregate = await aggregateFixtureResult(fixture);
+  assert.equal(aggregate.invariants_passed, false);
+  assert.deepEqual(aggregate.reason_codes, ["PRODUCT_FAILURE"]);
+
+  for (const mutate of [
+    (value) => { value.invariants_passed = true; },
+    (value) => { value.reason_codes = []; },
+  ]) {
+    const forged = structuredClone(aggregate);
+    mutate(forged);
+    delete forged.aggregate_sha256;
+    forged.aggregate_sha256 = sha256(forged);
+    const validation = await validateAggregateForDecision(forged, fixture.dependencies);
+    assert.equal(validation.valid, false);
+    assert.equal(validation.aggregate, null);
+    assert.equal(validation.profile, null);
+  }
+});
+
 test("Codex explanation cannot override deterministic failure with malicious READY proposal", async () => {
   const fixture = aggregateFixture({ entryOverrides: { api: { confidence: 0.1 } } });
   const aggregate = await aggregateFixtureResult(fixture);

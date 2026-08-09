@@ -208,7 +208,7 @@ async function validateTrustedArtifactBindings(aggregate, dependencies) {
   if (typeof dependencies?.resolveArtifactVersion !== "function") reasons.add("TRUSTED_ARTIFACT_RESOLVER_REQUIRED");
   if (typeof dependencies?.resolvePlatformEntityVersion !== "function") reasons.add("TRUSTED_PLATFORM_ENTITY_RESOLVER_REQUIRED");
   if (typeof dependencies?.resolveProfileAtCommit !== "function") reasons.add("TRUSTED_PROFILE_RESOLVER_REQUIRED");
-  if (reasons.size > 0) return { reasons: [...reasons].sort(), profile: null };
+  if (reasons.size > 0) return { reasons: [...reasons].sort(), profile: null, authoritative_policy: null };
   const context = {
     workspaceId: aggregate?.workspace_id,
     resolveArtifactVersion: dependencies.resolveArtifactVersion,
@@ -253,6 +253,8 @@ async function validateTrustedArtifactBindings(aggregate, dependencies) {
     if (profile && commitProfile && !same(profile, commitProfile.payload)) reasons.add("PROFILE_COMMIT_MISMATCH");
   }
   const usedArtifacts = new Set([aggregate?.source_artifact, aggregate?.plan_artifact, aggregate?.profile_artifact].map(identityKey));
+  const authoritativeReasons = new Set();
+  const authoritativeBranches = [];
   if (resolved.plan && Array.isArray(aggregate?.branches)) for (const branch of aggregate.branches.slice(0, 4)) {
     const materials = {};
     for (const slot of ["branch_payload", "occurrence", "evidence"]) {
@@ -299,10 +301,18 @@ async function validateTrustedArtifactBindings(aggregate, dependencies) {
       profileArtifactLink: aggregate?.profile_artifact,
       profileBlobSha256: aggregate?.profile_blob_sha256,
     }, materials);
+    authoritativeBranches.push(normalized.record);
+    for (const reason of normalized.reasons) authoritativeReasons.add(reason);
     for (const reason of normalized.reasons) reasons.add(reason);
     if (!same(normalized.record, branch)) reasons.add("INVALID_AGGREGATE_POLICY");
   }
-  return { reasons: [...reasons].sort(), profile: commitProfile?.payload ?? null };
+  const authoritativePolicy = resolved.plan && Array.isArray(aggregate?.branches) && aggregate.branches.length === 4 && authoritativeBranches.length === 4
+    ? {
+      reason_codes: [...authoritativeReasons].sort(),
+      invariants_passed: authoritativeReasons.size === 0 && authoritativeBranches.every((branch) => branch.validity === "VALID"),
+    }
+    : null;
+  return { reasons: [...reasons].sort(), profile: commitProfile?.payload ?? null, authoritative_policy: authoritativePolicy };
 }
 
 function decisionFrom(aggregateSha, route, reasonCodes, proposal) {
@@ -337,8 +347,9 @@ export async function validateAggregateForDecision(aggregate, dependencies = {})
     const fatalValidation = validationReasons.filter((code) => code !== "INVALID_AGGREGATE_POLICY");
     const fatalTrusted = trusted.reasons.filter((code) => !AUTHENTICATED_OUTCOME_REASONS.has(code));
     const fatalLocal = aggregateReasons.filter((code) => !AUTHENTICATED_OUTCOME_REASONS.has(code));
-    const policyShapeIsAuthenticated = !validationReasons.includes("INVALID_AGGREGATE_POLICY")
-      || trusted.reasons.some((code) => AUTHENTICATED_OUTCOME_REASONS.has(code));
+    const policyShapeIsAuthenticated = trusted.authoritative_policy !== null
+      && same(aggregate?.reason_codes, trusted.authoritative_policy.reason_codes)
+      && aggregate?.invariants_passed === trusted.authoritative_policy.invariants_passed;
     const valid = fatalValidation.length === 0 && fatalTrusted.length === 0 && fatalLocal.length === 0
       && policyShapeIsAuthenticated && trusted.profile !== null;
     return {
