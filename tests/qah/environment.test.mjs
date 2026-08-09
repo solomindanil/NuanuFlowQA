@@ -1,11 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn as spawnChild } from "node:child_process";
-import { EventEmitter } from "node:events";
+import { execFile as execFileCallback, spawn as spawnChild } from "node:child_process";
+import { EventEmitter, once } from "node:events";
 import { access, chmod, mkdir, mkdtemp, readFile, realpath, readdir, rm, writeFile } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { prepareEnvironment, cleanupEnvironment, targetNamespace } from "../../scripts/qah/environment.mjs";
+
+const systemExecFile = promisify(execFileCallback);
 
 const runId = "run-docs-1";
 const attemptId = "attempt-1";
@@ -34,6 +38,29 @@ function managedProfile(overrides = {}) {
   };
 }
 
+async function unusedPort() {
+  const server = createNetServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = server.address().port;
+  server.close();
+  await once(server, "close");
+  return port;
+}
+
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid) {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline && processAlive(pid)) await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  return !processAlive(pid);
+}
+
 async function createHarness(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), "qah-generic-environment-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -45,6 +72,8 @@ async function createHarness(t, options = {}) {
   let healthMode = options.healthMode ?? "ok";
   let healthPulls = 0;
   let healthCancelled = false;
+  let runtimeBaseUrl = "http://127.0.0.1:43199";
+  let prepareCheckoutCalls = 0;
   const nodeRealpath = await realpath(process.execPath);
 
   const dependencies = {
@@ -135,15 +164,27 @@ async function createHarness(t, options = {}) {
     adapter_digest: "sha256:" + "d".repeat(64),
     configuration: { release: "fixture" },
     runtime_identity: { release: "fixture", protocol: "fixture-v1" },
+    environment_prefix: "GENERIC_PRODUCT_",
     environment_allowlist: [],
     async prepareCheckout({ checkout }) {
+      prepareCheckoutCalls += 1;
       const executable = join(checkout, "server.mjs");
       await writeFile(executable, "// fixture executable\n");
       return {
         command: [process.execPath, executable],
-        base_url: "http://127.0.0.1:43199",
+        base_url: runtimeBaseUrl,
         content_hash: "sha256:" + "c".repeat(64),
         environment: {},
+      };
+    },
+    async inspectRuntime({ checkout }) {
+      return {
+        command: [process.execPath, join(checkout, "server.mjs")],
+        base_url: runtimeBaseUrl,
+        content_hash: "sha256:" + "c".repeat(64),
+        environment: {},
+        allowed_generated_entries: [],
+        state_fields: {},
       };
     },
   };
@@ -173,6 +214,8 @@ async function createHarness(t, options = {}) {
     input,
     setCheckoutStatus(value) { checkoutStatus = value; },
     setHealthMode(value) { healthMode = value; },
+    setRuntimeBaseUrl(value) { runtimeBaseUrl = value; },
+    prepareCheckoutCalls() { return prepareCheckoutCalls; },
     healthStats() { return { pulls: healthPulls, cancelled: healthCancelled }; },
   };
 }
@@ -295,7 +338,7 @@ test("cleanup rejects a foreign live executable even when its argv copies every 
   assert.equal(harness.processes.get(state.pid).alive, true);
 });
 
-test("STARTED crash state is never replayed as READY or respawned", async (t) => {
+test("STARTED crash replay safely stops exact-owned process and remains visible to cleanup", async (t) => {
   const harness = await createHarness(t);
   const ready = await prepareEnvironment(harness.input());
   const state = JSON.parse(await readFile(ready.state_file, "utf8"));
@@ -306,11 +349,126 @@ test("STARTED crash state is never replayed as READY or respawned", async (t) =>
 
   const replay = await prepareEnvironment(harness.input());
   assert.equal(replay.environment_status, "INFRA_FAILURE");
-  assert.match(replay.reason, /recovery|required|started/i);
+  assert.match(replay.reason, /recovery|stopped|started/i);
   assert.equal(harness.calls.spawn.length, 1);
-  assert.equal(harness.calls.signals.some(([, signal]) => signal === "SIGTERM"), false);
+  assert.equal(harness.calls.signals.some(([, signal]) => signal === "SIGTERM"), true);
+  assert.equal(harness.processes.get(state.pid).alive, false);
+  assert.equal(JSON.parse(await readFile(ready.state_file, "utf8")).phase, "RECOVERED_STOPPED");
+
+  const cleaned = await cleanupEnvironment(harness.input());
+  assert.equal(cleaned.environment_status, "STOPPED");
   await assert.rejects(access(ready.state_file));
-  assert.equal((await readdir(join(harness.root, "state"))).some((entry) => entry.includes(".quarantine-")), true);
+});
+
+test("real STARTED recovery stops only exact-owned listener while a foreign process remains alive", { timeout: 20_000 }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "qah-started-recovery-"));
+  const ownedPids = new Set();
+  let foreign;
+  t.after(async () => {
+    for (const pid of ownedPids) if (processAlive(pid)) process.kill(pid, "SIGTERM");
+    if (foreign && processAlive(foreign.pid)) foreign.kill("SIGTERM");
+    await rm(root, { recursive: true, force: true });
+  });
+
+  async function lifecycleInput({ attempt, environment, port, quarantineRecovery = true }) {
+    const runtime = (checkout) => ({
+      command: [process.execPath, join(checkout, "server.mjs")],
+      base_url: `http://127.0.0.1:${port}`,
+      content_hash: "sha256:" + "c".repeat(64),
+      environment: { GENERIC_PRODUCT_PORT: String(port) },
+      allowed_generated_entries: [],
+      state_fields: {},
+    });
+    return {
+      profile: { ...managedProfile(), execution: { timeout_ms: 3_000, max_output_bytes: 4096 } },
+      repositoryOrigin: origin,
+      commit,
+      runId: "run-real-recovery",
+      attemptId: attempt,
+      environmentId: environment,
+      stateRoot: join(root, "state"),
+      quarantineRecovery,
+      dependencies: {
+        async execFile(commandName, args, options) {
+          if (commandName !== "git") return systemExecFile(commandName, args, options);
+          if (args.includes("clone")) await mkdir(args.at(-1), { recursive: true });
+          if (args.includes("rev-parse")) return { stdout: `${commit}\n`, stderr: "" };
+          if (args.includes("status")) return { stdout: "", stderr: "" };
+          return { stdout: "", stderr: "" };
+        },
+      },
+      managed: {
+        adapter_id: "real-recovery-fixture",
+        adapter_version: "1",
+        adapter_digest: "sha256:" + "9".repeat(64),
+        configuration: { port },
+        runtime_identity: { protocol: "real-recovery-v1", port },
+        environment_prefix: "GENERIC_PRODUCT_",
+        environment_allowlist: ["GENERIC_PRODUCT_PORT"],
+        async prepareCheckout({ checkout }) {
+          await writeFile(join(checkout, "server.mjs"), `
+            import { createServer } from "node:http";
+            const values = Object.fromEntries(process.argv.slice(2).map((argument) => {
+              const index = argument.indexOf("=");
+              return [argument.slice(0, index), decodeURIComponent(argument.slice(index + 1))];
+            }));
+            const identity = {
+              repository_origin: values["--qah-repository-origin"],
+              commit: values["--qah-commit"],
+              content_hash: "sha256:${"c".repeat(64)}",
+              environment_id: values["--qah-environment-id"],
+              instance_nonce: values["--qah-instance-nonce"],
+            };
+            createServer((request, response) => {
+              response.setHeader("content-type", "application/json");
+              response.end(JSON.stringify(identity));
+            }).listen(Number(process.env.GENERIC_PRODUCT_PORT), "127.0.0.1");
+          `);
+          return runtime(checkout);
+        },
+        async inspectRuntime({ checkout }) { return runtime(checkout); },
+      },
+    };
+  }
+
+  const ownedInput = await lifecycleInput({ attempt: "attempt-owned", environment: "owned-started", port: await unusedPort() });
+  const ownedReady = await prepareEnvironment(ownedInput);
+  assert.equal(ownedReady.environment_status, "READY");
+  const ownedState = JSON.parse(await readFile(ownedReady.state_file, "utf8"));
+  ownedPids.add(ownedState.pid);
+  delete ownedState.receipt;
+  ownedState.phase = "STARTED";
+  await writeFile(ownedReady.state_file, `${JSON.stringify(ownedState)}\n`);
+
+  const recovered = await prepareEnvironment(ownedInput);
+  assert.equal(recovered.environment_status, "INFRA_FAILURE");
+  assert.equal(await waitForProcessExit(ownedState.pid), true);
+  assert.equal(JSON.parse(await readFile(ownedReady.state_file, "utf8")).phase, "RECOVERED_STOPPED");
+  assert.equal((await cleanupEnvironment(ownedInput)).environment_status, "STOPPED");
+  ownedPids.delete(ownedState.pid);
+
+  const foreignInput = await lifecycleInput({ attempt: "attempt-foreign", environment: "foreign-started", port: await unusedPort(), quarantineRecovery: false });
+  const foreignReady = await prepareEnvironment(foreignInput);
+  assert.equal(foreignReady.environment_status, "READY");
+  const originalState = JSON.parse(await readFile(foreignReady.state_file, "utf8"));
+  ownedPids.add(originalState.pid);
+  foreign = spawnChild(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  await once(foreign, "spawn");
+  const forged = { ...originalState, phase: "STARTED", pid: foreign.pid };
+  delete forged.receipt;
+  await writeFile(foreignReady.state_file, `${JSON.stringify(forged)}\n`);
+  await writeFile(foreignReady.pid_file, `${foreign.pid}\n`);
+
+  const refused = await cleanupEnvironment(foreignInput);
+  assert.equal(refused.environment_status, "RECOVERY_REQUIRED");
+  assert.equal(processAlive(foreign.pid), true);
+
+  await writeFile(foreignReady.state_file, `${JSON.stringify(originalState)}\n`);
+  await writeFile(foreignReady.pid_file, `${originalState.pid}\n`);
+  assert.equal((await cleanupEnvironment(foreignInput)).environment_status, "STOPPED");
+  ownedPids.delete(originalState.pid);
+  foreign.kill("SIGTERM");
+  await once(foreign, "close");
 });
 
 test("Git child execution receives a finite profile timeout and leaves no hanging child", { timeout: 4_000 }, async (t) => {
@@ -338,7 +496,9 @@ test("Git child execution receives a finite profile timeout and leaves no hangin
       adapter_digest: "sha256:" + "e".repeat(64),
       configuration: {},
       runtime_identity: {},
+      environment_prefix: "GENERIC_PRODUCT_",
       environment_allowlist: [],
+      async inspectRuntime() { throw new Error("clone must time out first"); },
       async prepareCheckout() { throw new Error("clone must time out first"); },
     },
     dependencies: {
@@ -393,6 +553,21 @@ test("idempotency conflicts when declared adapter runtime identity changes", asy
   assert.equal(harness.calls.spawn.length, 1);
 });
 
+test("replay conflicts when actual inspected runtime changes without declared metadata changes", async (t) => {
+  const harness = await createHarness(t);
+  const first = await prepareEnvironment(harness.input());
+  assert.equal(first.environment_status, "READY");
+  const gitCalls = harness.calls.exec.filter(([commandName]) => commandName === "git").length;
+
+  harness.setRuntimeBaseUrl("http://127.0.0.1:43200");
+  const replay = await prepareEnvironment(harness.input());
+  assert.equal(replay.environment_status, "INFRA_FAILURE");
+  assert.match(replay.reason, /actual runtime|contract|conflict/i);
+  assert.equal(harness.prepareCheckoutCalls(), 1);
+  assert.equal(harness.calls.spawn.length, 1);
+  assert.equal(harness.calls.exec.filter(([commandName]) => commandName === "git").length, gitCalls);
+});
+
 test("adapter tracked-source mutation is rejected by the generic post-build cleanliness check", async (t) => {
   const harness = await createHarness(t);
   const originalPrepare = harness.managed.prepareCheckout;
@@ -427,9 +602,42 @@ test("adapter environment rejects secret channels, preload controls, PATH overri
         ? { ...runtime, environment_for_identity: () => ({ [name]: value }) }
         : { ...runtime, environment: { [name]: value } };
     };
+    harness.managed.inspectRuntime = async ({ checkout }) => ({
+      command: [process.execPath, join(checkout, "server.mjs")],
+      base_url: "http://127.0.0.1:43199",
+      content_hash: "sha256:" + "c".repeat(64),
+      environment: { [name]: value },
+      allowed_generated_entries: [],
+      state_fields: {},
+    });
     const receipt = await prepareEnvironment(harness.input({ attemptId: `attempt-env-${index}` }));
     assert.equal(receipt.environment_status, "INFRA_FAILURE", name);
     assert.match(receipt.reason, /environment|forbidden|allowlist|credential|preload|PATH/i, name);
+    assert.equal(harness.calls.spawn.length, 0, name);
+  }
+});
+
+test("positive environment namespace rejects loader hooks, GitHub PAT, and neutral secret channels even when declared", async (t) => {
+  for (const [index, name] of ["LD_AUDIT", "LD_LIBRARY_PATH", "GITHUB_PAT", "RUNTIME_BLOB"].entries()) {
+    const harness = await createHarness(t);
+    const originalPrepare = harness.managed.prepareCheckout;
+    harness.managed.environment_allowlist = [name];
+    harness.managed.prepareCheckout = async (context) => ({
+      ...(await originalPrepare(context)),
+      environment: { [name]: "opaque-sensitive-value" },
+    });
+    harness.managed.inspectRuntime = async ({ checkout }) => ({
+      command: [process.execPath, join(checkout, "server.mjs")],
+      base_url: "http://127.0.0.1:43199",
+      content_hash: "sha256:" + "c".repeat(64),
+      environment: { [name]: "opaque-sensitive-value" },
+      allowed_generated_entries: [],
+      state_fields: {},
+    });
+
+    const receipt = await prepareEnvironment(harness.input({ attemptId: `attempt-positive-env-${index}` }));
+    assert.equal(receipt.environment_status, "INFRA_FAILURE", name);
+    assert.match(receipt.reason, /environment|namespace|allowlist|forbidden/i, name);
     assert.equal(harness.calls.spawn.length, 0, name);
   }
 });

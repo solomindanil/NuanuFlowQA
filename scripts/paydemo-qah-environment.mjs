@@ -243,12 +243,30 @@ function adapter({ repositoryOrigin, variant, port, environmentId }) {
     content_hash_source: "exact-commit-build-manifest",
     variant,
   };
+  function runtimeContract(checkout, contentHash, identityEnvironment) {
+    const runtime = {
+      command: [process.execPath, join(checkout, "apps/paydemo/server.mjs")],
+      base_url: `http://127.0.0.1:${port}`,
+      content_hash: contentHash,
+      environment: {
+        PAYDEMO_PORT: String(port),
+        PAYDEMO_VARIANT: variant,
+        PAYDEMO_ENVIRONMENT_ID: environmentId,
+      },
+      allowed_generated_entries: ["?? dist/"],
+      state_fields: { repo_url: repositoryOrigin, environment_id: environmentId, variant, port },
+    };
+    if (identityEnvironment) runtime.identity_environment = identityEnvironment;
+    else runtime.environment_for_identity = (state) => ({ PAYDEMO_INSTANCE_NONCE: state.instance_nonce });
+    return runtime;
+  }
   return {
     adapter_id: "paydemo-environment-v1",
     adapter_version: "1",
     adapter_digest: sha256(canonicalJson({ adapter: "paydemo-environment", version: 1, runtime_identity: runtimeIdentity })),
     configuration: { variant, port },
     runtime_identity: runtimeIdentity,
+    environment_prefix: "PAYDEMO_",
     environment_allowlist: ["PAYDEMO_PORT", "PAYDEMO_VARIANT", "PAYDEMO_ENVIRONMENT_ID", "PAYDEMO_INSTANCE_NONCE"],
     async prepareCheckout({ checkout, commit, timeout_ms: timeoutMs, max_output_bytes: maxOutputBytes }) {
       if (await isPortInUse(port)) fail(`port ${port} is already in use; refusing to stop its owner`);
@@ -256,21 +274,15 @@ function adapter({ repositoryOrigin, variant, port, environmentId }) {
       if (await isPortInUse(port)) fail(`port ${port} became occupied before startup`);
       const executable = join(checkout, "apps/paydemo/server.mjs");
       await access(executable);
-      return {
-        command: [process.execPath, executable],
-        base_url: `http://127.0.0.1:${port}`,
-        content_hash: manifest.contentHash,
-        environment: {
-          PAYDEMO_PORT: String(port),
-          PAYDEMO_VARIANT: variant,
-          PAYDEMO_ENVIRONMENT_ID: environmentId,
-        },
-        environment_for_identity(state) {
-          return { PAYDEMO_INSTANCE_NONCE: state.instance_nonce };
-        },
-        allowed_generated_entries: ["?? dist/"],
-        state_fields: { repo_url: repositoryOrigin, environment_id: environmentId, variant, port },
-      };
+      return runtimeContract(checkout, manifest.contentHash);
+    },
+    async inspectRuntime({ checkout, commit, state }) {
+      const manifest = JSON.parse(await readFile(join(checkout, "dist/paydemo/build-manifest.json"), "utf8"));
+      if (manifest?.app !== "PayDemo" || manifest.variant !== variant || manifest.commit !== commit || !/^sha256:[a-f0-9]{64}$/.test(manifest.contentHash)) {
+        fail("stored PayDemo manifest does not match the requested exact runtime identity");
+      }
+      await access(join(checkout, "apps/paydemo/server.mjs"));
+      return runtimeContract(checkout, manifest.contentHash, { PAYDEMO_INSTANCE_NONCE: state.instance_nonce });
     },
     normalize_identity(value) {
       const buildInfo = validateBuildInfoShape(value);

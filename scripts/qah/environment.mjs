@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { canonicalJson, sha256 } from "./canonical.mjs";
 
 const execFile = promisify(execFileCallback);
-const STATE_SCHEMA = "qah.generic-environment-state.v2";
+const STATE_SCHEMA = "qah.generic-environment-state.v3";
 const DEFAULT_STATE_ROOT = join(tmpdir(), "nuanu-qah-environments");
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 32 * 1024;
@@ -204,14 +204,15 @@ function validateGeneratedEntries(entries) {
   return entries;
 }
 
-const FORBIDDEN_ENVIRONMENT_NAME = /^(?:PATH|NODE_OPTIONS|NODE_PATH|LD_PRELOAD|PYTHONPATH|RUBYOPT|PERL5OPT|BASH_ENV|ENV|IFS|SHELLOPTS)$|^(?:DYLD_|CODEX_|NUANU_|OPENAI_|QAH_)/;
-const CREDENTIAL_ENVIRONMENT_NAME = /(?:SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTHORIZATION|API_?KEY|PRIVATE_?KEY)/;
+const FORBIDDEN_ENVIRONMENT_NAME = /^(?:PATH|NODE_OPTIONS|NODE_PATH|LD_PRELOAD|LD_AUDIT|LD_LIBRARY_PATH|PYTHONPATH|RUBYOPT|PERL5OPT|BASH_ENV|ENV|IFS|SHELLOPTS|GITHUB_PAT)$|^(?:DYLD_|CODEX_|NUANU_|OPENAI_|QAH_)/;
+const CREDENTIAL_ENVIRONMENT_NAME = /(?:SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTHORIZATION|API_?KEY|PRIVATE_?KEY|(?:^|_)PAT(?:_|$))/;
 
 function validateAdapterEnvironment(managed, environment) {
   if (!environment || typeof environment !== "object" || Array.isArray(environment)) throw new Error("adapter environment must be an object");
   const allowed = new Set(managed?.environment_allowlist ?? []);
   for (const name of allowed) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(name)) throw new Error("adapter environment allowlist contains an invalid name");
+    if (!name.startsWith(managed.environment_prefix)) throw new Error(`adapter environment name ${name} is outside the project namespace ${managed.environment_prefix}`);
     if (FORBIDDEN_ENVIRONMENT_NAME.test(name) || CREDENTIAL_ENVIRONMENT_NAME.test(name)) throw new Error(`adapter environment name ${name} is forbidden`);
   }
   for (const [name, value] of Object.entries(environment)) {
@@ -222,13 +223,21 @@ function validateAdapterEnvironment(managed, environment) {
   return environment;
 }
 
-function validateManagedDeclaration(managed) {
+function expectedEnvironmentPrefix(profile) {
+  return `${profile.project_key.toUpperCase().replace(/-/g, "_")}_`;
+}
+
+function validateManagedDeclaration(managed, profile) {
   requireId(managed.adapter_id, "adapter_id");
   requireId(managed.adapter_version, "adapter_version");
   if (!DIGEST_PATTERN.test(managed.adapter_digest ?? "")) throw new Error("adapter_digest must be an exact sha256 digest");
   canonicalJson(managed.configuration ?? {});
   canonicalJson(managed.runtime_identity ?? {});
+  if (managed.environment_prefix !== expectedEnvironmentPrefix(profile)) throw new Error("adapter environment_prefix must be the exact project namespace");
   if (!Array.isArray(managed.environment_allowlist) || managed.environment_allowlist.some((name) => typeof name !== "string")) throw new Error("adapter environment_allowlist must be a closed string array");
+  if (new Set(managed.environment_allowlist).size !== managed.environment_allowlist.length) throw new Error("adapter environment_allowlist must contain unique names");
+  validateAdapterEnvironment(managed, {});
+  if (typeof managed.inspectRuntime !== "function") throw new Error("managed adapter requires a read-only inspectRuntime contract");
 }
 
 function requestDigest({ input, fence, repositoryOrigin, root }) {
@@ -253,8 +262,53 @@ function requestDigest({ input, fence, repositoryOrigin, root }) {
       content_hash: input.contentHash ?? null,
       command: input.profile?.environment?.prepare_command,
     },
+    environment_prefix: managed.environment_prefix ?? null,
     environment_allowlist: managed.environment_allowlist ?? [],
   }));
+}
+
+function normalizedRuntimeContract(rawRuntime, state, managed) {
+  if (!rawRuntime || typeof rawRuntime !== "object" || Array.isArray(rawRuntime)) throw new Error("actual runtime contract must be an object");
+  if (!Array.isArray(rawRuntime.command) || rawRuntime.command.length === 0 || rawRuntime.command.some((part) => typeof part !== "string" || part.length === 0 || /[\0\r\n]/.test(part))) {
+    throw new Error("actual runtime command must be a safe non-empty argv array");
+  }
+  let baseUrl;
+  try { baseUrl = new URL(rawRuntime.base_url); } catch { throw new Error("actual runtime base_url must be absolute"); }
+  if (!["http:", "https:"].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password || baseUrl.hash) throw new Error("actual runtime base_url must be credential-free HTTP or HTTPS");
+  if (!DIGEST_PATTERN.test(rawRuntime.content_hash ?? "")) throw new Error("actual runtime content_hash must be an exact sha256 digest");
+  const environment = validateAdapterEnvironment(managed, rawRuntime.environment ?? {});
+  const identityEnvironment = validateAdapterEnvironment(managed, rawRuntime.environment_for_identity?.(state) ?? rawRuntime.identity_environment ?? {});
+  for (const name of Object.keys(identityEnvironment)) if (Object.hasOwn(environment, name)) throw new Error(`actual runtime environment duplicates ${name} across static and identity channels`);
+  const stateFields = rawRuntime.state_fields ?? {};
+  if (!stateFields || typeof stateFields !== "object" || Array.isArray(stateFields)) throw new Error("actual runtime state_fields must be an object");
+  canonicalJson(stateFields);
+  const configuration = rawRuntime.configuration ?? managed?.configuration ?? {};
+  canonicalJson(configuration);
+  return {
+    command: [...rawRuntime.command],
+    base_url: baseUrl.href.replace(/\/$/, ""),
+    content_hash: rawRuntime.content_hash,
+    environment: { ...environment },
+    identity_environment: { ...identityEnvironment },
+    allowed_generated_entries: [...validateGeneratedEntries(rawRuntime.allowed_generated_entries ?? [])],
+    state_fields: structuredClone(stateFields),
+    configuration: structuredClone(configuration),
+  };
+}
+
+function runtimeContractDigest(contract) {
+  return sha256(canonicalJson(contract));
+}
+
+function actualRequestDigest(declaredRequestDigest, runtimeContract) {
+  return sha256(canonicalJson({ declared_request_digest: declaredRequestDigest, actual_runtime_contract: runtimeContract }));
+}
+
+async function inspectRuntimeContract(input, state) {
+  const rawRuntime = input.managed
+    ? await input.managed.inspectRuntime({ input, checkout: state.checkout, repositoryOrigin: state.repository_origin, commit: state.commit, fence: state.fence, state: structuredClone(state) })
+    : await defaultPrepareCheckout({ input, checkout: state.checkout });
+  return normalizedRuntimeContract(rawRuntime, state, input.managed ?? { environment_prefix: "", environment_allowlist: [] });
 }
 
 function failureReceipt(fence, namespace, reason) {
@@ -416,11 +470,21 @@ async function waitForIdentity(state, input, deps) {
 
 function validateState(state, expected) {
   const phase = state?.phase;
-  const started = phase === "STARTED" || phase === "READY";
-  if (state?.schema !== STATE_SCHEMA || !["PREPARING", "STARTED", "READY"].includes(phase) || state.state_root !== expected.root || state.checkout !== expected.paths.checkout || state.state_file !== expected.paths.stateFile || state.pid_file !== expected.paths.pidFile || !/^[a-f0-9]{64}$/.test(state.target_namespace) || !NONCE_PATTERN.test(state.instance_nonce) || typeof state.owner_token !== "string" || state.owner_token.length < 16 || !isAbsolute(state.executable_identity) || !isAbsolute(state.executable_realpath) || !isAbsolute(state.entrypoint_identity) || !isAbsolute(state.entrypoint_realpath) || (started && (!Number.isSafeInteger(state.pid) || state.pid <= 1 || typeof state.process_start_token !== "string" || state.process_start_token.length === 0))) {
+  const started = phase === "STARTED" || phase === "READY" || phase === "RECOVERED_STOPPED";
+  if (state?.schema !== STATE_SCHEMA || !["PREPARING", "STARTED", "READY", "RECOVERED_STOPPED"].includes(phase) || state.state_root !== expected.root || state.checkout !== expected.paths.checkout || state.state_file !== expected.paths.stateFile || state.pid_file !== expected.paths.pidFile || !/^[a-f0-9]{64}$/.test(state.target_namespace) || !NONCE_PATTERN.test(state.instance_nonce) || typeof state.owner_token !== "string" || state.owner_token.length < 16 || !DIGEST_PATTERN.test(state.declared_request_digest) || !DIGEST_PATTERN.test(state.request_digest) || !DIGEST_PATTERN.test(state.runtime_contract_digest) || !state.runtime_contract || typeof state.runtime_contract !== "object" || !isAbsolute(state.executable_identity) || !isAbsolute(state.executable_realpath) || !isAbsolute(state.entrypoint_identity) || !isAbsolute(state.entrypoint_realpath) || (started && (!Number.isSafeInteger(state.pid) || state.pid <= 1 || typeof state.process_start_token !== "string" || state.process_start_token.length === 0))) {
     throw new Error("environment ownership state is malformed");
   }
   if (canonicalJson(state.fence) !== canonicalJson(expected.fence) || state.repository_origin !== expected.repositoryOrigin) throw new Error("environment ownership tuple does not match the requested fence, repository, and state root");
+  if (runtimeContractDigest(state.runtime_contract) !== state.runtime_contract_digest
+    || actualRequestDigest(state.declared_request_digest, state.runtime_contract) !== state.request_digest
+    || state.runtime_contract.content_hash !== state.content_hash
+    || state.runtime_contract.base_url !== state.base_url
+    || canonicalJson(state.runtime_contract.allowed_generated_entries) !== canonicalJson(state.allowed_generated_entries)) {
+    throw new Error("environment actual runtime contract does not match ownership state");
+  }
+  for (const [name, value] of Object.entries(state.runtime_contract.state_fields ?? {})) {
+    if (canonicalJson(state[name]) !== canonicalJson(value)) throw new Error(`environment runtime state field ${name} does not match ownership state`);
+  }
   return state;
 }
 
@@ -463,10 +527,9 @@ async function defaultPrepareCheckout({ input, checkout }) {
   return { command: input.profile.environment.prepare_command, base_url: input.baseUrl, content_hash: input.contentHash, environment: {} };
 }
 
-async function startManaged(state, runtime, deps) {
+async function startManaged(state, runtime, managed, deps) {
   const args = [...runtime.command.slice(1), ...ownershipArguments(state)];
-  const identityEnvironment = runtime.environment_for_identity?.(state) ?? {};
-  const adapterEnvironment = validateAdapterEnvironment(runtime.managed_declaration, { ...runtime.environment, ...identityEnvironment });
+  const adapterEnvironment = validateAdapterEnvironment(managed, { ...runtime.environment, ...runtime.identity_environment });
   const child = deps.spawn(runtime.command[0], args, {
     cwd: state.checkout,
     env: minimalEnvironment(adapterEnvironment),
@@ -505,7 +568,7 @@ async function normalizedInput(input) {
   if (!input?.profile?.environment || !input.profile.repository) throw new Error("validated profile is required");
   const strategy = input.profile.environment.strategy;
   if (!["none", "managed_command"].includes(strategy)) throw new Error("unsupported environment strategy");
-  if (strategy === "managed_command" && input.managed) validateManagedDeclaration(input.managed);
+  if (strategy === "managed_command" && input.managed) validateManagedDeclaration(input.managed, input.profile);
   const fence = fenceFrom(input);
   const namespace = targetNamespace(input);
   const root = stateRoot(input.stateRoot);
@@ -530,7 +593,7 @@ export async function prepareEnvironment(input) {
   const { strategy, fence, namespace, root, paths, repositoryOrigin, commit, timeoutMs, maxOutputBytes } = normalized;
   if (strategy === "none") return { environment_status: "NOT_REQUIRED", ...fence, target_namespace: namespace };
   const deps = dependencies(input);
-  const digest = requestDigest({ input: { ...input, commit }, fence, repositoryOrigin, root });
+  const declaredDigest = requestDigest({ input: { ...input, commit }, fence, repositoryOrigin, root });
   await mkdir(root, { recursive: true, mode: 0o700 });
   try {
     return await withLock(paths, async () => {
@@ -540,13 +603,44 @@ export async function prepareEnvironment(input) {
           const quarantinePath = await quarantine(paths, deps);
           throw new Error(`RECOVERY_REQUIRED: malformed ownership state was quarantined at ${quarantinePath}: ${errorMessage(error)}`);
         }
-        if (state.request_digest !== digest) throw new Error("attempt fence conflicts with a different request body");
+        if (state.declared_request_digest !== declaredDigest) throw new Error("attempt fence conflicts with a different request body");
+        if (state.phase === "STARTED") {
+          if (!await exists(paths.pidFile) || (await readFile(paths.pidFile, "utf8")).trim() !== String(state.pid)) {
+            const quarantinePath = await quarantine(paths, deps);
+            throw new Error(`RECOVERY_REQUIRED: STARTED PID file is missing or mismatched; state was quarantined at ${quarantinePath} without a signal`);
+          }
+          const ownership = await processOwnership(state, deps);
+          if (ownership === "foreign") {
+            if (input.quarantineRecovery === false) throw new Error("RECOVERY_REQUIRED: STARTED PID ownership is foreign or uncertain; refusing to signal it");
+            const quarantinePath = await quarantine(paths, deps);
+            throw new Error(`RECOVERY_REQUIRED: STARTED PID ownership is foreign or uncertain; state was quarantined at ${quarantinePath} without a signal`);
+          }
+          const stopped = ownership === "absent" ? "absent" : await stopOwned(state, deps);
+          if (stopped === "uncertain") {
+            const quarantinePath = await quarantine(paths, deps);
+            throw new Error(`RECOVERY_REQUIRED: exact-owned STARTED process could not be reconciled; state was quarantined at ${quarantinePath}`);
+          }
+          state = { ...state, phase: "RECOVERED_STOPPED", recovery_status: stopped === "stopped" ? "STOPPED" : "ABSENT" };
+          await writeAtomic(paths.stateFile, `${JSON.stringify(state, null, 2)}\n`, deps);
+          throw new Error(`RECOVERY_REQUIRED: exact-owned STARTED environment was safely ${stopped === "stopped" ? "stopped" : "reconciled as absent"}; cleanup is required`);
+        }
+        if (state.phase === "RECOVERED_STOPPED") {
+          throw new Error("RECOVERY_REQUIRED: recovered environment remains visible until cleanup");
+        }
         if (state.phase !== "READY") {
           const quarantinePath = await quarantine(paths, deps);
           throw new Error(`RECOVERY_REQUIRED: ${state.phase} environment attempt is not replayable and was quarantined at ${quarantinePath}`);
         }
+        const inspectedRuntime = await inspectRuntimeContract(input, state);
+        const inspectedRuntimeDigest = runtimeContractDigest(inspectedRuntime);
+        const inspectedRequestDigest = actualRequestDigest(declaredDigest, inspectedRuntime);
+        if (canonicalJson(inspectedRuntime) !== canonicalJson(state.runtime_contract)
+          || inspectedRuntimeDigest !== state.runtime_contract_digest
+          || inspectedRequestDigest !== state.request_digest) {
+          throw new Error("actual runtime identity contract conflicts with the READY ownership state");
+        }
         if (!validReadyReceipt(state.receipt, state)) throw new Error("instance identity receipt is invalid; recovery is required before replay");
-        if ((await readFile(paths.pidFile, "utf8")).trim() !== String(state.pid)) throw new Error("PID file does not match ownership state");
+        if (!await exists(paths.pidFile) || (await readFile(paths.pidFile, "utf8")).trim() !== String(state.pid)) throw new Error("PID file does not match ownership state");
         const ownership = await processOwnership(state, deps);
         if (ownership !== "owned") throw new Error(ownership === "foreign" ? "instance identity ownership failed: foreign PID prevents safe idempotent replay" : "owned process is absent; recovery is required");
         await verifyCheckout({ deps, checkout: paths.checkout, commit, timeoutMs, maxOutputBytes, allowedGeneratedEntries: state.allowed_generated_entries });
@@ -559,25 +653,12 @@ export async function prepareEnvironment(input) {
       try {
         await cloneExactCommit({ deps, repositoryOrigin, commit, checkout: paths.checkout, timeoutMs, maxOutputBytes });
         const prepareCheckout = input.managed?.prepareCheckout ?? defaultPrepareCheckout;
-        let runtime = await prepareCheckout({ input, checkout: paths.checkout, repositoryOrigin, commit, fence, timeout_ms: timeoutMs, max_output_bytes: maxOutputBytes });
-        if (!runtime || !DIGEST_PATTERN.test(runtime.content_hash) || typeof runtime.base_url !== "string") throw new Error("managed adapter returned an invalid runtime identity");
-        const allowedGeneratedEntries = validateGeneratedEntries(runtime.allowed_generated_entries ?? []);
-        await verifyCheckout({ deps, checkout: paths.checkout, commit, timeoutMs, maxOutputBytes, allowedGeneratedEntries });
-        runtime = { ...runtime, allowed_generated_entries: allowedGeneratedEntries, managed_declaration: input.managed ?? { environment_allowlist: [] } };
-        const baseUrl = new URL(runtime.base_url);
-        if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") throw new Error("managed base URL must use HTTP or HTTPS");
-        const { executableIdentity, executableRealpath, entrypointIdentity, entrypointRealpath } = await resolveExecutable(runtime.command);
         const instanceNonce = deps.randomUUID();
         const ownerToken = deps.randomUUID();
-        const stateFields = runtime.state_fields ?? {};
-        if (!stateFields || typeof stateFields !== "object" || Array.isArray(stateFields)) throw new Error("managed adapter state fields must be an object");
-        const protectedStateFields = new Set(["schema", "phase", "fence", "request_digest", "repository_origin", "commit", "state_root", "checkout", "state_file", "target_namespace", "pid_file", "executable_identity", "executable_realpath", "entrypoint_identity", "entrypoint_realpath", "process_start_token", "instance_nonce", "owner_token", "content_hash", "base_url", "health_path", "timeout_ms", "max_output_bytes", "allowed_generated_entries", "pid", "receipt"]);
-        if (Object.keys(stateFields).some((key) => protectedStateFields.has(key))) throw new Error("managed adapter attempted to override generic ownership state");
-        state = {
+        const provisionalState = {
           schema: STATE_SCHEMA,
           phase: "PREPARING",
           fence,
-          request_digest: digest,
           repository_origin: repositoryOrigin,
           commit,
           state_root: root,
@@ -585,22 +666,40 @@ export async function prepareEnvironment(input) {
           state_file: paths.stateFile,
           target_namespace: namespace,
           pid_file: paths.pidFile,
+          instance_nonce: instanceNonce,
+          owner_token: ownerToken,
+          health_path: input.profile.environment.health_path,
+          timeout_ms: timeoutMs,
+          max_output_bytes: maxOutputBytes,
+        };
+        const rawRuntime = await prepareCheckout({ input, checkout: paths.checkout, repositoryOrigin, commit, fence, timeout_ms: timeoutMs, max_output_bytes: maxOutputBytes });
+        const managedDeclaration = input.managed ?? { environment_prefix: "", environment_allowlist: [], configuration: {} };
+        const runtime = normalizedRuntimeContract(rawRuntime, provisionalState, managedDeclaration);
+        const inspectedRuntime = await inspectRuntimeContract(input, { ...provisionalState, ...runtime.state_fields });
+        if (canonicalJson(runtime) !== canonicalJson(inspectedRuntime)) throw new Error("actual runtime contract is not reproducible by read-only inspection");
+        await verifyCheckout({ deps, checkout: paths.checkout, commit, timeoutMs, maxOutputBytes, allowedGeneratedEntries: runtime.allowed_generated_entries });
+        const { executableIdentity, executableRealpath, entrypointIdentity, entrypointRealpath } = await resolveExecutable(runtime.command);
+        const stateFields = runtime.state_fields;
+        const protectedStateFields = new Set(["schema", "phase", "fence", "declared_request_digest", "request_digest", "runtime_contract_digest", "runtime_contract", "repository_origin", "commit", "state_root", "checkout", "state_file", "target_namespace", "pid_file", "executable_identity", "executable_realpath", "entrypoint_identity", "entrypoint_realpath", "process_start_token", "instance_nonce", "owner_token", "content_hash", "base_url", "health_path", "timeout_ms", "max_output_bytes", "allowed_generated_entries", "pid", "receipt", "recovery_status"]);
+        if (Object.keys(stateFields).some((key) => protectedStateFields.has(key))) throw new Error("managed adapter attempted to override generic ownership state");
+        const runtimeDigest = runtimeContractDigest(runtime);
+        state = {
+          ...provisionalState,
+          declared_request_digest: declaredDigest,
+          request_digest: actualRequestDigest(declaredDigest, runtime),
+          runtime_contract_digest: runtimeDigest,
+          runtime_contract: runtime,
           executable_identity: executableIdentity,
           executable_realpath: executableRealpath,
           entrypoint_identity: entrypointIdentity,
           entrypoint_realpath: entrypointRealpath,
-          instance_nonce: instanceNonce,
-          owner_token: ownerToken,
           content_hash: runtime.content_hash,
-          base_url: baseUrl.href.replace(/\/$/, ""),
-          health_path: input.profile.environment.health_path,
-          timeout_ms: timeoutMs,
-          max_output_bytes: maxOutputBytes,
-          allowed_generated_entries: allowedGeneratedEntries,
+          base_url: runtime.base_url,
+          allowed_generated_entries: runtime.allowed_generated_entries,
           ...stateFields,
         };
         await writeAtomic(paths.stateFile, `${JSON.stringify(state, null, 2)}\n`, deps);
-        const { pid, processStartToken } = await startManaged(state, runtime, deps);
+        const { pid, processStartToken } = await startManaged(state, runtime, managedDeclaration, deps);
         state = { ...state, phase: "STARTED", pid, process_start_token: processStartToken };
         await writeAtomic(paths.stateFile, `${JSON.stringify(state, null, 2)}\n`, deps);
         await writeAtomic(paths.pidFile, `${pid}\n`, deps);
@@ -664,11 +763,18 @@ export async function cleanupEnvironment(input) {
       try { state = await readState(paths, { root, paths, fence, repositoryOrigin }); } catch (error) {
         return recoveryReceipt(input, paths, deps, fence, namespace, error);
       }
-      if (state.phase !== "READY" || !validReadyReceipt(state.receipt, state)) {
+      if (state.phase === "RECOVERED_STOPPED") {
+        await rm(paths.environmentDirectory, { recursive: true, force: true });
+        return cleanupReceipt(fence, namespace, "STOPPED");
+      }
+      if (state.phase === "PREPARING") {
         return recoveryReceipt(input, paths, deps, fence, namespace, `${state.phase} environment attempt is not safe for automatic cleanup`);
       }
       if (!(await exists(paths.pidFile)) || (await readFile(paths.pidFile, "utf8")).trim() !== String(state.pid)) {
         return recoveryReceipt(input, paths, deps, fence, namespace, "PID file does not match ownership state");
+      }
+      if (state.phase === "READY" && !validReadyReceipt(state.receipt, state)) {
+        return recoveryReceipt(input, paths, deps, fence, namespace, "READY environment receipt is invalid");
       }
       const stopped = await stopOwned(state, deps);
       if (stopped === "uncertain") {
