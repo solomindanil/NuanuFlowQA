@@ -5,6 +5,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /^[a-z][a-z0-9-]{0,63}$/;
 const ARTIFACT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const ARTIFACT_REF_KEYS = ["artifact_id", "version_id", "kind", "role", "name", "media_type"];
 const RAW_CONTEXT_KEYS = ["source_artifact", "issue_uuid", "project_uuid", "project_key", "repository_origin", "commit", "content_hash", "profile_digest", "changed_files", "labels", "acceptance_capabilities", "wiki_artifacts"];
 const RESOLVED_CONTEXT_KEYS = ["schema_version", "project_key", "commit", "profile_digest", "environment_status", ...RAW_CONTEXT_KEYS, "artifact_slot"];
 
@@ -56,10 +57,10 @@ function changedFiles(value) {
 }
 
 function sourceArtifact(value) {
-  exactKeys(value, ["id", "version"]);
-  if (typeof value.id !== "string" || !ARTIFACT_ID.test(value.id)) throw new Error("source_artifact.id must be a bounded identifier");
-  if (!Number.isSafeInteger(value.version) || value.version < 1) throw new Error("source_artifact.version must be a positive integer");
-  return { id: value.id, version: value.version };
+  try { exactKeys(value, ARTIFACT_REF_KEYS); } catch (error) { throw new Error(`source_artifact ${error.message}`); }
+  if (!UUID.test(value.artifact_id) || !UUID.test(value.version_id)) throw new Error("source_artifact must pin UUID artifact_id and version_id");
+  if (value.kind !== "flow_item" || value.role !== "source" || !ARTIFACT_ID.test(value.name) || value.media_type !== "application/json") throw new Error("source_artifact must be a Nuanu Flow-item source reference");
+  return { ...value };
 }
 
 function wikiArtifacts(value) {

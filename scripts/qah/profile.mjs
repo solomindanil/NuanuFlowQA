@@ -17,6 +17,19 @@ function assertSafeYaml(node) {
   } else if (isSeq(node)) for (const item of node.items) assertSafeYaml(item);
 }
 
+export function parseProfileBytes(source) {
+  const text = Buffer.isBuffer(source) || source instanceof Uint8Array
+    ? new TextDecoder("utf-8", { fatal: true }).decode(source)
+    : source;
+  if (typeof text !== "string") throw new Error("profile source must be UTF-8 bytes or text");
+  const documents = YAML.parseAllDocuments(text, { schema: "core", uniqueKeys: true, prettyErrors: false, merge: false });
+  if (documents.length !== 1) throw new Error("YAML profile must contain exactly one document");
+  const [document] = documents;
+  if (document.errors.length > 0 || document.warnings.length > 0) throw new Error(`YAML profile is invalid: ${(document.errors[0] ?? document.warnings[0]).message}`);
+  assertSafeYaml(document.contents);
+  return validateProfile(document.toJS({ maxAliasCount: 0 }));
+}
+
 export async function loadProfile(path, expectedCommit) {
   if (typeof expectedCommit !== "string" || !/^[a-f0-9]{40}$/.test(expectedCommit)) throw new Error("expectedCommit must be a lowercase 40-character Git SHA");
   const requestedPath = await realpath(resolve(path));
@@ -37,10 +50,5 @@ export async function loadProfile(path, expectedCommit) {
   } catch {
     throw new Error("profile must exist in the requested Git commit");
   }
-  const documents = YAML.parseAllDocuments(source, { schema: "core", uniqueKeys: true, prettyErrors: false, merge: false });
-  if (documents.length !== 1) throw new Error("YAML profile must contain exactly one document");
-  const [document] = documents;
-  if (document.errors.length > 0 || document.warnings.length > 0) throw new Error(`YAML profile is invalid: ${(document.errors[0] ?? document.warnings[0]).message}`);
-  assertSafeYaml(document.contents);
-  return validateProfile(document.toJS({ maxAliasCount: 0 }));
+  return parseProfileBytes(source);
 }

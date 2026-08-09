@@ -48,7 +48,7 @@ export function planQaScope(context, rawProfile) {
   validateTestPlan(planArtifact);
   const unsigned = {
     ...planArtifact,
-    source_artifact: { id: context.source_artifact.id, version: context.source_artifact.version },
+    source_artifact: { ...context.source_artifact },
     content_hash: context.content_hash,
     applicability,
     branch_reasons,
