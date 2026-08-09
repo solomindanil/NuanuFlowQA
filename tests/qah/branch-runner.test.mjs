@@ -68,7 +68,7 @@ function plan(rawProfile = profile(), applicability = { code: "REQUIRED", api: "
     source_artifact: {
       artifact_id: "33333333-3333-4333-8333-333333333333",
       version_id: "44444444-4444-4444-8444-444444444444",
-      kind: "flow_item", role: "source", name: "flow-item.json", media_type: "application/json",
+      kind: "flow_item", role: "source",
     },
     content_hash: contentHash,
     applicability,

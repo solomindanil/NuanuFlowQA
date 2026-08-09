@@ -13,6 +13,7 @@ test("normalizes labels and references while retaining only pinned context", asy
   const input = await fixture("ui");
   input.labels = ["Frontend", "ui"];
   const context = resolveContext(input, { allowed_origin: allowedOrigin });
+  assert.deepEqual(Object.keys(context.source_artifact).sort(), ["artifact_id", "kind", "role", "version_id"]);
   assert.deepEqual(context.labels, ["frontend", "ui"]);
   assert.deepEqual(context.wiki_artifacts, [{ id: "wiki-paydemo", version: 3, sha256: `sha256:${"d".repeat(64)}` }]);
   assert.equal("wiki_text" in context, false);

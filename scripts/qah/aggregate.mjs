@@ -13,7 +13,6 @@ const NAMESPACE = /^[a-f0-9]{64}$/;
 const CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const EVIDENCE_KIND = /^[a-z][a-z0-9-]{0,63}$/;
 const CHECKSUM = /^[a-f0-9]{64}$/;
-const ARTIFACT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const FIXED_ARTIFACT_LIMIT = 256 * 1024;
 const MAX_BRANCH_INPUTS = 8;
 const MAX_OBSERVATIONS = 64;
@@ -26,9 +25,9 @@ const EXECUTION_KEYS = ["schema_version", "run_id", "attempt_id", "attempt_names
 const READY_RECEIPT_KEYS = ["environment_status", "run_id", "attempt_id", "environment_id", "target_namespace", "repository_origin", "commit", "content_hash", "instance_nonce", "base_url", "pid_file", "state_file"];
 const NOT_REQUIRED_RECEIPT_KEYS = ["environment_status", "run_id", "attempt_id", "environment_id", "target_namespace"];
 const FAILURE_RECEIPT_KEYS = [...NOT_REQUIRED_RECEIPT_KEYS, "reason"];
-const ARTIFACT_REF_KEYS = ["artifact_id", "version_id", "kind", "role", "name", "media_type"];
-const RESOLVED_ARTIFACT_KEYS = ["workspace_id", "enforced_max_bytes", "byte_length", "artifact", "version", "bytes"];
-const RESOLVED_ARTIFACT_META_KEYS = ["id", "status", "current_version", "kind", "role", "name", "mime_type"];
+const ARTIFACT_REF_KEYS = ["artifact_id", "version_id", "kind", "role"];
+const RESOLVED_ARTIFACT_KEYS = ["workspace_id", "enforced_max_bytes", "byte_length", "artifact", "bytes"];
+const RESOLVED_ARTIFACT_META_KEYS = ["id", "workspace_id", "status", "current_version", "kind", "name", "mime_type", "versions"];
 const RESOLVED_VERSION_KEYS = ["id", "version", "file_asset", "size", "checksum"];
 const COMMIT_PROFILE_KEYS = ["repository_origin", "commit", "path", "byte_length", "enforced_max_bytes", "sha256", "bytes"];
 const ARTIFACT_ROLES = ["branch_payload", "occurrence", "evidence"];
@@ -36,6 +35,14 @@ const CANDIDATE_KEYS = ["schema_version", "run_id", "attempt_id", "attempt_names
 const ENVIRONMENT_IDENTITY_KEYS = ["environment_id", "target_namespace", "repository_origin", "commit", "content_hash", "instance_nonce", "base_url"];
 const SYSTEM_ROLES = new Set(["output", "implementation", "evidence", "source"]);
 const PROFILE_PATH = "qa-harness.yaml";
+export const ARTIFACT_SLOT_POLICY = Object.freeze({
+  source_flow_item: Object.freeze({ kind: "flow_item", role: "source", name: "flow-item.json", media_type: "application/json" }),
+  plan: Object.freeze({ kind: "document", role: "output", name: "test-plan.json", media_type: "application/json" }),
+  profile: Object.freeze({ kind: "document", role: "implementation", name: PROFILE_PATH, media_type: "application/yaml" }),
+  branch_payload: Object.freeze({ kind: "document", role: "output", name: "branch-payload.json", media_type: "application/json" }),
+  occurrence: Object.freeze({ kind: "document", role: "evidence", name: "occurrence.json", media_type: "application/json" }),
+  evidence: Object.freeze({ kind: "document", role: "evidence", name: "evidence.json", media_type: "application/json" }),
+});
 const PASS_CODES = Object.freeze({
   code: new Set(["COMMAND_PASSED"]),
   api: new Set(["API_CONTRACT_VERIFIED", "AMOUNT_REJECTED"]),
@@ -74,33 +81,23 @@ function digestBytes(bytes) {
 function reference(value) {
   return exactKeys(value, ARTIFACT_REF_KEYS)
     && UUID.test(value.artifact_id) && UUID.test(value.version_id)
-    && value.kind === "document" && SYSTEM_ROLES.has(value.role)
-    && ARTIFACT_NAME.test(value.name) && ["application/json", "application/yaml"].includes(value.media_type)
+    && ["document", "flow_item"].includes(value.kind) && SYSTEM_ROLES.has(value.role)
     ? { ...value }
     : null;
 }
 
-function jsonReference(value) {
+function slotReference(value, slot) {
   const ref = reference(value);
-  return ref && ref.media_type === "application/json" && ref.name.endsWith(".json") ? ref : null;
-}
-
-function profileReference(value) {
-  const ref = reference(value);
-  return ref && ref.media_type === "application/yaml" && ref.name === PROFILE_PATH ? ref : null;
+  const policy = ARTIFACT_SLOT_POLICY[slot];
+  return ref && policy && ref.kind === policy.kind && ref.role === policy.role ? ref : null;
 }
 
 function trustedLink(artifact) {
-  return artifact ? { ...artifact.reference, size_bytes: artifact.byte_length, checksum: artifact.checksum } : null;
+  return artifact ? { ...artifact.reference } : null;
 }
 
 function sourceReference(value) {
-  return exactKeys(value, ARTIFACT_REF_KEYS)
-    && UUID.test(value.artifact_id) && UUID.test(value.version_id)
-    && value.kind === "flow_item" && value.role === "source"
-    && ARTIFACT_NAME.test(value.name) && value.media_type === "application/json"
-    ? { ...value }
-    : null;
+  return slotReference(value, "source_flow_item");
 }
 
 function exactHttps(value) {
@@ -140,6 +137,7 @@ function finalizeAggregate(fields, reasonSet) {
     plan_binding: fields.plan_binding ?? null,
     profile_binding: fields.profile_binding ?? null,
     plan_sha256: fields.plan_sha256 ?? null,
+    profile_blob_sha256: fields.profile_blob_sha256 ?? null,
     profile_digest: fields.profile_digest ?? null,
     project_key: fields.project_key ?? null,
     repository_origin: fields.repository_origin ?? null,
@@ -168,30 +166,35 @@ function failureAggregate(code = "INVALID_AGGREGATE_INPUT") {
 
 /**
  * resolveArtifactVersion is the bounded adapter for Nuanu get_artifact plus
- * exact-version download. It must apply max_bytes before downloading and echo
- * that enforced bound with the exact stored Artifact/version readback.
+ * exact-version download. It receives { workspace_id, ref, max_bytes }, must
+ * apply max_bytes before downloading, and returns a normalized get_artifact
+ * readback whose artifact.versions is the API's immutable version collection.
+ * Artifact roles are not API metadata: the four-field ref is checked against
+ * ARTIFACT_SLOT_POLICY before this trusted readback is requested.
  */
-async function resolveArtifact(refValue, context, maximumBytes, parseJson = true) {
-  const ref = reference(refValue);
+export async function resolveArtifactVersionForSlot(refValue, slot, context, maximumBytes, parseJson = true) {
+  const ref = slotReference(refValue, slot);
   if (!ref) throw new PolicyError("INVALID_ARTIFACT_REFERENCE");
   let result;
-  const request = { workspace_id: context.workspaceId, artifact_id: ref.artifact_id, version_id: ref.version_id, max_bytes: maximumBytes };
+  const request = { workspace_id: context.workspaceId, ref, max_bytes: maximumBytes };
   try { result = await context.resolveArtifactVersion(request); } catch { throw new PolicyError("INVALID_TRUSTED_ARTIFACT"); }
   if (!exactKeys(result, RESOLVED_ARTIFACT_KEYS)) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
   if (result.enforced_max_bytes !== maximumBytes) throw new PolicyError("UNATTESTED_ARTIFACT_BOUND");
-  if (!exactKeys(result.artifact, RESOLVED_ARTIFACT_META_KEYS) || !exactKeys(result.version, RESOLVED_VERSION_KEYS)) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
+  if (!exactKeys(result.artifact, RESOLVED_ARTIFACT_META_KEYS) || !Array.isArray(result.artifact.versions) || result.artifact.versions.length < 1 || result.artifact.versions.length > 64) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
+  const version = result.artifact.versions.find((candidate) => candidate?.id === ref.version_id);
+  if (!exactKeys(version, RESOLVED_VERSION_KEYS)) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
+  const policy = ARTIFACT_SLOT_POLICY[slot];
   if (result.workspace_id !== context.workspaceId
-    || result.artifact.id !== ref.artifact_id || result.version.id !== ref.version_id
+    || result.artifact.workspace_id !== context.workspaceId || result.artifact.id !== ref.artifact_id
     || result.artifact.status !== "stored" || !UUID.test(result.artifact.current_version)
-    || result.artifact.kind !== ref.kind || result.artifact.role !== ref.role
-    || result.artifact.name !== ref.name || result.artifact.mime_type !== ref.media_type
-    || !Number.isSafeInteger(result.version.version) || result.version.version < 1
-    || !UUID.test(result.version.file_asset) || !CHECKSUM.test(result.version.checksum)) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
+    || result.artifact.kind !== policy.kind || result.artifact.name !== policy.name || result.artifact.mime_type !== policy.media_type
+    || !Number.isSafeInteger(version.version) || version.version < 1
+    || !UUID.test(version.file_asset) || !CHECKSUM.test(version.checksum)) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
   if (!(Buffer.isBuffer(result.bytes) || result.bytes instanceof Uint8Array)) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
   const byteLength = result.byte_length;
-  if (!Number.isSafeInteger(byteLength) || byteLength < 2 || byteLength > maximumBytes || result.version.size !== byteLength || result.bytes.byteLength !== byteLength) throw new PolicyError("ARTIFACT_SIZE_LIMIT");
+  if (!Number.isSafeInteger(byteLength) || byteLength < 2 || byteLength > maximumBytes || version.size !== byteLength || result.bytes.byteLength !== byteLength) throw new PolicyError("ARTIFACT_SIZE_LIMIT");
   const bytes = Buffer.from(result.bytes.buffer, result.bytes.byteOffset, byteLength);
-  if (createHash("sha256").update(bytes).digest("hex") !== result.version.checksum) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
+  if (createHash("sha256").update(bytes).digest("hex") !== version.checksum) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
   let payload = null;
   if (parseJson) {
     let text;
@@ -199,7 +202,7 @@ async function resolveArtifact(refValue, context, maximumBytes, parseJson = true
     try { payload = JSON.parse(text); } catch { throw new PolicyError("INVALID_TRUSTED_ARTIFACT"); }
     if (canonicalJson(payload) !== text) throw new PolicyError("INVALID_TRUSTED_ARTIFACT");
   }
-  return { reference: ref, checksum: result.version.checksum, payload, bytes, byte_length: byteLength };
+  return { reference: ref, checksum: version.checksum, version_number: version.version, payload, bytes, byte_length: byteLength };
 }
 
 async function resolveCommitProfile(context, repositoryOrigin, commit) {
@@ -336,6 +339,7 @@ function aggregateIdentity(context) {
     plan_artifact: context.planArtifactLink,
     profile_artifact: context.profileArtifactLink,
     plan_sha256: context.plan.plan_sha256,
+    profile_blob_sha256: context.profileBlobSha256,
     profile_digest: context.plan.profile_digest,
     project_key: context.plan.project_key,
     repository_origin: context.repositoryOrigin,
@@ -383,7 +387,7 @@ async function normalizeBranch(branch, entries, context) {
 
   const refs = entry?.artifacts ?? {};
   for (const role of ARTIFACT_ROLES) {
-    const ref = jsonReference(refs[role]);
+    const ref = slotReference(refs[role], role);
     if (!ref) reasons.add("INVALID_ARTIFACT_REFERENCE");
     else {
       const key = `${ref.artifact_id}@${ref.version_id}`;
@@ -392,11 +396,11 @@ async function normalizeBranch(branch, entries, context) {
     }
   }
   let payloadArtifact; let occurrenceArtifact; let evidenceArtifact;
-  try { payloadArtifact = await resolveArtifact(refs.branch_payload, context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
-  try { occurrenceArtifact = await resolveArtifact(refs.occurrence, context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
-  try { evidenceArtifact = await resolveArtifact(refs.evidence, context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+  try { payloadArtifact = await resolveArtifactVersionForSlot(refs.branch_payload, "branch_payload", context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+  try { occurrenceArtifact = await resolveArtifactVersionForSlot(refs.occurrence, "occurrence", context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+  try { evidenceArtifact = await resolveArtifactVersionForSlot(refs.evidence, "evidence", context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
 
-  const evidenceRef = jsonReference(refs.evidence);
+  const evidenceRef = slotReference(refs.evidence, "evidence");
   if (output?.envelope?.item?.key !== `verify_${branch}`
     || typeof output?.envelope?.item?.description !== "string" || output.envelope.item.description.length < 1 || output.envelope.item.description.length > 256 || /[\0\r\n]/.test(output.envelope.item.description)) reasons.add("INVALID_BRANCH_OUTPUT");
   if (!exactKeys(output?.envelope, ["item", "artifact_outputs"])
@@ -473,17 +477,19 @@ async function aggregateUnsafe(input, dependencies) {
   if (!exactInput) globalReasons.add("INVALID_AGGREGATE_INPUT");
   if (typeof dependencies?.resolveArtifactVersion !== "function") return failureAggregate("TRUSTED_ARTIFACT_RESOLVER_REQUIRED");
   if (typeof dependencies?.resolveProfileAtCommit !== "function") return failureAggregate("TRUSTED_PROFILE_RESOLVER_REQUIRED");
-  if (!exactInput && (!profileReference(input?.profile_artifact) || !jsonReference(input?.plan_artifact))) return failureAggregate("INVALID_AGGREGATE_INPUT");
+  if (!exactInput && (!slotReference(input?.profile_artifact, "profile") || !slotReference(input?.plan_artifact, "plan"))) return failureAggregate("INVALID_AGGREGATE_INPUT");
   if (!UUID.test(input?.workspace_id ?? "") || !ID.test(input?.run_id ?? "") || !ID.test(input?.attempt_id ?? "") || !exactHttps(input?.repository_origin)) globalReasons.add("INVALID_AGGREGATE_INPUT");
   if (!Array.isArray(input?.branches) || input.branches.length > MAX_BRANCH_INPUTS) globalReasons.add("INVALID_AGGREGATE_INPUT");
-  if (!profileReference(input?.profile_artifact) || !jsonReference(input?.plan_artifact)) globalReasons.add("INVALID_ARTIFACT_REFERENCE");
+  if (!slotReference(input?.profile_artifact, "profile") || !slotReference(input?.plan_artifact, "plan")) globalReasons.add("INVALID_ARTIFACT_REFERENCE");
   const resolutionContext = { resolveArtifactVersion: dependencies.resolveArtifactVersion, resolveProfileAtCommit: dependencies.resolveProfileAtCommit, workspaceId: input?.workspace_id };
   let profileArtifact; let planArtifact;
-  try { planArtifact = await resolveArtifact(input?.plan_artifact, resolutionContext, FIXED_ARTIFACT_LIMIT); } catch (error) { return failureAggregate(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+  try { planArtifact = await resolveArtifactVersionForSlot(input?.plan_artifact, "plan", resolutionContext, FIXED_ARTIFACT_LIMIT); } catch (error) { return failureAggregate(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
   const trustedPlan = planArtifact.payload;
   validateFullPlan(trustedPlan, globalReasons);
   if (globalReasons.has("INVALID_FULL_PLAN")) return failureAggregate("INVALID_FULL_PLAN");
-  try { profileArtifact = await resolveArtifact(input?.profile_artifact, resolutionContext, FIXED_ARTIFACT_LIMIT, false); } catch (error) { return failureAggregate(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+  if ([input.plan_artifact, input.profile_artifact].some((ref) => ref?.artifact_id === trustedPlan.source_artifact.artifact_id && ref?.version_id === trustedPlan.source_artifact.version_id)) return failureAggregate("REUSED_ARTIFACT_VERSION");
+  try { await resolveArtifactVersionForSlot(trustedPlan.source_artifact, "source_flow_item", resolutionContext, FIXED_ARTIFACT_LIMIT); } catch (error) { return failureAggregate(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+  try { profileArtifact = await resolveArtifactVersionForSlot(input?.profile_artifact, "profile", resolutionContext, FIXED_ARTIFACT_LIMIT, false); } catch (error) { return failureAggregate(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
   let artifactProfile;
   try { artifactProfile = parseProfileBytes(profileArtifact.bytes); } catch { return failureAggregate("INVALID_TRUSTED_PROFILE"); }
   let commitProfile;
@@ -492,7 +498,7 @@ async function aggregateUnsafe(input, dependencies) {
   const maximumBytes = trustedProfile.execution.max_output_bytes;
   if (!profileArtifact.bytes.equals(commitProfile.bytes) || profileArtifact.checksum !== commitProfile.sha256.slice(7) || !same(artifactProfile, trustedProfile)) globalReasons.add("PROFILE_COMMIT_MISMATCH");
   if (!same(input?.plan, trustedPlan)) globalReasons.add("PLAN_MATERIAL_MISMATCH");
-  if (trustedPlan.profile_digest !== commitProfile.sha256 || trustedPlan.profile_digest !== sha256(trustedProfile)) globalReasons.add("PROFILE_DIGEST_MISMATCH");
+  if (trustedPlan.profile_digest !== sha256(trustedProfile)) globalReasons.add("PROFILE_DIGEST_MISMATCH");
   if (trustedPlan.project_key !== trustedProfile.project_key || input.repository_origin !== trustedProfile.repository.allowed_origin) globalReasons.add("PROFILE_POLICY_MISMATCH");
   validateReceipt(input?.environment_receipt, { ...input, plan: trustedPlan }, trustedProfile, globalReasons);
 
@@ -522,6 +528,7 @@ async function aggregateUnsafe(input, dependencies) {
       usedArtifacts,
       planArtifactLink,
       profileArtifactLink,
+      profileBlobSha256: commitProfile.sha256,
     });
     normalizedBranches.push(normalized.record);
     for (const reason of normalized.reasons) globalReasons.add(reason);
@@ -538,6 +545,7 @@ async function aggregateUnsafe(input, dependencies) {
       plan_artifact: planArtifactLink,
       profile_artifact: profileArtifactLink,
       plan_sha256: trustedPlan.plan_sha256,
+      profile_blob_sha256: commitProfile.sha256,
       profile_digest: trustedPlan.profile_digest,
       project_key: trustedPlan.project_key,
       repository_origin: input.repository_origin,
@@ -546,7 +554,8 @@ async function aggregateUnsafe(input, dependencies) {
     },
     profile_binding: {
       artifact: profileArtifactLink,
-      profile_digest: commitProfile.sha256,
+      profile_blob_sha256: commitProfile.sha256,
+      profile_digest: trustedPlan.profile_digest,
       repository_origin: input.repository_origin,
       commit: trustedPlan.commit,
       path: PROFILE_PATH,
@@ -555,6 +564,7 @@ async function aggregateUnsafe(input, dependencies) {
       allowed_origins: [...trustedProfile.safety.allowed_origins],
     },
     plan_sha256: trustedPlan.plan_sha256,
+    profile_blob_sha256: commitProfile.sha256,
     profile_digest: trustedPlan.profile_digest,
     project_key: trustedPlan.project_key,
     repository_origin: input.repository_origin,

@@ -28,7 +28,7 @@ const NONCE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{
 const CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const EVIDENCE_KIND = /^[a-z][a-z0-9-]{0,63}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SOURCE_ARTIFACT_KEYS = ["artifact_id", "version_id", "kind", "role", "name", "media_type"];
+const SOURCE_ARTIFACT_KEYS = ["artifact_id", "version_id", "kind", "role"];
 const MAX_STDIN_BYTES = 65_536;
 const MAX_STATE_BYTES = 1024 * 1024;
 
@@ -62,8 +62,7 @@ function validatePlan(plan, profile) {
   if (plan.project_key !== profile.project_key || plan.profile_digest !== sha256(profile)) throw new Error("test plan identity must match the exact profile");
   exactKeys(plan.source_artifact, SOURCE_ARTIFACT_KEYS, "test plan source artifact");
   if (!UUID.test(plan.source_artifact.artifact_id) || !UUID.test(plan.source_artifact.version_id)
-    || plan.source_artifact.kind !== "flow_item" || plan.source_artifact.role !== "source"
-    || !ID.test(plan.source_artifact.name) || plan.source_artifact.media_type !== "application/json") throw new Error("source artifact reference is invalid");
+    || plan.source_artifact.kind !== "flow_item" || plan.source_artifact.role !== "source") throw new Error("source artifact reference is invalid");
   if (!DIGEST.test(plan.content_hash) || !DIGEST.test(plan.plan_sha256)) throw new Error("test plan digest is invalid");
   const { plan_sha256, ...unsigned } = plan;
   if (sha256(unsigned) !== plan_sha256) throw new Error("test plan digest does not match canonical plan bytes");

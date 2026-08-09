@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { canonicalJson, sha256 } from "./canonical.mjs";
-import { AGGREGATE_REASON_CODES } from "./aggregate.mjs";
+import { AGGREGATE_REASON_CODES, ARTIFACT_SLOT_POLICY, resolveArtifactVersionForSlot } from "./aggregate.mjs";
+import { parseProfileBytes } from "./profile.mjs";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
@@ -8,16 +10,13 @@ const PROJECT_KEY = /^[a-z][a-z0-9-]*$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NONCE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAMESPACE = /^[a-f0-9]{64}$/;
-const CHECKSUM = /^[a-f0-9]{64}$/;
-const ARTIFACT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const ROUTES = new Set(["READY_FOR_PRODUCTION", "RETURN_TO_IN_PROGRESS"]);
-const AGGREGATE_KEYS = ["schema_version", "workspace_id", "source_artifact", "plan_artifact", "profile_artifact", "plan_binding", "profile_binding", "plan_sha256", "profile_digest", "project_key", "repository_origin", "commit", "content_hash", "environment_id", "target_namespace", "instance_nonce", "base_url", "run_id", "attempt_id", "confidence_threshold", "max_evidence_bytes", "environment_status", "expected_branches", "branches", "invariants_passed", "reason_codes", "aggregate_sha256"];
+const AGGREGATE_KEYS = ["schema_version", "workspace_id", "source_artifact", "plan_artifact", "profile_artifact", "plan_binding", "profile_binding", "plan_sha256", "profile_blob_sha256", "profile_digest", "project_key", "repository_origin", "commit", "content_hash", "environment_id", "target_namespace", "instance_nonce", "base_url", "run_id", "attempt_id", "confidence_threshold", "max_evidence_bytes", "environment_status", "expected_branches", "branches", "invariants_passed", "reason_codes", "aggregate_sha256"];
 const BRANCH_KEYS = ["branch", "validity", "applicability", "product_result", "environment_status", "evidence_status", "confidence", "code", "confirmed_findings", "identity", "artifacts", "reason_codes"];
-const ARTIFACT_REF_KEYS = ["artifact_id", "version_id", "kind", "role", "name", "media_type"];
-const MATERIAL_REF_KEYS = [...ARTIFACT_REF_KEYS, "size_bytes", "checksum"];
-const PLAN_BINDING_KEYS = ["source_artifact", "plan_artifact", "profile_artifact", "plan_sha256", "profile_digest", "project_key", "repository_origin", "commit", "content_hash"];
-const PROFILE_BINDING_KEYS = ["artifact", "profile_digest", "repository_origin", "commit", "path", "confidence_threshold", "max_evidence_bytes", "allowed_origins"];
-const IDENTITY_KEYS = ["source_artifact", "plan_artifact", "profile_artifact", "plan_sha256", "profile_digest", "project_key", "repository_origin", "commit", "content_hash", "environment_id", "target_namespace", "instance_nonce", "run_id", "attempt_id"];
+const ARTIFACT_REF_KEYS = ["artifact_id", "version_id", "kind", "role"];
+const PLAN_BINDING_KEYS = ["source_artifact", "plan_artifact", "profile_artifact", "plan_sha256", "profile_blob_sha256", "profile_digest", "project_key", "repository_origin", "commit", "content_hash"];
+const PROFILE_BINDING_KEYS = ["artifact", "profile_blob_sha256", "profile_digest", "repository_origin", "commit", "path", "confidence_threshold", "max_evidence_bytes", "allowed_origins"];
+const IDENTITY_KEYS = ["source_artifact", "plan_artifact", "profile_artifact", "plan_sha256", "profile_blob_sha256", "profile_digest", "project_key", "repository_origin", "commit", "content_hash", "environment_id", "target_namespace", "instance_nonce", "run_id", "attempt_id"];
 const SYSTEM_ROLES = new Set(["output", "implementation", "evidence", "source"]);
 const EXPLANATION_CODES = new Set(["EVIDENCE_VERIFIED", "EVIDENCE_INCOMPLETE", "POLICY_BLOCKED"]);
 const PASS_CODES = Object.freeze({
@@ -44,26 +43,12 @@ function exactHttps(value) {
 
 function artifactRef(value) {
   return exactKeys(value, ARTIFACT_REF_KEYS) && UUID.test(value.artifact_id) && UUID.test(value.version_id)
-    && value.kind === "document" && SYSTEM_ROLES.has(value.role) && ARTIFACT_NAME.test(value.name) && ["application/json", "application/yaml"].includes(value.media_type);
+    && ["document", "flow_item"].includes(value.kind) && SYSTEM_ROLES.has(value.role);
 }
 
-function jsonMaterialRef(value) {
-  return materialRef(value) && value.media_type === "application/json" && value.name.endsWith(".json");
-}
-
-function profileMaterialRef(value) {
-  return materialRef(value) && value.media_type === "application/yaml" && value.name === "qa-harness.yaml";
-}
-
-function sourceRef(value) {
-  return exactKeys(value, ARTIFACT_REF_KEYS) && UUID.test(value.artifact_id) && UUID.test(value.version_id)
-    && value.kind === "flow_item" && value.role === "source" && ARTIFACT_NAME.test(value.name) && value.media_type === "application/json";
-}
-
-function materialRef(value) {
-  return exactKeys(value, MATERIAL_REF_KEYS)
-    && artifactRef(Object.fromEntries(ARTIFACT_REF_KEYS.map((key) => [key, value[key]])))
-    && Number.isSafeInteger(value.size_bytes) && value.size_bytes > 0 && CHECKSUM.test(value.checksum);
+function slotRef(value, slot) {
+  const policy = ARTIFACT_SLOT_POLICY[slot];
+  return artifactRef(value) && value.kind === policy?.kind && value.role === policy?.role;
 }
 
 function same(left, right) {
@@ -104,15 +89,15 @@ function validateAggregate(aggregate) {
     if (sha256(unsigned) !== claimed) reasons.add("INVALID_AGGREGATE_DIGEST");
   }
   if (!UUID.test(aggregate?.workspace_id ?? "")
-    || !sourceRef(aggregate?.source_artifact)
-    || !jsonMaterialRef(aggregate?.plan_artifact)
-    || !profileMaterialRef(aggregate?.profile_artifact)
+    || !slotRef(aggregate?.source_artifact, "source_flow_item")
+    || !slotRef(aggregate?.plan_artifact, "plan")
+    || !slotRef(aggregate?.profile_artifact, "profile")
     || identityKey(aggregate?.source_artifact) === identityKey(aggregate?.plan_artifact)
     || identityKey(aggregate?.source_artifact) === identityKey(aggregate?.profile_artifact)
     || identityKey(aggregate?.plan_artifact) === identityKey(aggregate?.profile_artifact)
     || !DIGEST.test(aggregate?.plan_sha256 ?? "")
+    || !DIGEST.test(aggregate?.profile_blob_sha256 ?? "")
     || !DIGEST.test(aggregate?.profile_digest ?? "")
-    || aggregate?.profile_digest !== `sha256:${aggregate?.profile_artifact?.checksum}`
     || !PROJECT_KEY.test(aggregate?.project_key ?? "")
     || !exactHttps(aggregate?.repository_origin)
     || !COMMIT.test(aggregate?.commit ?? "")
@@ -132,6 +117,7 @@ function validateAggregate(aggregate) {
     plan_artifact: aggregate?.plan_artifact,
     profile_artifact: aggregate?.profile_artifact,
     plan_sha256: aggregate?.plan_sha256,
+    profile_blob_sha256: aggregate?.profile_blob_sha256,
     profile_digest: aggregate?.profile_digest,
     project_key: aggregate?.project_key,
     repository_origin: aggregate?.repository_origin,
@@ -141,7 +127,7 @@ function validateAggregate(aggregate) {
   if (!exactKeys(aggregate?.plan_binding, PLAN_BINDING_KEYS) || !same(aggregate.plan_binding, expectedPlanBinding)) reasons.add("INVALID_AGGREGATE_IDENTITY");
   const profileBinding = aggregate?.profile_binding;
   if (!exactKeys(profileBinding, PROFILE_BINDING_KEYS) || !same(profileBinding?.artifact, aggregate?.profile_artifact)
-    || profileBinding?.profile_digest !== aggregate?.profile_digest || profileBinding?.repository_origin !== aggregate?.repository_origin
+    || profileBinding?.profile_blob_sha256 !== aggregate?.profile_blob_sha256 || profileBinding?.profile_digest !== aggregate?.profile_digest || profileBinding?.repository_origin !== aggregate?.repository_origin
     || profileBinding?.commit !== aggregate?.commit || profileBinding?.path !== "qa-harness.yaml"
     || profileBinding?.confidence_threshold !== aggregate?.confidence_threshold || profileBinding?.max_evidence_bytes !== aggregate?.max_evidence_bytes
     || !Array.isArray(profileBinding?.allowed_origins) || profileBinding.allowed_origins.length < 1 || profileBinding.allowed_origins.length > 16
@@ -153,6 +139,7 @@ function validateAggregate(aggregate) {
   if (!Array.isArray(aggregate?.expected_branches) || canonicalJson(aggregate.expected_branches) !== canonicalJson(expectedBranches)) reasons.add("INVALID_AGGREGATE_SHAPE");
   if (!Array.isArray(aggregate?.branches) || aggregate.branches.length !== 4 || aggregate.branches.some((branch, index) => branch?.branch !== expectedBranches[index])) reasons.add("INVALID_AGGREGATE_SHAPE");
   if (Array.isArray(aggregate?.branches) && aggregate.branches.some((branch) => branch?.environment_status !== (aggregate?.environment_status === "READY" ? "HEALTHY" : "NOT_REQUIRED"))) reasons.add("INVALID_AGGREGATE_POLICY");
+  if (aggregate?.environment_status === "NOT_REQUIRED" && aggregate?.branches?.some((branch) => branch?.applicability === "REQUIRED")) reasons.add("INVALID_AGGREGATE_POLICY");
   const usedArtifacts = new Set();
   for (const topArtifact of [aggregate?.source_artifact, aggregate?.plan_artifact, aggregate?.profile_artifact]) usedArtifacts.add(identityKey(topArtifact));
   const expectedIdentity = {
@@ -160,6 +147,7 @@ function validateAggregate(aggregate) {
     plan_artifact: aggregate?.plan_artifact,
     profile_artifact: aggregate?.profile_artifact,
     plan_sha256: aggregate?.plan_sha256,
+    profile_blob_sha256: aggregate?.profile_blob_sha256,
     profile_digest: aggregate?.profile_digest,
     project_key: aggregate?.project_key,
     repository_origin: aggregate?.repository_origin,
@@ -182,12 +170,11 @@ function validateAggregate(aggregate) {
       || !exactKeys(branch.identity, IDENTITY_KEYS) || !same(branch.identity, expectedIdentity);
     if (branch.applicability === "REQUIRED") {
       invalidPolicy ||= branch.product_result !== "PASS" || !PASS_CODES[branch.branch]?.has(branch.code);
-      if (["api", "ui", "domain"].includes(branch.branch)) invalidPolicy ||= branch.environment_status !== "HEALTHY";
-      else invalidPolicy ||= !["HEALTHY", "NOT_REQUIRED"].includes(branch.environment_status);
+      invalidPolicy ||= branch.environment_status !== "HEALTHY";
     } else invalidPolicy ||= branch.product_result !== "SKIPPED" || branch.code !== "NOT_APPLICABLE" || !["HEALTHY", "NOT_REQUIRED"].includes(branch.environment_status);
     if (!exactKeys(branch.artifacts, ["branch_payload", "occurrence", "evidence"])) invalidPolicy = true;
-    else for (const material of Object.values(branch.artifacts)) {
-      if (!jsonMaterialRef(material)) invalidPolicy = true;
+    else for (const [slot, material] of Object.entries(branch.artifacts)) {
+      if (!slotRef(material, slot)) invalidPolicy = true;
       const key = identityKey(material);
       if (usedArtifacts.has(key)) invalidPolicy = true;
       usedArtifacts.add(key);
@@ -197,6 +184,82 @@ function validateAggregate(aggregate) {
   const localReasons = Array.isArray(aggregate?.reason_codes) ? aggregate.reason_codes : [];
   const expectedInvariant = reasons.size === 0 && localReasons.length === 0 && aggregate?.branches?.every((branch) => branch.validity === "VALID");
   if (aggregate?.invariants_passed !== expectedInvariant) reasons.add("INVALID_AGGREGATE_POLICY");
+  return [...reasons].sort();
+}
+
+function digestBytes(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+async function validateTrustedArtifactBindings(aggregate, dependencies) {
+  const reasons = new Set();
+  if (typeof dependencies?.resolveArtifactVersion !== "function") return ["TRUSTED_ARTIFACT_RESOLVER_REQUIRED"];
+  const context = { workspaceId: aggregate?.workspace_id, resolveArtifactVersion: dependencies.resolveArtifactVersion };
+  const resolved = {};
+  const read = async (key, ref, slot, maximumBytes, parseJson = true) => {
+    try { resolved[key] = await resolveArtifactVersionForSlot(ref, slot, context, maximumBytes, parseJson); }
+    catch (error) { reasons.add(error?.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+  };
+  const fixedLimit = 256 * 1024;
+  const evidenceLimit = Number.isSafeInteger(aggregate?.max_evidence_bytes) && aggregate.max_evidence_bytes > 0 && aggregate.max_evidence_bytes <= 10_485_760
+    ? aggregate.max_evidence_bytes
+    : fixedLimit;
+  await read("source", aggregate?.source_artifact, "source_flow_item", fixedLimit);
+  await read("plan", aggregate?.plan_artifact, "plan", fixedLimit);
+  await read("profile", aggregate?.profile_artifact, "profile", fixedLimit, false);
+  if (resolved.plan) {
+    const plan = resolved.plan.payload;
+    const { plan_sha256: claimed, ...unsigned } = plan ?? {};
+    if (!DIGEST.test(claimed ?? "") || sha256(unsigned) !== claimed || claimed !== aggregate?.plan_sha256
+      || !same(plan?.source_artifact, aggregate?.source_artifact) || plan?.profile_digest !== aggregate?.profile_digest
+      || plan?.project_key !== aggregate?.project_key || plan?.repository_origin !== undefined
+      || plan?.commit !== aggregate?.commit || plan?.content_hash !== aggregate?.content_hash) reasons.add("PLAN_DIGEST_MISMATCH");
+  }
+  if (resolved.profile) {
+    let profile;
+    try { profile = parseProfileBytes(resolved.profile.bytes); } catch { reasons.add("INVALID_TRUSTED_PROFILE"); }
+    if (digestBytes(resolved.profile.bytes) !== aggregate?.profile_blob_sha256) reasons.add("PROFILE_COMMIT_MISMATCH");
+    if (profile && (sha256(profile) !== aggregate?.profile_digest || profile.project_key !== aggregate?.project_key
+      || profile.repository.allowed_origin !== aggregate?.repository_origin
+      || profile.risk.confidence_threshold !== aggregate?.confidence_threshold
+      || profile.execution.max_output_bytes !== aggregate?.max_evidence_bytes
+      || !same(profile.safety.allowed_origins, aggregate?.profile_binding?.allowed_origins))) reasons.add("PROFILE_DIGEST_MISMATCH");
+  }
+  if (Array.isArray(aggregate?.branches)) for (const branch of aggregate.branches.slice(0, 4)) {
+    const materials = {};
+    for (const slot of ["branch_payload", "occurrence", "evidence"]) {
+      try { materials[slot] = await resolveArtifactVersionForSlot(branch?.artifacts?.[slot], slot, context, evidenceLimit); }
+      catch (error) { reasons.add(error?.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+    }
+    const payload = materials.branch_payload?.payload;
+    const result = payload?.branch_result;
+    const execution = payload?.execution_data;
+    if (!payload || payload.schema_version !== "nuanu.qa-materialized-branch-payload.v1"
+      || result?.branch !== branch?.branch || result?.project_key !== aggregate?.project_key || result?.commit !== aggregate?.commit
+      || result?.profile_digest !== aggregate?.profile_digest || result?.applicability !== branch?.applicability
+      || result?.product_result !== branch?.product_result || result?.evidence_status !== branch?.evidence_status
+      || execution?.run_id !== aggregate?.run_id || execution?.attempt_id !== aggregate?.attempt_id
+      || execution?.environment_status !== branch?.environment_status || execution?.confidence !== branch?.confidence
+      || execution?.code !== branch?.code) reasons.add("BRANCH_PAYLOAD_MISMATCH");
+    const evidence = materials.evidence?.payload;
+    if (!evidence || evidence.schema_version !== "nuanu.qa-materialized-evidence.v1"
+      || !same(evidence?.source_artifact, aggregate?.source_artifact) || evidence?.plan_sha256 !== aggregate?.plan_sha256
+      || evidence?.branch !== branch?.branch || evidence?.branch_payload_sha256 !== (materials.branch_payload ? `sha256:${materials.branch_payload.checksum}` : null)
+      || evidence?.confirmed_findings !== branch?.confirmed_findings) reasons.add("EVIDENCE_LINK_MISMATCH");
+    const occurrence = materials.occurrence?.payload;
+    if (!occurrence || occurrence.schema_version !== "nuanu.qa-evidence-occurrence.v1"
+      || !same(occurrence?.source_artifact, aggregate?.source_artifact) || occurrence?.plan_sha256 !== aggregate?.plan_sha256
+      || occurrence?.branch !== branch?.branch || occurrence?.repository_origin !== aggregate?.repository_origin
+      || occurrence?.commit !== aggregate?.commit || occurrence?.content_hash !== aggregate?.content_hash
+      || occurrence?.environment_id !== aggregate?.environment_id || occurrence?.instance_nonce !== aggregate?.instance_nonce
+      || occurrence?.run_id !== aggregate?.run_id || occurrence?.attempt_id !== aggregate?.attempt_id
+      || !same(occurrence?.branch_payload_artifact, branch?.artifacts?.branch_payload)
+      || !same(occurrence?.evidence_artifact, branch?.artifacts?.evidence)) reasons.add("OCCURRENCE_LINK_MISMATCH");
+    if (occurrence) {
+      const { occurrence_key: claimed, ...unsigned } = occurrence;
+      if (!DIGEST.test(claimed ?? "") || sha256(unsigned) !== claimed) reasons.add("OCCURRENCE_KEY_MISMATCH");
+    }
+  }
   return [...reasons].sort();
 }
 
@@ -213,12 +276,13 @@ function decisionFrom(aggregateSha, route, reasonCodes, proposal) {
   return { ...unsigned, decision_sha256: sha256(unsigned) };
 }
 
-export function decideRelease(aggregate, proposal = {}) {
+export async function decideRelease(aggregate, proposal = {}, dependencies = {}) {
   try {
     const validationReasons = validateAggregate(aggregate);
+    const trustedArtifactReasons = await validateTrustedArtifactBindings(aggregate, dependencies);
     const aggregateReasons = Array.isArray(aggregate?.reason_codes) ? aggregate.reason_codes.filter((code) => AGGREGATE_REASON_CODES.includes(code)) : [];
-    const reasonCodes = [...new Set([...aggregateReasons, ...validationReasons])].sort();
-    const localReady = validationReasons.length === 0 && aggregate.invariants_passed === true && reasonCodes.length === 0;
+    const reasonCodes = [...new Set([...aggregateReasons, ...validationReasons, ...trustedArtifactReasons])].sort();
+    const localReady = validationReasons.length === 0 && trustedArtifactReasons.length === 0 && aggregate.invariants_passed === true && reasonCodes.length === 0;
     return decisionFrom(aggregate.aggregate_sha256, localReady ? "READY_FOR_PRODUCTION" : "RETURN_TO_IN_PROGRESS", reasonCodes, proposal);
   } catch {
     return decisionFrom(null, "RETURN_TO_IN_PROGRESS", ["INVALID_AGGREGATE_INPUT"], {});

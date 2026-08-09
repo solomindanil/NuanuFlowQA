@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import YAML from "yaml";
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
 import { aggregateEvidence } from "../../scripts/qah/aggregate.mjs";
+import { parseProfileBytes } from "../../scripts/qah/profile.mjs";
 
 const qtest = import.meta.url.includes("fixtures-only") ? () => {} : test;
 const BRANCHES = ["code", "api", "ui", "domain"];
@@ -18,8 +21,6 @@ const sourceArtifact = {
   version_id: "44444444-4444-4444-8444-444444444444",
   kind: "flow_item",
   role: "source",
-  name: "flow-item.json",
-  media_type: "application/json",
 };
 const PROFILE_PATH = "qa-harness.yaml";
 
@@ -115,30 +116,56 @@ function materialize(store, { index, semanticRole, payload, bytes, metadata = {}
     byte_length: immutableBytes.byteLength,
     artifact: {
       id: artifactId,
+      workspace_id: workspaceId,
       status: "stored",
       current_version: versionId,
       kind: "document",
-      role,
       name,
       mime_type: mediaType,
-    },
-    version: {
-      id: versionId,
-      version: 1,
-      file_asset: uuidFor(index * 2 + 12),
-      size: immutableBytes.byteLength,
-      checksum: createHash("sha256").update(immutableBytes).digest("hex"),
+      versions: [{
+        id: versionId,
+        version: 1,
+        file_asset: uuidFor(index * 2 + 12),
+        size: immutableBytes.byteLength,
+        checksum: createHash("sha256").update(immutableBytes).digest("hex"),
+      }],
     },
     bytes: immutableBytes,
     ...metadata,
   };
-  const ref = { artifact_id: artifactId, version_id: versionId, kind: "document", role, name, media_type: mediaType };
+  const ref = { artifact_id: artifactId, version_id: versionId, kind: "document", role };
   store.set(refKey(ref), record);
   return ref;
 }
 
 function material(store, ref) {
   return store.get(refKey(ref));
+}
+
+function registerSourceMaterial(store) {
+  const bytes = Buffer.from(canonicalJson({ schema_version: "nuanu.flow-item.v1", key: "QA-1" }));
+  store.set(refKey(sourceArtifact), {
+    workspace_id: workspaceId,
+    enforced_max_bytes: null,
+    byte_length: bytes.byteLength,
+    artifact: {
+      id: sourceArtifact.artifact_id,
+      workspace_id: workspaceId,
+      status: "stored",
+      current_version: sourceArtifact.version_id,
+      kind: "flow_item",
+      name: "flow-item.json",
+      mime_type: "application/json",
+      versions: [{
+        id: sourceArtifact.version_id,
+        version: 1,
+        file_asset: uuidFor(9),
+        size: bytes.byteLength,
+        checksum: createHash("sha256").update(bytes).digest("hex"),
+      }],
+    },
+    bytes,
+  });
 }
 
 function rewriteMaterial(store, ref, payload, metadata = {}) {
@@ -148,14 +175,18 @@ function rewriteMaterial(store, ref, payload, metadata = {}) {
     ...old,
     byte_length: bytes.byteLength,
     bytes,
-    version: { ...old.version, size: bytes.byteLength, checksum: createHash("sha256").update(bytes).digest("hex") },
+    artifact: {
+      ...old.artifact,
+      versions: old.artifact.versions.map((version) => version.id === ref.version_id
+        ? { ...version, size: bytes.byteLength, checksum: createHash("sha256").update(bytes).digest("hex") }
+        : version),
+    },
     ...metadata,
   });
 }
 
 function artifactLink(store, ref) {
-  const record = material(store, ref);
-  return { ...ref, size_bytes: record.byte_length, checksum: record.version.checksum };
+  return { ...ref };
 }
 
 function occurrencePayload({ store, branch, rawPlan, payloadRef, evidenceRef, receipt, run = runId, attempt = attemptId }) {
@@ -239,14 +270,14 @@ function branchEntry(store, branch, rawPlan, receipt, index, overrides = {}) {
     source_artifact: { ...sourceArtifact },
     plan_sha256: rawPlan.plan_sha256,
     branch,
-    branch_payload_sha256: `sha256:${material(store, payloadRef).version.checksum}`,
+    branch_payload_sha256: `sha256:${material(store, payloadRef).artifact.versions[0].checksum}`,
     evidence_sha256: executionData.evidence_sha256,
     evidence_candidate: candidate,
     confirmed_findings: overrides.confirmed_findings ?? 0,
   };
-  const evidenceRef = materialize(store, { index: index * 3 + 101, semanticRole: "evidence", payload: evidencePayload });
+  const evidenceRef = materialize(store, { index: index * 3 + 101, semanticRole: "evidence", payload: evidencePayload, role: "evidence" });
   const occurrence = occurrencePayload({ store, branch, rawPlan, payloadRef, evidenceRef, receipt, run: candidate.run_id, attempt: candidate.attempt_id });
-  const occurrenceRef = materialize(store, { index: index * 3 + 102, semanticRole: "occurrence", payload: occurrence });
+  const occurrenceRef = materialize(store, { index: index * 3 + 102, semanticRole: "occurrence", payload: occurrence, role: "evidence" });
   return {
     output: {
       branch_result: branchResult,
@@ -261,17 +292,18 @@ function branchEntry(store, branch, rawPlan, receipt, index, overrides = {}) {
 
 export function aggregateFixture({ applicability, receipt = readyReceipt(), entryOverrides = {}, inputOverrides = {}, profileOverrides = {} } = {}) {
   const store = new Map();
+  registerSourceMaterial(store);
   const rawProfile = profile(profileOverrides);
   const rawPlan = plan(rawProfile, applicability);
-  const profileRef = materialize(store, { index: 1, semanticRole: "project_profile", payload: rawProfile });
+  const committedProfileBytes = Buffer.from(YAML.stringify(rawProfile));
+  const profileRef = materialize(store, { index: 1, semanticRole: "project_profile", bytes: committedProfileBytes, role: "implementation" });
   const planRef = materialize(store, { index: 2, semanticRole: "test_plan", payload: rawPlan });
   const branches = BRANCHES.map((branch, index) => branchEntry(store, branch, rawPlan, receipt, index, entryOverrides[branch] ?? {}));
-  const resolveArtifactVersion = async ({ workspace_id, artifact_id, version_id, max_bytes }) => {
-    const record = store.get(`${artifact_id}@${version_id}`);
+  const resolveArtifactVersion = async ({ workspace_id, ref, max_bytes }) => {
+    const record = store.get(`${ref.artifact_id}@${ref.version_id}`);
     if (!record || workspace_id !== workspaceId || record.byte_length > max_bytes) return null;
     return { ...record, enforced_max_bytes: max_bytes, bytes: Buffer.from(record.bytes) };
   };
-  const committedProfileBytes = Buffer.from(canonicalJson(rawProfile));
   const resolveProfileAtCommit = async ({ repository_origin, commit: requestedCommit, path, max_bytes }) => {
     if (repository_origin !== repositoryOrigin || requestedCommit !== commit || path !== PROFILE_PATH || committedProfileBytes.byteLength > max_bytes) return null;
     return {
@@ -342,7 +374,7 @@ qtest("missing trusted resolvers and arbitrary locally fabricated Artifact refs 
   fixture.input.branches[0].artifacts.evidence = {
     artifact_id: "99999999-9999-4999-8999-999999999999",
     version_id: "88888888-8888-4888-8888-888888888888",
-    kind: "document", role: "output", name: "evidence.json", media_type: "application/json",
+    kind: "document", role: "evidence",
   };
   const fabricated = await aggregateFixtureResult(fixture);
   assert.equal(fabricated.invariants_passed, false);
@@ -354,9 +386,8 @@ qtest("nonexistent, swapped, wrong-workspace, wrong-role, wrong-media, and check
     [() => null, "INVALID_TRUSTED_ARTIFACT"],
     [(record) => ({ ...record, artifact: { ...record.artifact, id: "99999999-9999-4999-8999-999999999999" } }), "INVALID_TRUSTED_ARTIFACT"],
     [(record) => ({ ...record, workspace_id: "33333333-3333-4333-8333-333333333333" }), "INVALID_TRUSTED_ARTIFACT"],
-    [(record) => ({ ...record, artifact: { ...record.artifact, role: "source" } }), "INVALID_TRUSTED_ARTIFACT"],
     [(record) => ({ ...record, artifact: { ...record.artifact, mime_type: "text/plain" } }), "INVALID_TRUSTED_ARTIFACT"],
-    [(record) => ({ ...record, version: { ...record.version, checksum: "f".repeat(64) } }), "INVALID_TRUSTED_ARTIFACT"],
+    [(record) => ({ ...record, artifact: { ...record.artifact, versions: record.artifact.versions.map((version) => ({ ...version, checksum: "f".repeat(64) })) } }), "INVALID_TRUSTED_ARTIFACT"],
   ];
   for (const [mutate, expected] of cases) {
     const fixture = aggregateFixture();
@@ -366,7 +397,7 @@ qtest("nonexistent, swapped, wrong-workspace, wrong-role, wrong-media, and check
       ...fixture.dependencies,
       resolveArtifactVersion: async (request) => {
         const record = await baseResolver(request);
-        return request.artifact_id === target.artifact_id && request.version_id === target.version_id ? mutate(record) : record;
+        return request.ref.artifact_id === target.artifact_id && request.ref.version_id === target.version_id ? mutate(record) : record;
       },
     });
     assert.equal(aggregate.invariants_passed, false);
@@ -376,15 +407,19 @@ qtest("nonexistent, swapped, wrong-workspace, wrong-role, wrong-media, and check
 
 qtest("Nuanu Artifact refs use UUID versions and semantic positions cannot be swapped", async () => {
   const fixture = aggregateFixture();
-  assert.deepEqual(Object.keys(fixture.input.plan_artifact).sort(), ["artifact_id", "kind", "media_type", "name", "role", "version_id"]);
+  assert.deepEqual(Object.keys(fixture.input.plan_artifact).sort(), ["artifact_id", "kind", "role", "version_id"]);
   assert.match(fixture.input.plan_artifact.artifact_id, /^[0-9a-f-]{36}$/);
   assert.match(fixture.input.plan_artifact.version_id, /^[0-9a-f-]{36}$/);
   assert.equal(fixture.input.plan_artifact.role, "output");
+  assert.equal(fixture.input.profile_artifact.role, "implementation");
+  assert.equal(fixture.input.branches[0].artifacts.branch_payload.role, "output");
+  assert.equal(fixture.input.branches[0].artifacts.occurrence.role, "evidence");
+  assert.equal(fixture.input.branches[0].artifacts.evidence.role, "evidence");
 
   [fixture.input.plan_artifact, fixture.input.profile_artifact] = [fixture.input.profile_artifact, fixture.input.plan_artifact];
   const aggregate = await aggregateFixtureResult(fixture);
   assert.equal(aggregate.invariants_passed, false);
-  assert.equal([...reasons(aggregate)].some((code) => ["INVALID_TRUSTED_PROFILE", "INVALID_FULL_PLAN", "SEMANTIC_ARTIFACT_MISMATCH"].includes(code)), true);
+  assert.equal([...reasons(aggregate)].some((code) => ["INVALID_AGGREGATE_INPUT", "INVALID_ARTIFACT_REFERENCE"].includes(code)), true);
 });
 
 qtest("an exact immutable Nuanu version remains valid when it is not the current version", async () => {
@@ -395,11 +430,37 @@ qtest("an exact immutable Nuanu version remains valid when it is not the current
     ...fixture.dependencies,
     resolveArtifactVersion: async (request) => {
       const record = await baseResolver(request);
-      if (request.artifact_id !== target.artifact_id || request.version_id !== target.version_id) return record;
+      if (request.ref.artifact_id !== target.artifact_id || request.ref.version_id !== target.version_id) return record;
       return { ...record, artifact: { ...record.artifact, current_version: "99999999-9999-4999-8999-999999999999" } };
     },
   });
   assert.equal(aggregate.invariants_passed, true);
+});
+
+qtest("Nuanu readback finds the exact version in artifact.versions and slot roles are closed", async () => {
+  let fixture = aggregateFixture();
+  const target = fixture.input.branches[0].artifacts.evidence;
+  const liveShape = material(fixture.store, target);
+  assert.equal("role" in liveShape.artifact, false);
+  assert.deepEqual(Object.keys(liveShape.artifact).sort(), ["current_version", "id", "kind", "mime_type", "name", "status", "versions", "workspace_id"]);
+  assert.deepEqual(Object.keys(liveShape.artifact.versions[0]).sort(), ["checksum", "file_asset", "id", "size", "version"]);
+  const baseResolver = fixture.dependencies.resolveArtifactVersion;
+  let aggregate = await aggregateEvidence(fixture.input, {
+    ...fixture.dependencies,
+    resolveArtifactVersion: async (request) => {
+      const record = await baseResolver(request);
+      if (request.ref.artifact_id !== target.artifact_id || request.ref.version_id !== target.version_id) return record;
+      return { ...record, artifact: { ...record.artifact, versions: [] } };
+    },
+  });
+  assert.equal(aggregate.invariants_passed, false);
+  assert.equal(reasons(aggregate).has("INVALID_TRUSTED_ARTIFACT"), true);
+
+  fixture = aggregateFixture();
+  fixture.input.branches[0].artifacts.evidence.role = "output";
+  aggregate = await aggregateFixtureResult(fixture);
+  assert.equal(aggregate.invariants_passed, false);
+  assert.equal(reasons(aggregate).has("INVALID_ARTIFACT_REFERENCE"), true);
 });
 
 qtest("materialized profile must equal a second read from the pinned Git commit", async () => {
@@ -428,6 +489,23 @@ qtest("materialized profile must equal a second read from the pinned Git commit"
   aggregate = await aggregateEvidence(fixture.input, { resolveArtifactVersion: fixture.dependencies.resolveArtifactVersion });
   assert.equal(aggregate.invariants_passed, false);
   assert.equal(reasons(aggregate).has("TRUSTED_PROFILE_RESOLVER_REQUIRED"), true);
+});
+
+qtest("raw YAML blob hash is distinct from the canonical parsed profile digest", async () => {
+  const repositoryProfileBytes = readFileSync(new URL("../../qa-harness.yaml", import.meta.url));
+  const repositoryProfile = parseProfileBytes(repositoryProfileBytes);
+  assert.notEqual(digestBytes(repositoryProfileBytes), sha256(repositoryProfile));
+
+  const fixture = aggregateFixture();
+  const rawProfileBytes = material(fixture.store, fixture.input.profile_artifact).bytes;
+  assert.equal(rawProfileBytes.toString("utf8").startsWith("schema_version:"), true);
+  assert.notEqual(rawProfileBytes.toString("utf8"), canonicalJson(fixture.profile));
+
+  const aggregate = await aggregateFixtureResult(fixture);
+  assert.equal(aggregate.invariants_passed, true);
+  assert.equal(aggregate.profile_blob_sha256, digestBytes(rawProfileBytes));
+  assert.equal(aggregate.profile_digest, sha256(fixture.profile));
+  assert.notEqual(aggregate.profile_blob_sha256, aggregate.profile_digest);
 });
 
 qtest("trusted resolvers receive and attest hard prefetch byte limits", async () => {
@@ -467,7 +545,7 @@ qtest("trusted resolvers receive and attest hard prefetch byte limits", async ()
   aggregate = await aggregateEvidence(fixture.input, {
     ...fixture.dependencies,
     resolveArtifactVersion: async (request) => {
-      const record = fixture.store.get(`${request.artifact_id}@${request.version_id}`);
+      const record = fixture.store.get(`${request.ref.artifact_id}@${request.ref.version_id}`);
       if (!record || record.byte_length > request.max_bytes) return null;
       return { ...record, enforced_max_bytes: request.max_bytes, bytes: Buffer.from(record.bytes) };
     },
@@ -516,7 +594,12 @@ qtest("caller cannot lower trusted confidence threshold and evidence cannot exce
     ...record,
     byte_length: oversized.byteLength,
     bytes: oversized,
-    version: { ...record.version, size: oversized.byteLength, checksum: createHash("sha256").update(oversized).digest("hex") },
+    artifact: {
+      ...record.artifact,
+      versions: record.artifact.versions.map((version) => version.id === target.version_id
+        ? { ...version, size: oversized.byteLength, checksum: createHash("sha256").update(oversized).digest("hex") }
+        : version),
+    },
   });
   aggregate = await aggregateFixtureResult(fixture);
   assert.equal(aggregate.invariants_passed, false);
