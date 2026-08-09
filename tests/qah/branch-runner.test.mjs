@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -10,6 +11,7 @@ import * as paydemoAdapterModule from "../../scripts/qah/adapters/paydemo.mjs";
 import { targetNamespace } from "../../scripts/qah/environment.mjs";
 import { validateProfile } from "../../scripts/qah/contracts.mjs";
 import YAML from "yaml";
+import { chromium as realChromium } from "@playwright/test";
 
 const commit = "a".repeat(40);
 const contentHash = `sha256:${"c".repeat(64)}`;
@@ -625,11 +627,11 @@ test("concurrent reset and fixture mutations remain isolated behind a real overl
   assert.equal(store.size, 5);
 });
 
-function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = "screenshot", traceBytes = "trace", requestUrl = "http://127.0.0.1:4173/app.js", interactionRequestUrl = "http://127.0.0.1:4173/api/checkout", webSocketUrl = null, responseBodyError = null, contextCloseError = null, browserCloseError = null, requestBodyObject = { runId: paydemoInput("ui").branch_namespace, planId: "starter", amountCents: 1000, paymentMethod: "bank" }, requestSizes, requestBodyBytes, receiptText = "Payment recorded by bank transfer.", receiptEvaluation } = {}) {
+function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = "screenshot", traceBytes = "trace", requestUrl = "http://127.0.0.1:4173/app.js", interactionRequestUrl = "http://127.0.0.1:4173/api/checkout", webSocketUrl = null, responseBodyError = null, contextCloseError = null, browserCloseError = null, requestBodyObject = { runId: paydemoInput("ui").branch_namespace, planId: "starter", amountCents: 1000, paymentMethod: "bank" }, requestSizes, requestBodyBytes, receiptText = "Payment recorded by bank transfer.", receiptEvaluation, cdpSessionError = null, cdpDetachError = null, cdpFrameUrl = finalUrl, cdpWorldResult, cdpEvaluationResult } = {}) {
   const events = [];
   let routeHandler;
   let webSocketHandler;
-  const state = { contextOptions: null };
+  const state = { contextOptions: null, cdpCalls: [] };
   const responseBody = Buffer.from(JSON.stringify({ paymentId: "id", amountCents: 1000, paymentMethod: "bank" }));
   const defaultRequestBodyBytes = Buffer.from(JSON.stringify(requestBodyObject));
   const request = {
@@ -684,6 +686,23 @@ function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = 
     route: async (_pattern, handler) => { routeHandler = handler; },
     routeWebSocket: async (_pattern, handler) => { webSocketHandler = handler; },
     newPage: async () => page,
+    newCDPSession: async () => {
+      state.cdpCalls.push("new-session");
+      if (cdpSessionError) throw cdpSessionError;
+      return {
+        send: async (method, parameters = {}) => {
+          state.cdpCalls.push({ method, parameters });
+          if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main-frame", url: cdpFrameUrl } } };
+          if (method === "Page.createIsolatedWorld") return cdpWorldResult ?? { executionContextId: 17 };
+          if (method === "Runtime.evaluate") {
+            const value = receiptEvaluation ?? (Buffer.byteLength(receiptText, "utf8") > 1024 ? { oversized: true } : { oversized: false, value: receiptText });
+            return cdpEvaluationResult ?? { result: { type: "object", value } };
+          }
+          throw new Error(`unexpected CDP method ${method}`);
+        },
+        detach: async () => { state.cdpCalls.push("detach"); if (cdpDetachError) throw cdpDetachError; },
+      };
+    },
     close: async () => { events.push("context-close"); if (contextCloseError) throw contextCloseError; }, setDefaultTimeout: () => {},
   };
   const browser = {
@@ -764,7 +783,7 @@ test("UI rejects missing, mismatched, or non-closed bounded POST bodies", async 
   }
 });
 
-test("UI measures receipt UTF-8 in-page and never transfers oversized or malformed DOM values", async (t) => {
+test("UI isolated world never transfers oversized or malformed receipt DOM values", async (t) => {
   const cases = [
     { receiptText: "x".repeat(1025) },
     { receiptEvaluation: { oversized: false } },
@@ -779,6 +798,95 @@ test("UI measures receipt UTF-8 in-page and never transfers oversized or malform
     assert.equal(harness.events.includes("receipt-text-content"), false);
     assert.equal(canonicalJson(harness.events).includes("must-not-cross"), false);
     assert.deepEqual(await readdir(artifactRoot), []);
+  }
+});
+
+test("real Chromium receipt cap uses a pristine world despite a main-world TextEncoder monkeypatch", async (t) => {
+  let checkoutBody = "";
+  const hugeReceipt = `Payment recorded by bank transfer. ${"x".repeat(2048)}`;
+  const server = createServer((request, response) => {
+    if (request.method === "POST" && request.url === "/api/checkout") {
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => { checkoutBody += chunk; });
+      request.on("end", () => {
+        response.writeHead(201, { "content-type": "application/json" });
+        response.end('{"paymentId":"id","amountCents":1000,"paymentMethod":"bank"}');
+      });
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(`<!doctype html><html><body>
+      <label><input type="radio" name="payment-method" value="bank">Bank transfer</label>
+      <button type="button">Pay $10.00</button><p id="payment-status" role="status"></p>
+      <script>
+        window.__mainWorldEncoderCalls = 0;
+        window.TextEncoder = class { encode() { window.__mainWorldEncoderCalls += 1; return new Uint8Array(0); } };
+        document.querySelector('button').addEventListener('click', async () => {
+          const runId = new URL(location.href).searchParams.get('runId');
+          await fetch('/api/checkout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ runId, planId: 'starter', amountCents: 1000, paymentMethod: 'bank' }) });
+          document.querySelector('#payment-status').textContent = ${JSON.stringify(hugeReceipt)};
+        });
+      </script></body></html>`);
+  });
+  await new Promise((resolvePromise, rejectPromise) => {
+    server.once("error", rejectPromise);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  t.after(() => new Promise((resolvePromise) => server.close(resolvePromise)));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const state = { mainWorldEncoderCalls: null };
+  const chromium = {
+    async launch(options) {
+      const browser = await realChromium.launch(options);
+      return {
+        async newContext(contextOptions) {
+          const context = await browser.newContext(contextOptions);
+          return {
+            setDefaultTimeout: context.setDefaultTimeout.bind(context), route: context.route.bind(context),
+            routeWebSocket: context.routeWebSocket.bind(context), tracing: context.tracing,
+            newPage: context.newPage.bind(context), newCDPSession: context.newCDPSession.bind(context),
+            async close() {
+              const [page] = context.pages();
+              if (page) state.mainWorldEncoderCalls = await page.evaluate(() => window.__mainWorldEncoderCalls);
+              await context.close();
+            },
+          };
+        },
+        close: browser.close.bind(browser),
+      };
+    },
+  };
+  const input = paydemoInput("ui", { environment: { ...paydemoInput("ui").environment, base_url: origin } });
+  const artifactRoot = await mkdtemp(join(tmpdir(), "qah-ui-real-isolated-world-"));
+  t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+  let observedError;
+  try { await paydemoAdapterModule.runPaydemoUiProbe(input, { chromium, artifactRoot, maxArtifactBytes: 1024 }); } catch (error) { observedError = error; }
+  assert.match(String(observedError), /receipt|DOM|size/i);
+  assert.equal(state.mainWorldEncoderCalls, 0);
+  assert.equal(String(observedError).includes(hugeReceipt), false);
+  assert.deepEqual(JSON.parse(checkoutBody), { runId: input.branch_namespace, planId: "starter", amountCents: 1000, paymentMethod: "bank" });
+  assert.deepEqual(await readdir(artifactRoot), []);
+});
+
+test("UI rejects unavailable or malformed isolated CDP worlds and observes detach failures", async (t) => {
+  const cases = [
+    { cdpSessionError: new Error("CDP unavailable"), pattern: /CDP|isolated/i },
+    { cdpFrameUrl: "https://evil.example/", pattern: /frame|origin/i },
+    { cdpWorldResult: {}, pattern: /world|context/i },
+    { cdpEvaluationResult: { result: { type: "string", value: "forged" } }, pattern: /CDP|result|shape/i },
+    { cdpDetachError: new Error("CDP detach cleanup failed"), pattern: /cleanup/i },
+  ];
+  for (const [index, configuration] of cases.entries()) {
+    const artifactRoot = await mkdtemp(join(tmpdir(), `qah-ui-cdp-invalid-${index}-`));
+    t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+    const harness = fakeUiBrowser(configuration);
+    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), configuration.pattern);
+    assert.deepEqual(await readdir(artifactRoot), []);
+    assert.equal(harness.events.includes("context-close"), true);
+    assert.equal(harness.events.includes("browser-close"), true);
+    if (configuration.cdpDetachError) assert.equal(harness.state.cdpCalls.includes("detach"), true);
   }
 });
 

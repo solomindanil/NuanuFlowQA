@@ -95,13 +95,29 @@ async function boundedCheckoutRequest(response, input, maximumBytes = MAX_UI_REQ
   return { paymentMethod: payload.paymentMethod };
 }
 
-async function boundedReceiptText(locator, maximumBytes = MAX_UI_RECEIPT_BYTES) {
-  const summary = await locator.evaluate((element, byteLimit) => {
-    const value = element.textContent;
+async function boundedReceiptText(session, page, input, maximumBytes = MAX_UI_RECEIPT_BYTES) {
+  const frameTree = await session.send("Page.getFrameTree");
+  const frame = frameTree?.frameTree?.frame;
+  const pageUrl = page.url();
+  let frameOrigin;
+  try { frameOrigin = new URL(frame?.url).origin; } catch { throw new Error("UI receipt CDP frame URL is invalid"); }
+  if (typeof frame?.id !== "string" || frame.id.length === 0 || frame.parentId !== undefined || frame.url !== pageUrl || frameOrigin !== input.environment.base_url) throw new Error("UI receipt CDP frame does not match the exact current origin");
+  const world = await session.send("Page.createIsolatedWorld", { frameId: frame.id, worldName: `qah-receipt-${input.branch_namespace}`, grantUniveralAccess: false });
+  exactKeys(world, ["executionContextId"], "UI receipt isolated world");
+  if (!Number.isSafeInteger(world.executionContextId) || world.executionContextId < 1) throw new Error("UI receipt isolated world context is invalid");
+  const expression = `(() => {
+    const matches = document.querySelectorAll("#payment-status[role=\\"status\\"]");
+    if (matches.length !== 1) return { oversized: false };
+    const value = matches[0].textContent;
     if (typeof value !== "string") return { oversized: false };
-    if (new TextEncoder().encode(value).byteLength > byteLimit) return { oversized: true };
+    if (new TextEncoder().encode(value).byteLength > ${maximumBytes}) return { oversized: true };
     return { oversized: false, value };
-  }, maximumBytes);
+  })()`;
+  const evaluated = await session.send("Runtime.evaluate", { contextId: world.executionContextId, expression, returnByValue: true, awaitPromise: false, userGesture: false });
+  exactKeys(evaluated, ["result"], "UI receipt CDP evaluation");
+  exactKeys(evaluated.result, ["type", "value"], "UI receipt CDP result");
+  if (evaluated.result.type !== "object") throw new Error("UI receipt CDP result type is invalid");
+  const summary = evaluated.result.value;
   if (summary?.oversized === true) {
     exactKeys(summary, ["oversized"], "UI receipt summary");
     throw new Error("UI receipt DOM value exceeds its UTF-8 bound");
@@ -126,6 +142,7 @@ export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = joi
   let context;
   let traceStarted = false;
   let traceStopped = false;
+  let cdpSession;
   let originViolation = false;
   let result;
   let primaryError;
@@ -166,7 +183,8 @@ export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = joi
     const requestBody = await boundedCheckoutRequest(response, input);
     const receipt = page.getByRole("status").filter({ hasText: /Payment (recorded|could not)/ });
     await receipt.waitFor({ state: "visible" });
-    const receiptText = await boundedReceiptText(receipt);
+    cdpSession = await context.newCDPSession(page);
+    const receiptText = await boundedReceiptText(cdpSession, page, input);
     if (originViolation || new URL(page.url()).origin !== input.environment.base_url) throw new Error("UI interaction escaped the exact prepared origin");
     const observation = { selectedPaymentMethod, requestPaymentMethod: requestBody?.paymentMethod ?? null, receiptText, responseStatus: response.status() };
     const classification = classifyBoundedUi(observation);
@@ -179,6 +197,7 @@ export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = joi
   } catch (error) {
     primaryError = error;
   } finally {
+    if (cdpSession) try { await cdpSession.detach(); } catch (error) { cleanupErrors.push(error); }
     if (traceStarted && !traceStopped && context) {
       try { await context.tracing.stop({ path: tracePath }); } catch (error) { cleanupErrors.push(error); }
     }
