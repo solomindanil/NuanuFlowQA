@@ -299,6 +299,7 @@ function validateReceipt(receipt, input, profile, reasons) {
   if (receipt.attempt_id !== input.attempt_id) reasons.add("ATTEMPT_MISMATCH");
   if (receipt.target_namespace !== sha256({ run_id: input.run_id, attempt_id: input.attempt_id, environment_id: receipt.environment_id }).slice(7)) reasons.add("INVALID_ENVIRONMENT_RECEIPT");
   if (receipt.environment_status === "INFRA_FAILURE") reasons.add("INFRA_FAILURE");
+  if (receipt.environment_status === "NOT_REQUIRED" && profile.environment.strategy !== "none") reasons.add("INVALID_ENVIRONMENT_RECEIPT");
   if (receipt.environment_status === "READY") {
     if (receipt.repository_origin !== input.repository_origin) reasons.add("REPOSITORY_MISMATCH");
     if (receipt.commit !== input.plan?.commit) reasons.add("COMMIT_MISMATCH");
@@ -325,8 +326,9 @@ function validateCandidate(candidate, context, reasons) {
       environment_status: candidate.environment_status,
     }, candidate.code);
   } catch { reasons.add("UNKNOWN_CODE"); }
-  if (candidate.product_result === "PASS" && (candidate.environment_status !== "HEALTHY" || candidate.evidence_status !== "VERIFIED")) reasons.add("INVALID_EVIDENCE_CANDIDATE");
-  if (candidate.product_result === "FAIL" && candidate.environment_status !== "HEALTHY") reasons.add("INVALID_EVIDENCE_CANDIDATE");
+  const repositoryOnlyCode = context.branch === "code" && context.receipt.environment_status === "NOT_REQUIRED" && candidate.environment_status === "NOT_REQUIRED";
+  if (candidate.product_result === "PASS" && ((!repositoryOnlyCode && candidate.environment_status !== "HEALTHY") || candidate.evidence_status !== "VERIFIED")) reasons.add("INVALID_EVIDENCE_CANDIDATE");
+  if (candidate.product_result === "FAIL" && !repositoryOnlyCode && candidate.environment_status !== "HEALTHY") reasons.add("INVALID_EVIDENCE_CANDIDATE");
   if (candidate.environment_status === "INFRA_FAILURE" && candidate.product_result !== "INCONCLUSIVE") reasons.add("INVALID_EVIDENCE_CANDIDATE");
   if (context.applicability === "NOT_APPLICABLE" && candidate.environment_status !== (context.receipt.environment_status === "READY" ? "HEALTHY" : "NOT_REQUIRED")) reasons.add("INVALID_EVIDENCE_CANDIDATE");
   if (candidate.run_id !== context.runId) reasons.add("RUN_MISMATCH");

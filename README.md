@@ -107,6 +107,19 @@ State and the bounded idempotency replay window live for one broker process. Shu
 
 Templates and config are ready for big suites: Page Objects + fixtures (`tests/_template/pages/`, `tests/_template/fixtures.ts`), an API-layer spec template, a cross-browser matrix per product (`browsers` option in `playwright.config.ts`), one-login-per-run auth via storageState (`authSetup` option), and a ready CI pipeline (`.github/workflows/e2e.yml`: manual + nightly, JUnit + HTML artifacts, sharding hint). Details in the `/qa-check` skill, section "Scaling to large products".
 
+## Universal QA harness verification
+
+The local universal-flow proof drives canonical API-only, UI-only, docs-only, and mixed tickets through the committed profile, resolved context, deterministic plan, environment lifecycle, concurrent branch runners, immutable ArtifactVersion materialization, evidence aggregation, independent release decision, comment publication, cleanup, and final transition gate.
+
+```bash
+npm run test:qah       # universal contracts and local end-to-end matrix
+npm run verify:qah     # universal matrix + legacy PayDemo harness + TypeScript
+```
+
+The matrix proves exact required/skipped branches, UI-adapter invocation only for UI scope, no managed product environment for docs while the pinned repository code/static-analysis branch still runs, overlapping mixed-ticket branch bodies, fail-closed product/missing-evidence routing, and the comment-plus-cleanup gate before either final state. It is deterministic and local: it does not save or activate a Nuanu process or mutate any live Nuanu Artifact, Agent, comment, work item, run, or state.
+
+Live installation remains explicit `NO_GO`. The direct install preflight, pinned generic AgentVersions, exact profile ArtifactVersion, and other Task 7 installation attestations must all pass before a canary; this local command is not an install attestation and does not weaken those preconditions.
+
 ## Safety rules
 
 Tests are read-only against real accounts: no purchases, no settings mutations, no real payments, no password-reset emails to third parties. Payment flows are verified up to the external payment step; real-money checks happen only with the product owner in the loop.

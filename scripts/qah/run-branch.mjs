@@ -368,6 +368,30 @@ function infraOutput(context, code = "TRANSPORT_FAILURE") {
   });
 }
 
+function unavailableCodeOutput(context, command) {
+  const evidenceBytes = Buffer.from(canonicalJson({
+    schema_version: "nuanu.qa-code-evidence.v1",
+    commit: context.plan.commit,
+    command,
+    outcome: "EVIDENCE_UNAVAILABLE",
+  }));
+  const candidate = validateCandidate({
+    kind: "document", name: "code-evidence.md", media_type: "text/markdown", size_bytes: evidenceBytes.byteLength,
+    sha256: digestBytes(evidenceBytes), content_base64: evidenceBytes.toString("base64"),
+  }, context.profile.execution.max_output_bytes);
+  return buildOutput({
+    ...context,
+    productResult: "INCONCLUSIVE",
+    environmentStatus: "NOT_REQUIRED",
+    evidenceStatus: "PARTIAL",
+    confidence: 0,
+    code: declaredOutcomeCode(context, "infra", "TRANSPORT_FAILURE"),
+    observations: [{ code: "COMMAND_EVIDENCE_MISSING", status: "INCONCLUSIVE", value_sha256: sha256({ commit: context.plan.commit, command }) }],
+    evidenceKinds: context.plan.expected_evidence.code,
+    candidates: [candidate],
+  });
+}
+
 async function defaultExecute(file, args, options) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(file, args, { cwd: options.cwd, env: options.env, shell: false, stdio: ["pipe", "pipe", "pipe"], detached: true });
@@ -406,18 +430,30 @@ export async function runBranch({ branch, plan: rawPlan, profile: rawProfile, en
     confidence: 1,
     code: profile.outcome_codes[branch].skipped[0],
   });
+  if (receipt.environment_status === "NOT_REQUIRED" && profile.environment.strategy !== "none") throw new Error("required branch with NOT_REQUIRED receipt requires the exact environment none profile");
   if (branch === "domain") {
     if (typeof testDataProfile !== "string" || !profile.test_data.profiles.includes(testDataProfile)) throw new Error("domain branch requires a declared named test-data profile");
   } else if (testDataProfile !== undefined) throw new Error("test-data profile is valid only for the domain branch");
-  if (receipt.environment_status !== "READY") return infraOutput(context, "ENVIRONMENT_NOT_READY");
+  const repositoryOnlyCode = receipt.environment_status === "NOT_REQUIRED" && branch === "code";
+  if (receipt.environment_status !== "READY" && !repositoryOnlyCode) return infraOutput(context, "ENVIRONMENT_NOT_READY");
 
-  const verifyEnvironment = dependencies.verifyEnvironment ?? ((input) => verifyPreparedEnvironment(input, { ...dependencies, trustedStateRoot }));
+  const verifyEnvironment = repositoryOnlyCode
+    ? dependencies.verifyRepository
+    : dependencies.verifyEnvironment ?? ((input) => verifyPreparedEnvironment(input, { ...dependencies, trustedStateRoot }));
   let verified;
   try {
+    if (typeof verifyEnvironment !== "function") throw new Error("trusted repository verifier is required");
     verified = await verifyEnvironment({ receipt, plan, profile, runId, attemptId });
-    if (!verified || verified.receipt !== receipt || typeof verified.checkout !== "string") throw new Error("environment verifier returned an invalid trusted checkout");
+    if (!verified || verified.receipt !== receipt || typeof verified.checkout !== "string" || !isAbsolute(verified.checkout)) throw new Error("environment verifier returned an invalid trusted checkout");
+    if (repositoryOnlyCode) {
+      exactKeys(verified, ["receipt", "checkout", "repository_origin", "commit", "source_artifact", "profile_digest"], "trusted repository execution context");
+      if (verified.repository_origin !== profile.repository.allowed_origin || verified.commit !== plan.commit
+        || verified.profile_digest !== plan.profile_digest || canonicalJson(verified.source_artifact) !== canonicalJson(plan.source_artifact)) {
+        throw new Error("trusted repository execution context does not match the plan");
+      }
+    }
   } catch {
-    return infraOutput(context, "ENVIRONMENT_VERIFICATION_FAILED");
+    return repositoryOnlyCode ? unavailableCodeOutput(context, profile.checks.code) : infraOutput(context, "ENVIRONMENT_VERIFICATION_FAILED");
   }
   if (branch === "ui") {
     const prepared = exactUrl(receipt.base_url, "prepared UI origin");
@@ -427,7 +463,9 @@ export async function runBranch({ branch, plan: rawPlan, profile: rawProfile, en
   const adapterInput = {
     schema_version: "nuanu.qa-branch-adapter-input.v1", branch, run_id: runId, attempt_id: attemptId,
     attempt_namespace: attemptNs, branch_namespace: branchNs, test_data_profile: branch === "domain" ? testDataProfile : null,
-    environment: { base_url: receipt.base_url, commit: receipt.commit, content_hash: receipt.content_hash, environment_id: receipt.environment_id, instance_nonce: receipt.instance_nonce },
+    environment: receipt.environment_status === "READY"
+      ? { base_url: receipt.base_url, commit: receipt.commit, content_hash: receipt.content_hash, environment_id: receipt.environment_id, instance_nonce: receipt.instance_nonce }
+      : { base_url: null, commit: plan.commit, content_hash: plan.content_hash, environment_id: receipt.environment_id, instance_nonce: null },
   };
   const stdin = canonicalJson(adapterInput);
   if (Buffer.byteLength(stdin) > Math.min(MAX_STDIN_BYTES, profile.execution.max_output_bytes)) throw new Error("canonical branch stdin exceeds configured bound");
@@ -435,17 +473,17 @@ export async function runBranch({ branch, plan: rawPlan, profile: rawProfile, en
   let execution;
   try {
     execution = await execute(command[0], command.slice(1), { cwd: verified.checkout, env: runtimeEnvironmentForBranch(branch, environment), shell: false, timeoutMs: profile.execution.timeout_ms, maxOutputBytes: profile.execution.max_output_bytes, stdin });
-  } catch { return infraOutput(context); }
-  if (!execution || typeof execution !== "object" || typeof execution.stdout !== "string" || typeof execution.stderr !== "string" || !Number.isInteger(execution.exitCode) || execution.signal !== null || Buffer.byteLength(execution.stdout) + Buffer.byteLength(execution.stderr) > profile.execution.max_output_bytes) return infraOutput(context);
+  } catch { return repositoryOnlyCode ? unavailableCodeOutput(context, command) : infraOutput(context); }
+  if (!execution || typeof execution !== "object" || typeof execution.stdout !== "string" || typeof execution.stderr !== "string" || !Number.isInteger(execution.exitCode) || execution.signal !== null || Buffer.byteLength(execution.stdout) + Buffer.byteLength(execution.stderr) > profile.execution.max_output_bytes) return repositoryOnlyCode ? unavailableCodeOutput(context, command) : infraOutput(context);
 
   if (branch === "code") {
     const passed = execution.exitCode === 0;
     const observations = [
-      { code: "PINNED_CHECKOUT_VERIFIED", status: "PASS", value_sha256: sha256({ checkout: verified.checkout, commit: receipt.commit }) },
+      { code: "PINNED_CHECKOUT_VERIFIED", status: "PASS", value_sha256: sha256({ checkout: verified.checkout, commit: plan.commit }) },
       { code: passed ? "COMMAND_EXIT_ZERO" : "COMMAND_EXIT_NONZERO", status: passed ? "PASS" : "FAIL", value_sha256: sha256({ stdout: execution.stdout, stderr: execution.stderr, exit_code: execution.exitCode }) },
     ];
     const evidenceBytes = Buffer.from(canonicalJson({
-      schema_version: "nuanu.qa-code-evidence.v1", commit: receipt.commit, command,
+      schema_version: "nuanu.qa-code-evidence.v1", commit: plan.commit, command,
       exit_code: execution.exitCode, stdout_sha256: digestBytes(Buffer.from(execution.stdout)), stderr_sha256: digestBytes(Buffer.from(execution.stderr)),
     }));
     const candidate = validateCandidate({
@@ -455,7 +493,7 @@ export async function runBranch({ branch, plan: rawPlan, profile: rawProfile, en
     return buildOutput({
       ...context,
       productResult: passed ? "PASS" : "FAIL",
-      environmentStatus: "HEALTHY",
+      environmentStatus: receipt.environment_status === "READY" ? "HEALTHY" : "NOT_REQUIRED",
       evidenceStatus: "VERIFIED",
       confidence: 1,
       code: declaredOutcomeCode(context, passed ? "pass" : "fail", passed ? "COMMAND_PASSED" : "COMMAND_FAILED"),

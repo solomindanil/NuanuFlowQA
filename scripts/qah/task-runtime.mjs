@@ -373,6 +373,10 @@ export function createResolverAdapters(bundle) {
     },
     addIssueComment: async () => ({ accepted: true }),
     verifyEnvironment: bundle.branch_execution === null ? undefined : async ({ receipt }) => ({ receipt, checkout: bundle.branch_execution.checkout }),
+    verifyRepository: bundle.branch_execution === null ? undefined : async ({ receipt, plan, profile }) => ({
+      receipt, checkout: bundle.branch_execution.checkout, repository_origin: profile.repository.allowed_origin,
+      commit: plan.commit, source_artifact: plan.source_artifact, profile_digest: plan.profile_digest,
+    }),
     execute: bundle.branch_execution === null ? undefined : async () => structuredClone(bundle.branch_execution.result),
   };
 }

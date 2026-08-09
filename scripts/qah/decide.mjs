@@ -145,7 +145,7 @@ function validateAggregate(aggregate) {
   if (!Array.isArray(aggregate?.expected_branches) || canonicalJson(aggregate.expected_branches) !== canonicalJson(expectedBranches)) reasons.add("INVALID_AGGREGATE_SHAPE");
   if (!Array.isArray(aggregate?.branches) || aggregate.branches.length !== 4 || aggregate.branches.some((branch, index) => branch?.branch !== expectedBranches[index])) reasons.add("INVALID_AGGREGATE_SHAPE");
   if (Array.isArray(aggregate?.branches) && aggregate.branches.some((branch) => branch?.environment_status !== (aggregate?.environment_status === "READY" ? "HEALTHY" : "NOT_REQUIRED"))) reasons.add("INVALID_AGGREGATE_POLICY");
-  if (aggregate?.environment_status === "NOT_REQUIRED" && aggregate?.branches?.some((branch) => branch?.applicability === "REQUIRED")) reasons.add("INVALID_AGGREGATE_POLICY");
+  if (aggregate?.environment_status === "NOT_REQUIRED" && aggregate?.branches?.some((branch) => branch?.applicability === "REQUIRED" && branch?.branch !== "code")) reasons.add("INVALID_AGGREGATE_POLICY");
   const usedArtifacts = new Set();
   for (const topArtifact of [aggregate?.source_artifact, aggregate?.plan_artifact, aggregate?.profile_artifact]) usedArtifacts.add(identityKey(topArtifact));
   const expectedIdentity = {
@@ -176,7 +176,7 @@ function validateAggregate(aggregate) {
       || !exactKeys(branch.identity, IDENTITY_KEYS) || !same(branch.identity, expectedIdentity);
     if (branch.applicability === "REQUIRED") {
       invalidPolicy ||= branch.product_result !== "PASS" || typeof branch.code !== "string" || branch.code.length < 1;
-      invalidPolicy ||= branch.environment_status !== "HEALTHY";
+      invalidPolicy ||= branch.environment_status !== (aggregate?.environment_status === "NOT_REQUIRED" && branch.branch === "code" ? "NOT_REQUIRED" : "HEALTHY");
     } else invalidPolicy ||= branch.product_result !== "SKIPPED" || typeof branch.code !== "string" || branch.code.length < 1 || !["HEALTHY", "NOT_REQUIRED"].includes(branch.environment_status);
     if (!exactKeys(branch.artifacts, ["branch_payload", "occurrence", "evidence"])) invalidPolicy = true;
     else for (const [slot, material] of Object.entries(branch.artifacts)) {

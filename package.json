@@ -17,6 +17,7 @@
     "verify:paydemo": "npm run build:paydemo && npm run test:paydemo:harness && npm run test:paydemo:provenance && npm run test:paydemo:identity && npm run test:paydemo && npm run test:paydemo:bugs",
     "test:qah:contracts": "node --test tests/qah/contracts.test.mjs",
     "test:qah": "node --test tests/qah/*.test.mjs",
+    "verify:qah": "npm run test:qah && npm run test:paydemo:harness && npm run typecheck",
     "test": "playwright test",
     "test:ui": "playwright test --ui",
     "typecheck": "tsc --noEmit"
