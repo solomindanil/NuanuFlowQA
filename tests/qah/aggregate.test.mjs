@@ -365,6 +365,34 @@ qtest("trusted resolver makes clean UI, API, mixed, and docs inputs deterministi
   }
 });
 
+qtest("trusted full TestPlan rejects consistently rehashed extra top-level and nested keys", async () => {
+  for (const mutate of [
+    (rawPlan) => { rawPlan.attacker_policy = { release: "READY" }; },
+    (rawPlan) => { rawPlan.artifact_slot.attacker_policy = { release: "READY" }; },
+  ]) {
+    const fixture = aggregateFixture();
+    const forgedPlan = structuredClone(fixture.plan);
+    delete forgedPlan.plan_sha256;
+    mutate(forgedPlan);
+    forgedPlan.plan_sha256 = sha256(forgedPlan);
+    fixture.input.plan = forgedPlan;
+    rewriteMaterial(fixture.store, fixture.input.plan_artifact, forgedPlan);
+    for (const entry of fixture.input.branches) {
+      const evidence = JSON.parse(material(fixture.store, entry.artifacts.evidence).bytes.toString("utf8"));
+      evidence.plan_sha256 = forgedPlan.plan_sha256;
+      rewriteMaterial(fixture.store, entry.artifacts.evidence, evidence);
+      const occurrence = JSON.parse(material(fixture.store, entry.artifacts.occurrence).bytes.toString("utf8"));
+      occurrence.plan_sha256 = forgedPlan.plan_sha256;
+      delete occurrence.occurrence_key;
+      occurrence.occurrence_key = sha256(occurrence);
+      rewriteMaterial(fixture.store, entry.artifacts.occurrence, occurrence);
+    }
+    const aggregate = await aggregateFixtureResult(fixture);
+    assert.equal(aggregate.invariants_passed, false);
+    assert.equal(aggregate.reason_codes.includes("INVALID_FULL_PLAN"), true);
+  }
+});
+
 qtest("missing trusted resolvers and arbitrary locally fabricated Artifact refs can never READY", async () => {
   const fixture = aggregateFixture();
   const withoutResolver = await aggregateEvidence(fixture.input);

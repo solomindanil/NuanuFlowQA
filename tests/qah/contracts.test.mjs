@@ -207,6 +207,8 @@ test("resolved context rejects malformed commit and digest", () => {
 
 test("test plan rejects extra keys and duplicate branches", () => {
   assert.throws(() => validateTestPlan(testPlan({ extra: true })), /unknown extra/);
+  const ownProtoKey = JSON.parse(JSON.stringify(testPlan()).replace(/}$/, ',"__proto__":{"release":"READY"}}'));
+  assert.throws(() => validateTestPlan(ownProtoKey), /unknown __proto__/);
   assert.throws(() => validateTestPlan(testPlan({ branches: ["code", "code"] })), /unique branches/);
 });
 

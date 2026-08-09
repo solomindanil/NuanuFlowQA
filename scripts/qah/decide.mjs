@@ -5,6 +5,7 @@ import {
   ARTIFACT_SLOT_POLICY,
   resolveArtifactVersionForSlot,
   resolveCommitProfile,
+  validateFullTestPlan,
   validateMaterializedBranch,
 } from "./aggregate.mjs";
 import { parseProfileBytes } from "./profile.mjs";
@@ -224,6 +225,7 @@ async function validateTrustedArtifactBindings(aggregate, dependencies) {
   catch (error) { reasons.add(error?.code ?? "INVALID_COMMIT_PROFILE"); }
   if (resolved.plan) {
     const plan = resolved.plan.payload;
+    for (const reason of validateFullTestPlan(plan)) reasons.add(reason);
     const { plan_sha256: claimed, ...unsigned } = plan ?? {};
     if (!DIGEST.test(claimed ?? "") || sha256(unsigned) !== claimed || claimed !== aggregate?.plan_sha256
       || !same(plan?.source_artifact, aggregate?.source_artifact) || plan?.profile_digest !== aggregate?.profile_digest

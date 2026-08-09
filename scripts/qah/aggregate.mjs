@@ -223,8 +223,12 @@ export async function resolveCommitProfile(context, repositoryOrigin, commit) {
   return { payload, bytes, sha256: result.sha256 };
 }
 
-function validateFullPlan(plan, reasons) {
-  if (!exactKeys(plan, PLAN_KEYS)) { reasons.add("INVALID_FULL_PLAN"); return; }
+export function validateFullTestPlan(plan) {
+  const reasons = new Set();
+  if (!exactKeys(plan, PLAN_KEYS)) {
+    reasons.add("INVALID_FULL_PLAN");
+    return [...reasons];
+  }
   try { validateTestPlan(plan.artifact_slot); } catch { reasons.add("INVALID_FULL_PLAN"); }
   if (plan.schema_version !== plan.artifact_slot?.schema_version || plan.project_key !== plan.artifact_slot?.project_key || plan.commit !== plan.artifact_slot?.commit || plan.profile_digest !== plan.artifact_slot?.profile_digest || !same(plan.branches, plan.artifact_slot?.branches)) reasons.add("INVALID_FULL_PLAN");
   if (!sourceReference(plan.source_artifact) || !DIGEST.test(plan.content_hash) || !["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(plan.risk_level)) reasons.add("INVALID_FULL_PLAN");
@@ -243,6 +247,7 @@ function validateFullPlan(plan, reasons) {
   if (!same(plan.branches, expected)) reasons.add("INVALID_FULL_PLAN");
   const { plan_sha256: claimed, ...unsigned } = plan;
   if (!DIGEST.test(claimed) || sha256(unsigned) !== claimed) reasons.add("PLAN_DIGEST_MISMATCH");
+  return [...reasons].sort();
 }
 
 function validateReceipt(receipt, input, profile, reasons) {
@@ -491,7 +496,7 @@ async function aggregateUnsafe(input, dependencies) {
   let profileArtifact; let planArtifact;
   try { planArtifact = await resolveArtifactVersionForSlot(input?.plan_artifact, "plan", resolutionContext, FIXED_ARTIFACT_LIMIT); } catch (error) { return failureAggregate(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
   const trustedPlan = planArtifact.payload;
-  validateFullPlan(trustedPlan, globalReasons);
+  for (const reason of validateFullTestPlan(trustedPlan)) globalReasons.add(reason);
   if (globalReasons.has("INVALID_FULL_PLAN")) return failureAggregate("INVALID_FULL_PLAN");
   if ([input.plan_artifact, input.profile_artifact].some((ref) => ref?.artifact_id === trustedPlan.source_artifact.artifact_id && ref?.version_id === trustedPlan.source_artifact.version_id)) return failureAggregate("REUSED_ARTIFACT_VERSION");
   try { await resolveArtifactVersionForSlot(trustedPlan.source_artifact, "source_flow_item", resolutionContext, FIXED_ARTIFACT_LIMIT); } catch (error) { return failureAggregate(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }

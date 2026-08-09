@@ -12,6 +12,31 @@ const classes = {
   docs: { code: "REQUIRED", api: "NOT_APPLICABLE", ui: "NOT_APPLICABLE", domain: "NOT_APPLICABLE" },
 };
 
+function substituteConsistentlyRehashedPlan(fixture, aggregate, mutate) {
+  const forgedPlan = structuredClone(fixture.plan);
+  delete forgedPlan.plan_sha256;
+  mutate(forgedPlan);
+  forgedPlan.plan_sha256 = sha256(forgedPlan);
+  rewriteMaterial(fixture.store, fixture.input.plan_artifact, forgedPlan);
+  for (const [index, entry] of fixture.input.branches.entries()) {
+    const evidenceRef = entry.artifacts.evidence;
+    const evidence = JSON.parse(material(fixture.store, evidenceRef).bytes.toString("utf8"));
+    evidence.plan_sha256 = forgedPlan.plan_sha256;
+    rewriteMaterial(fixture.store, evidenceRef, evidence);
+    const occurrenceRef = entry.artifacts.occurrence;
+    const occurrence = JSON.parse(material(fixture.store, occurrenceRef).bytes.toString("utf8"));
+    occurrence.plan_sha256 = forgedPlan.plan_sha256;
+    delete occurrence.occurrence_key;
+    occurrence.occurrence_key = sha256(occurrence);
+    rewriteMaterial(fixture.store, occurrenceRef, occurrence);
+    aggregate.branches[index].identity.plan_sha256 = forgedPlan.plan_sha256;
+  }
+  aggregate.plan_sha256 = forgedPlan.plan_sha256;
+  aggregate.plan_binding.plan_sha256 = forgedPlan.plan_sha256;
+  delete aggregate.aggregate_sha256;
+  aggregate.aggregate_sha256 = sha256(aggregate);
+}
+
 test("all four clean ticket classes route READY_FOR_PRODUCTION", async () => {
   for (const [name, applicability] of Object.entries(classes)) {
     const fixture = aggregateFixture({ applicability });
@@ -224,6 +249,21 @@ test("decision reuses complete branch validation for a rehashed malicious eviden
   assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
   assert.equal(decision.policy_override_rejected, true);
   assert.equal(decision.reason_codes.includes("INVALID_EVIDENCE_CANDIDATE"), true);
+});
+
+test("decision independently rejects re-read full TestPlan extra top-level and nested keys", async () => {
+  for (const mutate of [
+    (rawPlan) => { rawPlan.attacker_policy = { release: "READY" }; },
+    (rawPlan) => { rawPlan.artifact_slot.attacker_policy = { release: "READY" }; },
+  ]) {
+    const fixture = aggregateFixture();
+    const aggregate = await aggregateFixtureResult(fixture);
+    substituteConsistentlyRehashedPlan(fixture, aggregate, mutate);
+    const decision = await decideRelease(aggregate, { proposed_route: "READY_FOR_PRODUCTION" }, fixture.dependencies);
+    assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+    assert.equal(decision.policy_override_rejected, true);
+    assert.equal(decision.reason_codes.includes("INVALID_FULL_PLAN"), true);
+  }
 });
 
 test("decision independently resolves every exact ArtifactVersion and rejects rehashed ref swaps", async () => {
