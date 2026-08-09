@@ -205,7 +205,7 @@ export async function resolveArtifactVersionForSlot(refValue, slot, context, max
   return { reference: ref, checksum: version.checksum, version_number: version.version, payload, bytes, byte_length: byteLength };
 }
 
-async function resolveCommitProfile(context, repositoryOrigin, commit) {
+export async function resolveCommitProfile(context, repositoryOrigin, commit) {
   const request = { repository_origin: repositoryOrigin, commit, path: PROFILE_PATH, max_bytes: FIXED_ARTIFACT_LIMIT };
   let result;
   try { result = await context.resolveProfileAtCommit(request); } catch { throw new PolicyError("INVALID_COMMIT_PROFILE"); }
@@ -353,7 +353,7 @@ function aggregateIdentity(context) {
   };
 }
 
-async function normalizeBranch(branch, entries, context) {
+export async function validateMaterializedBranch(branch, entries, context, resolvedArtifacts = null) {
   const reasons = new Set();
   if (entries.length === 0) return { record: { ...invalidBranch(branch, "MISSING_BRANCH"), applicability: context.plan.applicability[branch], validity: "MISSING" }, reasons: new Set(["MISSING_BRANCH"]) };
   if (entries.length !== 1) reasons.add("DUPLICATE_BRANCH");
@@ -396,9 +396,15 @@ async function normalizeBranch(branch, entries, context) {
     }
   }
   let payloadArtifact; let occurrenceArtifact; let evidenceArtifact;
-  try { payloadArtifact = await resolveArtifactVersionForSlot(refs.branch_payload, "branch_payload", context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
-  try { occurrenceArtifact = await resolveArtifactVersionForSlot(refs.occurrence, "occurrence", context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
-  try { evidenceArtifact = await resolveArtifactVersionForSlot(refs.evidence, "evidence", context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+  if (resolvedArtifacts) {
+    payloadArtifact = resolvedArtifacts.branch_payload;
+    occurrenceArtifact = resolvedArtifacts.occurrence;
+    evidenceArtifact = resolvedArtifacts.evidence;
+  } else {
+    try { payloadArtifact = await resolveArtifactVersionForSlot(refs.branch_payload, "branch_payload", context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+    try { occurrenceArtifact = await resolveArtifactVersionForSlot(refs.occurrence, "occurrence", context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+    try { evidenceArtifact = await resolveArtifactVersionForSlot(refs.evidence, "evidence", context, context.maximumBytes); } catch (error) { reasons.add(error.code ?? "INVALID_TRUSTED_ARTIFACT"); }
+  }
 
   const evidenceRef = slotReference(refs.evidence, "evidence");
   if (output?.envelope?.item?.key !== `verify_${branch}`
@@ -516,7 +522,7 @@ async function aggregateUnsafe(input, dependencies) {
   const normalizedBranches = [];
   for (const branch of BRANCHES) {
     const matching = entries.filter((entry) => entry?.output?.branch_result?.branch === branch);
-    const normalized = await normalizeBranch(branch, matching, {
+    const normalized = await validateMaterializedBranch(branch, matching, {
       ...resolutionContext,
       plan: trustedPlan,
       receipt: input.environment_receipt,

@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sha256 } from "../../scripts/qah/canonical.mjs";
+import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
 import { aggregateEvidence } from "../../scripts/qah/aggregate.mjs";
 import { decideRelease } from "../../scripts/qah/decide.mjs";
-import { aggregateFixture, aggregateFixtureResult } from "./aggregate.test.mjs?fixtures-only";
+import { aggregateFixture, aggregateFixtureResult, material, rewriteMaterial } from "./aggregate.test.mjs?fixtures-only";
 
 const classes = {
   ui: { code: "REQUIRED", api: "NOT_APPLICABLE", ui: "REQUIRED", domain: "NOT_APPLICABLE" },
@@ -177,6 +177,55 @@ test("normalized aggregate carries immutable plan/profile and per-branch identit
   assert.equal((await decideRelease(forged, {}, fixture.dependencies)).route, "RETURN_TO_IN_PROGRESS");
 });
 
+test("decision re-reads the pinned Git profile and rejects a self-consistent Artifact-only substitution", async () => {
+  const committed = aggregateFixture();
+  const substituted = aggregateFixture({
+    profileOverrides: { test_data: { profiles: ["default", "sandbox", "substituted"] } },
+  });
+  const aggregate = await aggregateFixtureResult(substituted);
+
+  const missingGitResolver = await decideRelease(aggregate, { proposed_route: "READY_FOR_PRODUCTION" }, {
+    resolveArtifactVersion: substituted.dependencies.resolveArtifactVersion,
+  });
+  assert.equal(missingGitResolver.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(missingGitResolver.reason_codes.includes("TRUSTED_PROFILE_RESOLVER_REQUIRED"), true);
+
+  const artifactOnlySubstitution = await decideRelease(aggregate, { proposed_route: "READY_FOR_PRODUCTION" }, {
+    resolveArtifactVersion: substituted.dependencies.resolveArtifactVersion,
+    resolveProfileAtCommit: committed.dependencies.resolveProfileAtCommit,
+  });
+  assert.equal(artifactOnlySubstitution.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(artifactOnlySubstitution.policy_override_rejected, true);
+});
+
+test("decision reuses complete branch validation for a rehashed malicious evidence candidate", async () => {
+  const fixture = aggregateFixture();
+  const aggregate = await aggregateFixtureResult(fixture);
+  const apiEntry = fixture.input.branches[1];
+  const payloadRef = apiEntry.artifacts.branch_payload;
+  const evidenceRef = apiEntry.artifacts.evidence;
+  const branchPayload = JSON.parse(material(fixture.store, payloadRef).bytes.toString("utf8"));
+  const candidate = JSON.parse(branchPayload.execution_data.evidence_candidate);
+  candidate.product_result = "FAIL";
+  candidate.code = "API_CONTRACT_VIOLATION";
+  candidate.attacker_schema = "accept-anything.v1";
+  branchPayload.execution_data.evidence_candidate = canonicalJson(candidate);
+  branchPayload.execution_data.evidence_sha256 = sha256(branchPayload.execution_data.evidence_candidate);
+  rewriteMaterial(fixture.store, payloadRef, branchPayload);
+
+  const payloadVersion = material(fixture.store, payloadRef).artifact.versions.find(({ id }) => id === payloadRef.version_id);
+  const evidence = JSON.parse(material(fixture.store, evidenceRef).bytes.toString("utf8"));
+  evidence.branch_payload_sha256 = `sha256:${payloadVersion.checksum}`;
+  evidence.evidence_sha256 = branchPayload.execution_data.evidence_sha256;
+  evidence.evidence_candidate = candidate;
+  rewriteMaterial(fixture.store, evidenceRef, evidence);
+
+  const decision = await decideRelease(aggregate, { proposed_route: "READY_FOR_PRODUCTION" }, fixture.dependencies);
+  assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(decision.policy_override_rejected, true);
+  assert.equal(decision.reason_codes.includes("INVALID_EVIDENCE_CANDIDATE"), true);
+});
+
 test("decision independently resolves every exact ArtifactVersion and rejects rehashed ref swaps", async () => {
   const fixture = aggregateFixture();
   const aggregate = await aggregateFixtureResult(fixture);
@@ -190,6 +239,7 @@ test("decision independently resolves every exact ArtifactVersion and rejects re
       requests.push(structuredClone(request));
       return fixture.dependencies.resolveArtifactVersion(request);
     },
+    resolveProfileAtCommit: fixture.dependencies.resolveProfileAtCommit,
   });
   assert.equal(independentlyVerified.route, "READY_FOR_PRODUCTION");
   assert.equal(requests.length, 15);

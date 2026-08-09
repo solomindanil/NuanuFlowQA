@@ -138,7 +138,7 @@ function materialize(store, { index, semanticRole, payload, bytes, metadata = {}
   return ref;
 }
 
-function material(store, ref) {
+export function material(store, ref) {
   return store.get(refKey(ref));
 }
 
@@ -168,7 +168,7 @@ function registerSourceMaterial(store) {
   });
 }
 
-function rewriteMaterial(store, ref, payload, metadata = {}) {
+export function rewriteMaterial(store, ref, payload, metadata = {}) {
   const old = material(store, ref);
   const bytes = Buffer.from(canonicalJson(payload));
   store.set(refKey(ref), {

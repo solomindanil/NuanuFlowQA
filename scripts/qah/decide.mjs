@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { canonicalJson, sha256 } from "./canonical.mjs";
-import { AGGREGATE_REASON_CODES, ARTIFACT_SLOT_POLICY, resolveArtifactVersionForSlot } from "./aggregate.mjs";
+import {
+  AGGREGATE_REASON_CODES,
+  ARTIFACT_SLOT_POLICY,
+  resolveArtifactVersionForSlot,
+  resolveCommitProfile,
+  validateMaterializedBranch,
+} from "./aggregate.mjs";
 import { parseProfileBytes } from "./profile.mjs";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -193,8 +199,14 @@ function digestBytes(bytes) {
 
 async function validateTrustedArtifactBindings(aggregate, dependencies) {
   const reasons = new Set();
-  if (typeof dependencies?.resolveArtifactVersion !== "function") return ["TRUSTED_ARTIFACT_RESOLVER_REQUIRED"];
-  const context = { workspaceId: aggregate?.workspace_id, resolveArtifactVersion: dependencies.resolveArtifactVersion };
+  if (typeof dependencies?.resolveArtifactVersion !== "function") reasons.add("TRUSTED_ARTIFACT_RESOLVER_REQUIRED");
+  if (typeof dependencies?.resolveProfileAtCommit !== "function") reasons.add("TRUSTED_PROFILE_RESOLVER_REQUIRED");
+  if (reasons.size > 0) return [...reasons].sort();
+  const context = {
+    workspaceId: aggregate?.workspace_id,
+    resolveArtifactVersion: dependencies.resolveArtifactVersion,
+    resolveProfileAtCommit: dependencies.resolveProfileAtCommit,
+  };
   const resolved = {};
   const read = async (key, ref, slot, maximumBytes, parseJson = true) => {
     try { resolved[key] = await resolveArtifactVersionForSlot(ref, slot, context, maximumBytes, parseJson); }
@@ -207,6 +219,9 @@ async function validateTrustedArtifactBindings(aggregate, dependencies) {
   await read("source", aggregate?.source_artifact, "source_flow_item", fixedLimit);
   await read("plan", aggregate?.plan_artifact, "plan", fixedLimit);
   await read("profile", aggregate?.profile_artifact, "profile", fixedLimit, false);
+  let commitProfile;
+  try { commitProfile = await resolveCommitProfile(context, aggregate?.repository_origin, aggregate?.commit); }
+  catch (error) { reasons.add(error?.code ?? "INVALID_COMMIT_PROFILE"); }
   if (resolved.plan) {
     const plan = resolved.plan.payload;
     const { plan_sha256: claimed, ...unsigned } = plan ?? {};
@@ -219,46 +234,63 @@ async function validateTrustedArtifactBindings(aggregate, dependencies) {
     let profile;
     try { profile = parseProfileBytes(resolved.profile.bytes); } catch { reasons.add("INVALID_TRUSTED_PROFILE"); }
     if (digestBytes(resolved.profile.bytes) !== aggregate?.profile_blob_sha256) reasons.add("PROFILE_COMMIT_MISMATCH");
+    if (!commitProfile || !resolved.profile.bytes.equals(commitProfile.bytes) || commitProfile.sha256 !== aggregate?.profile_blob_sha256) reasons.add("PROFILE_COMMIT_MISMATCH");
     if (profile && (sha256(profile) !== aggregate?.profile_digest || profile.project_key !== aggregate?.project_key
       || profile.repository.allowed_origin !== aggregate?.repository_origin
       || profile.risk.confidence_threshold !== aggregate?.confidence_threshold
       || profile.execution.max_output_bytes !== aggregate?.max_evidence_bytes
       || !same(profile.safety.allowed_origins, aggregate?.profile_binding?.allowed_origins))) reasons.add("PROFILE_DIGEST_MISMATCH");
+    if (profile && commitProfile && !same(profile, commitProfile.payload)) reasons.add("PROFILE_COMMIT_MISMATCH");
   }
-  if (Array.isArray(aggregate?.branches)) for (const branch of aggregate.branches.slice(0, 4)) {
+  const usedArtifacts = new Set([aggregate?.source_artifact, aggregate?.plan_artifact, aggregate?.profile_artifact].map(identityKey));
+  if (resolved.plan && Array.isArray(aggregate?.branches)) for (const branch of aggregate.branches.slice(0, 4)) {
     const materials = {};
     for (const slot of ["branch_payload", "occurrence", "evidence"]) {
       try { materials[slot] = await resolveArtifactVersionForSlot(branch?.artifacts?.[slot], slot, context, evidenceLimit); }
       catch (error) { reasons.add(error?.code ?? "INVALID_TRUSTED_ARTIFACT"); }
     }
     const payload = materials.branch_payload?.payload;
-    const result = payload?.branch_result;
-    const execution = payload?.execution_data;
-    if (!payload || payload.schema_version !== "nuanu.qa-materialized-branch-payload.v1"
-      || result?.branch !== branch?.branch || result?.project_key !== aggregate?.project_key || result?.commit !== aggregate?.commit
-      || result?.profile_digest !== aggregate?.profile_digest || result?.applicability !== branch?.applicability
-      || result?.product_result !== branch?.product_result || result?.evidence_status !== branch?.evidence_status
-      || execution?.run_id !== aggregate?.run_id || execution?.attempt_id !== aggregate?.attempt_id
-      || execution?.environment_status !== branch?.environment_status || execution?.confidence !== branch?.confidence
-      || execution?.code !== branch?.code) reasons.add("BRANCH_PAYLOAD_MISMATCH");
-    const evidence = materials.evidence?.payload;
-    if (!evidence || evidence.schema_version !== "nuanu.qa-materialized-evidence.v1"
-      || !same(evidence?.source_artifact, aggregate?.source_artifact) || evidence?.plan_sha256 !== aggregate?.plan_sha256
-      || evidence?.branch !== branch?.branch || evidence?.branch_payload_sha256 !== (materials.branch_payload ? `sha256:${materials.branch_payload.checksum}` : null)
-      || evidence?.confirmed_findings !== branch?.confirmed_findings) reasons.add("EVIDENCE_LINK_MISMATCH");
-    const occurrence = materials.occurrence?.payload;
-    if (!occurrence || occurrence.schema_version !== "nuanu.qa-evidence-occurrence.v1"
-      || !same(occurrence?.source_artifact, aggregate?.source_artifact) || occurrence?.plan_sha256 !== aggregate?.plan_sha256
-      || occurrence?.branch !== branch?.branch || occurrence?.repository_origin !== aggregate?.repository_origin
-      || occurrence?.commit !== aggregate?.commit || occurrence?.content_hash !== aggregate?.content_hash
-      || occurrence?.environment_id !== aggregate?.environment_id || occurrence?.instance_nonce !== aggregate?.instance_nonce
-      || occurrence?.run_id !== aggregate?.run_id || occurrence?.attempt_id !== aggregate?.attempt_id
-      || !same(occurrence?.branch_payload_artifact, branch?.artifacts?.branch_payload)
-      || !same(occurrence?.evidence_artifact, branch?.artifacts?.evidence)) reasons.add("OCCURRENCE_LINK_MISMATCH");
-    if (occurrence) {
-      const { occurrence_key: claimed, ...unsigned } = occurrence;
-      if (!DIGEST.test(claimed ?? "") || sha256(unsigned) !== claimed) reasons.add("OCCURRENCE_KEY_MISMATCH");
-    }
+    const evidenceRef = branch?.artifacts?.evidence;
+    const entry = {
+      output: {
+        branch_result: payload?.branch_result,
+        envelope: {
+          item: {
+            key: `verify_${branch?.branch}`,
+            description: `Decision-time ${branch?.branch} QA validation`,
+            data: payload?.execution_data,
+            artifacts: { evidence_report: evidenceRef },
+          },
+          artifact_outputs: { "item.artifacts.evidence_report": evidenceRef },
+        },
+      },
+      artifacts: branch?.artifacts,
+    };
+    const normalized = await validateMaterializedBranch(branch?.branch, [entry], {
+      ...context,
+      plan: resolved.plan.payload,
+      receipt: {
+        environment_status: aggregate?.environment_status,
+        environment_id: aggregate?.environment_id,
+        target_namespace: aggregate?.target_namespace,
+        repository_origin: aggregate?.repository_origin,
+        commit: aggregate?.commit,
+        content_hash: aggregate?.content_hash,
+        instance_nonce: aggregate?.instance_nonce,
+        base_url: aggregate?.base_url,
+      },
+      repositoryOrigin: aggregate?.repository_origin,
+      runId: aggregate?.run_id,
+      attemptId: aggregate?.attempt_id,
+      confidenceThreshold: aggregate?.confidence_threshold,
+      maximumBytes: evidenceLimit,
+      usedArtifacts,
+      planArtifactLink: aggregate?.plan_artifact,
+      profileArtifactLink: aggregate?.profile_artifact,
+      profileBlobSha256: aggregate?.profile_blob_sha256,
+    }, materials);
+    for (const reason of normalized.reasons) reasons.add(reason);
+    if (!same(normalized.record, branch)) reasons.add("INVALID_AGGREGATE_POLICY");
   }
   return [...reasons].sort();
 }
