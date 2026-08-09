@@ -1,6 +1,7 @@
 import { matchesGlob } from "node:path";
 import { canonicalJson, sha256 } from "./canonical.mjs";
-import { BRANCHES, validateProfile, validateResolvedContext, validateTestPlan } from "./contracts.mjs";
+import { BRANCHES, validateProfile, validateTestPlan } from "./contracts.mjs";
+import { validateResolvedContextBoundary } from "./context.mjs";
 
 const EVIDENCE = Object.freeze({
   code: ["repository-diff", "static-analysis"],
@@ -8,18 +9,8 @@ const EVIDENCE = Object.freeze({
   ui: ["playwright", "screenshot"],
   domain: ["domain-data", "sandbox-test"],
 });
-
-function contextSlot(context) {
-  const slot = context?.artifact_slot ?? {
-    schema_version: context?.schema_version,
-    project_key: context?.project_key,
-    commit: context?.commit,
-    profile_digest: context?.profile_digest,
-    environment_status: context?.environment_status ?? "NOT_REQUIRED",
-  };
-  validateResolvedContext(slot);
-  return slot;
-}
+const MINIMUM_HIGH_RISK = Object.freeze(["payment", "payments", "auth", "authentication", "authorization", "pii", "webhook"]);
+const MINIMUM_CRITICAL_RISK = Object.freeze(["real-money", "production-migration"]);
 
 function matchingReasons(context, profile, branch) {
   if (branch === "code") return [{ code: "ALWAYS_CODE" }];
@@ -27,23 +18,22 @@ function matchingReasons(context, profile, branch) {
   const area = profile.areas[branch];
   if (context.changed_files.some((file) => area.paths.some((pattern) => matchesGlob(file, pattern)))) reasons.push({ code: "PATH_RULE" });
   if (context.labels.some((label) => area.labels.includes(label))) reasons.push({ code: "LABEL_RULE" });
-  if (context.acceptance_capabilities.includes(branch)) reasons.push({ code: "CAPABILITY_RULE" });
   return reasons;
 }
 
 function riskLevel(context, profile) {
   const tokens = new Set([...context.labels, ...context.acceptance_capabilities]);
   const matchesKeyword = (keyword) => tokens.has(keyword) || context.changed_files.some((file) => file.toLowerCase().includes(keyword));
-  if (profile.risk.critical_keywords.some(matchesKeyword)) return "CRITICAL";
-  if (profile.risk.high_keywords.some(matchesKeyword)) return "HIGH";
+  if ([...MINIMUM_CRITICAL_RISK, ...(profile.risk.critical_keywords ?? [])].some(matchesKeyword)) return "CRITICAL";
+  if ([...MINIMUM_HIGH_RISK, ...(profile.risk.high_keywords ?? [])].some(matchesKeyword)) return "HIGH";
   return "MEDIUM";
 }
 
 export function planQaScope(context, rawProfile) {
   const profile = validateProfile(rawProfile);
-  const slot = contextSlot(context);
+  context = validateResolvedContextBoundary(context, profile.repository);
+  const slot = context.artifact_slot;
   if (context.project_key !== profile.project_key) throw new Error("context project_key must match profile");
-  if (!Array.isArray(context.changed_files) || !Array.isArray(context.labels) || !Array.isArray(context.acceptance_capabilities) || !context.source_artifact || typeof context.content_hash !== "string") throw new Error("normalized context is required");
 
   const branch_reasons = {};
   const applicability = {};

@@ -59,3 +59,40 @@ test("planning is byte-deterministic and hashes the plan without its digest", as
   const { plan_sha256, ...unsigned } = first;
   assert.equal(plan_sha256, sha256(unsigned));
 });
+
+test("planner rejects malformed full context instead of signing its artifact slot", async () => {
+  const malformedSource = await fixture("ui");
+  malformedSource.source_artifact = { id: "", version: 0 };
+  assert.throws(() => planQaScope(malformedSource, profile), /source_artifact/);
+
+  const malformedHash = await fixture("ui");
+  malformedHash.content_hash = "not-a-digest";
+  assert.throws(() => planQaScope(malformedHash, profile), /content_hash/);
+
+  const unsafePath = await fixture("ui");
+  unsafePath.changed_files = ["../checkout.js"];
+  assert.throws(() => planQaScope(unsafePath, profile), /traversal/);
+});
+
+test("immutable risk floors keep auth and payment changes HIGH without profile keyword lists", async () => {
+  const profileWithoutRiskKeywords = structuredClone(profile);
+  delete profileWithoutRiskKeywords.risk.high_keywords;
+  delete profileWithoutRiskKeywords.risk.critical_keywords;
+
+  const auth = await fixture("docs");
+  auth.labels = ["auth"];
+  assert.equal(planQaScope(auth, profileWithoutRiskKeywords).risk_level, "HIGH");
+
+  const payments = await fixture("docs");
+  payments.changed_files = ["apps/paydemo/lib/payment-service.mjs"];
+  payments.labels = ["payments"];
+  assert.equal(planQaScope(payments, profileWithoutRiskKeywords).risk_level, "HIGH");
+});
+
+test("capability-only tokens do not activate a branch without a profile mapping", async () => {
+  const context = await fixture("docs");
+  context.acceptance_capabilities = ["api"];
+  const plan = planQaScope(context, profile);
+  assert.equal(plan.applicability.api, "NOT_APPLICABLE");
+  assert.deepEqual(plan.branch_reasons.api, []);
+});

@@ -144,8 +144,9 @@ export function validateProfile(value) {
       }
     }
 
-    exactKeys(value.risk, ["high_keywords", "critical_keywords", "confidence_threshold"]);
+    exactKeys(value.risk, ["confidence_threshold"], ["high_keywords", "critical_keywords"]);
     for (const key of ["high_keywords", "critical_keywords"]) {
+      if (!(key in value.risk)) continue;
       safeStringArray(value.risk[key], `risk.${key}`);
       for (const keyword of value.risk[key]) {
         if (!/^[a-z][a-z0-9-]*$/.test(keyword)) throw new Error(`risk.${key} must contain normalized keywords`);

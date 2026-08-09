@@ -5,6 +5,8 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /^[a-z][a-z0-9-]{0,63}$/;
 const ARTIFACT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const RAW_CONTEXT_KEYS = ["source_artifact", "issue_uuid", "project_uuid", "project_key", "repository_origin", "commit", "content_hash", "profile_digest", "changed_files", "labels", "acceptance_capabilities", "wiki_artifacts"];
+const RESOLVED_CONTEXT_KEYS = ["schema_version", "project_key", "commit", "profile_digest", "environment_status", ...RAW_CONTEXT_KEYS, "artifact_slot"];
 
 function exactKeys(value, required) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("context must be an object");
@@ -90,7 +92,7 @@ function exactRepositoryOrigin(value, allowedOrigin) {
 }
 
 export function resolveContext(input, profileRepository) {
-  exactKeys(input, ["source_artifact", "issue_uuid", "project_uuid", "project_key", "repository_origin", "commit", "content_hash", "profile_digest", "changed_files", "labels", "acceptance_capabilities", "wiki_artifacts"]);
+  exactKeys(input, RAW_CONTEXT_KEYS);
   if (!profileRepository || typeof profileRepository !== "object") throw new Error("profile repository is required");
   const source = sourceArtifact(input.source_artifact);
   if (typeof input.issue_uuid !== "string" || !UUID.test(input.issue_uuid)) throw new Error("issue_uuid must be an exact UUID");
@@ -102,7 +104,7 @@ export function resolveContext(input, profileRepository) {
   digest(input.profile_digest, "profile_digest");
   const contextArtifact = { schema_version: "nuanu.qa-resolved-context.v1", project_key: input.project_key, commit: input.commit, profile_digest: input.profile_digest, environment_status: "NOT_REQUIRED" };
   validateResolvedContext(contextArtifact);
-  return {
+  return validateResolvedContextBoundary({
     ...contextArtifact,
     source_artifact: source,
     issue_uuid: input.issue_uuid,
@@ -114,7 +116,29 @@ export function resolveContext(input, profileRepository) {
     acceptance_capabilities: uniqueNormalizedTokens(input.acceptance_capabilities, "acceptance_capabilities"),
     wiki_artifacts: wikiArtifacts(input.wiki_artifacts),
     artifact_slot: contextArtifact,
-  };
+  }, profileRepository);
+}
+
+export function validateResolvedContextBoundary(context, profileRepository) {
+  exactKeys(context, RESOLVED_CONTEXT_KEYS);
+  if (!profileRepository || typeof profileRepository !== "object") throw new Error("profile repository is required");
+  if (context.schema_version !== "nuanu.qa-resolved-context.v1" || context.environment_status !== "NOT_REQUIRED") throw new Error("resolved context must use the closed context artifact identity");
+  token(context.project_key, "project_key");
+  if (typeof context.issue_uuid !== "string" || !UUID.test(context.issue_uuid)) throw new Error("issue_uuid must be an exact UUID");
+  if (typeof context.project_uuid !== "string" || !UUID.test(context.project_uuid)) throw new Error("project_uuid must be an exact UUID");
+  exactRepositoryOrigin(context.repository_origin, profileRepository.allowed_origin);
+  if (typeof context.commit !== "string" || !SHA.test(context.commit)) throw new Error("commit must be a lowercase 40-character Git SHA");
+  digest(context.content_hash, "content_hash");
+  digest(context.profile_digest, "profile_digest");
+  sourceArtifact(context.source_artifact);
+  const normalizedFiles = changedFiles(context.changed_files);
+  const normalizedLabels = uniqueNormalizedTokens(context.labels, "labels");
+  const normalizedCapabilities = uniqueNormalizedTokens(context.acceptance_capabilities, "acceptance_capabilities");
+  const normalizedWiki = wikiArtifacts(context.wiki_artifacts);
+  if (JSON.stringify(normalizedFiles) !== JSON.stringify(context.changed_files) || JSON.stringify(normalizedLabels) !== JSON.stringify(context.labels) || JSON.stringify(normalizedCapabilities) !== JSON.stringify(context.acceptance_capabilities) || JSON.stringify(normalizedWiki) !== JSON.stringify(context.wiki_artifacts)) throw new Error("resolved context must be canonicalized");
+  validateResolvedContext(context.artifact_slot);
+  if (context.artifact_slot.schema_version !== context.schema_version || context.artifact_slot.project_key !== context.project_key || context.artifact_slot.commit !== context.commit || context.artifact_slot.profile_digest !== context.profile_digest || context.artifact_slot.environment_status !== context.environment_status) throw new Error("resolved context artifact slot must match context identity");
+  return context;
 }
 
 export function loadProjectContextEnvelope(context) {
