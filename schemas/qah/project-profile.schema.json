@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Nuanu QA project profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "project_key", "repository", "environment", "checks", "safety", "test_data"],
+  "properties": {
+    "schema_version": { "const": "nuanu.qa-project-profile.v1" },
+    "project_key": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "repository": { "type": "object", "additionalProperties": false, "required": ["allowed_origin"], "properties": { "allowed_origin": { "type": "string", "format": "uri" } } },
+    "environment": { "type": "object", "additionalProperties": false, "required": ["strategy", "prepare_command", "cleanup_command", "health_path"], "properties": { "strategy": { "const": "managed_command" }, "prepare_command": { "$ref": "#/$defs/command" }, "cleanup_command": { "$ref": "#/$defs/command" }, "health_path": { "type": "string", "pattern": "^/" } } },
+    "checks": { "type": "object", "additionalProperties": false, "required": ["code", "api", "ui", "domain"], "properties": { "code": { "$ref": "#/$defs/command" }, "api": { "$ref": "#/$defs/command" }, "ui": { "$ref": "#/$defs/command" }, "domain": { "$ref": "#/$defs/command" } } },
+    "safety": { "type": "object", "additionalProperties": false, "required": ["mutation_mode", "irreversible_actions", "secret_output", "allowed_origins"], "properties": { "mutation_mode": { "const": "sandbox_only" }, "irreversible_actions": { "const": "deny" }, "secret_output": { "const": "deny" }, "allowed_origins": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "format": "uri" } } } },
+    "test_data": { "type": "object", "additionalProperties": false, "required": ["profiles"], "properties": { "profiles": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } } } }
+  },
+  "$defs": { "command": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } } }
+}

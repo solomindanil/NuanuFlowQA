@@ -1,0 +1,21 @@
+schema_version: nuanu.qa-project-profile.v1
+project_key: paydemo
+repository:
+  allowed_origin: https://github.com/solomindanil/NuanuFlowQA.git
+environment:
+  strategy: managed_command
+  prepare_command: [node, scripts/qah/environment.mjs, prepare]
+  cleanup_command: [node, scripts/qah/environment.mjs, cleanup]
+  health_path: /build-info
+checks:
+  code: [npm, run, typecheck]
+  api: [node, scripts/qah/adapters/paydemo.mjs, api]
+  ui: [node, scripts/qah/adapters/paydemo.mjs, ui]
+  domain: [node, scripts/qah/adapters/paydemo.mjs, domain]
+safety:
+  mutation_mode: sandbox_only
+  irreversible_actions: deny
+  secret_output: deny
+  allowed_origins: [http://127.0.0.1]
+test_data:
+  profiles: [default, payment_sandbox]
