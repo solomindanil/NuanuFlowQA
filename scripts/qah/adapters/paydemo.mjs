@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalJson, sha256 } from "../canonical.mjs";
-import { classifyUi, runProbe as existingPaydemoProbe } from "../../paydemo-qah-probe.mjs";
+import { runProbe as existingPaydemoProbe } from "../../paydemo-qah-probe.mjs";
 
 const INPUT_KEYS = ["schema_version", "branch", "run_id", "attempt_id", "attempt_namespace", "branch_namespace", "test_data_profile", "environment"];
 const ENVIRONMENT_KEYS = ["base_url", "commit", "content_hash", "environment_id", "instance_nonce"];
@@ -56,19 +56,24 @@ async function boundedCandidate(path, { kind, name, mediaType, maximumBytes }) {
   return { kind, name, media_type: mediaType, size_bytes: bytes.byteLength, sha256: digestBytes(bytes), content_base64: bytes.toString("base64") };
 }
 
-async function boundedPlaywrightResponse(response, maximumBytes = 32_768) {
-  const [contentType, rawLength] = await Promise.all([response.headerValue("content-type"), response.headerValue("content-length")]);
-  if (contentType?.split(";", 1)[0].trim().toLowerCase() !== "application/json" || !/^[0-9]+$/.test(rawLength ?? "") || Number(rawLength) > maximumBytes) throw new Error("UI response evidence is invalid or oversized");
-  const bytes = Buffer.from(await response.body());
-  if (bytes.byteLength > maximumBytes) throw new Error("UI response evidence is oversized");
-  try { return JSON.parse(bytes.toString("utf8")); } catch { throw new Error("UI response evidence is invalid JSON"); }
-}
-
 function exactCheckoutResponse(response, origin) {
   try {
     const url = new URL(response.url());
     return url.origin === origin && url.pathname === "/api/checkout" && url.search === "" && url.hash === "" && response.request().method() === "POST";
   } catch { return false; }
+}
+
+function classifyBoundedUi({ selectedPaymentMethod, requestPaymentMethod, receiptText, responseStatus }) {
+  if (!Number.isInteger(responseStatus) || responseStatus < 200 || responseStatus >= 300) return { product_result: "INCONCLUSIVE", environment_status: "INFRA_FAILURE", evidence_status: "UNVERIFIED", confidence: 0, code: "UI_PROBE_UNAVAILABLE" };
+  if (selectedPaymentMethod === "bank" && requestPaymentMethod === "bank" && responseStatus === 201 && receiptText === "Payment recorded by bank transfer.") return { product_result: "PASS", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1, code: "BANK_TRANSFER_CONFIRMED" };
+  if (selectedPaymentMethod === "bank" && (requestPaymentMethod !== "bank" || /\bcard\b/i.test(receiptText))) return { product_result: "FAIL", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1, code: "BANK_SHOWN_AS_CARD" };
+  return { product_result: "FAIL", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1, code: "BANK_UI_CONTRACT_VIOLATION" };
+}
+
+function allowedWebSocketOrigin(httpOrigin) {
+  const value = new URL(httpOrigin);
+  value.protocol = value.protocol === "https:" ? "wss:" : "ws:";
+  return value.origin;
 }
 
 export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = join(tmpdir(), "nuanu-qah-ui"), maxArtifactBytes = DEFAULT_MAX_ARTIFACT_BYTES } = {}) {
@@ -87,15 +92,29 @@ export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = joi
   let traceStarted = false;
   let traceStopped = false;
   let originViolation = false;
+  let result;
+  let primaryError;
+  const cleanupErrors = [];
   try {
     browser = await chromium.launch({ headless: true, timeout: 10_000 });
-    context = await browser.newContext();
+    context = await browser.newContext({ serviceWorkers: "block" });
     context.setDefaultTimeout(10_000);
     await context.route("**/*", async (route) => {
       let allowed = false;
       try { allowed = new URL(route.request().url()).origin === input.environment.base_url; } catch {}
       if (!allowed) { originViolation = true; await route.abort(); return; }
       await route.continue();
+    });
+    const websocketOrigin = allowedWebSocketOrigin(input.environment.base_url);
+    await context.routeWebSocket(/.*/, async (websocketRoute) => {
+      let allowed = false;
+      try { allowed = new URL(websocketRoute.url()).origin === websocketOrigin; } catch {}
+      if (!allowed) {
+        originViolation = true;
+        await websocketRoute.close({ code: 1008, reason: "origin denied" });
+        return;
+      }
+      websocketRoute.connectToServer();
     });
     await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
     traceStarted = true;
@@ -110,25 +129,32 @@ export async function runPaydemoUiProbe(rawInput, { chromium, artifactRoot = joi
     await page.getByRole("button", { name: "Pay $10.00" }).click();
     const response = await responsePromise;
     const requestBody = response.request().postDataJSON();
-    const responseBody = await boundedPlaywrightResponse(response);
     const receipt = page.getByRole("status").filter({ hasText: /Payment (recorded|could not)/ });
     await receipt.waitFor({ state: "visible" });
     const receiptText = (await receipt.textContent())?.trim() ?? "";
     if (originViolation || new URL(page.url()).origin !== input.environment.base_url) throw new Error("UI interaction escaped the exact prepared origin");
-    const observation = { selectedPaymentMethod, requestPaymentMethod: requestBody?.paymentMethod ?? null, receiptText, responseStatus: response.status(), responseBody };
-    const classification = classifyUi(observation);
+    const observation = { selectedPaymentMethod, requestPaymentMethod: requestBody?.paymentMethod ?? null, receiptText, responseStatus: response.status() };
+    const classification = classifyBoundedUi(observation);
     await page.screenshot({ path: screenshotPath, fullPage: true });
     const screenshot = await boundedCandidate(screenshotPath, { kind: "screenshot", name: screenshotName, mediaType: "image/png", maximumBytes: maxArtifactBytes });
     await context.tracing.stop({ path: tracePath });
     traceStopped = true;
     const trace = await boundedCandidate(tracePath, { kind: "trace", name: traceName, mediaType: "application/zip", maximumBytes: maxArtifactBytes });
-    return { classification, observation_sha256: sha256({ selected_payment_method: selectedPaymentMethod, request_payment_method: observation.requestPaymentMethod, response_status: observation.responseStatus, receipt_sha256: sha256(receiptText) }), candidates: [screenshot, trace] };
+    result = { classification, observation_sha256: sha256({ selected_payment_method: selectedPaymentMethod, request_payment_method: observation.requestPaymentMethod, response_status: observation.responseStatus, receipt_sha256: sha256(receiptText) }), candidates: [screenshot, trace] };
+  } catch (error) {
+    primaryError = error;
   } finally {
-    if (traceStarted && !traceStopped && context) await context.tracing.stop({ path: tracePath }).catch(() => {});
-    await context?.close().catch(() => {});
-    await browser?.close().catch(() => {});
-    await rm(temporary, { recursive: true, force: true });
+    if (traceStarted && !traceStopped && context) {
+      try { await context.tracing.stop({ path: tracePath }); } catch (error) { cleanupErrors.push(error); }
+    }
+    if (context) try { await context.close(); } catch (error) { cleanupErrors.push(error); }
+    if (browser) try { await browser.close(); } catch (error) { cleanupErrors.push(error); }
+    try { await rm(temporary, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }
   }
+  if (cleanupErrors.length > 0) throw new AggregateError(primaryError ? [primaryError, ...cleanupErrors] : cleanupErrors, "UI probe cleanup failed");
+  if (primaryError) throw primaryError;
+  if (originViolation) throw new Error("UI interaction attempted a cross-origin transport");
+  return result;
 }
 
 async function runDocumentProbe(input, dependencies) {

@@ -213,6 +213,16 @@ function projection(result) {
   };
 }
 
+function assertEnvironmentVerificationFailure(result, branch = "api") {
+  assert.deepEqual(projection(result), {
+    branch, applicability: "REQUIRED", product_result: "INCONCLUSIVE", environment_status: "INFRA_FAILURE",
+    evidence_status: "UNVERIFIED", confidence: 0, code: "ENVIRONMENT_VERIFICATION_FAILED",
+  });
+  assert.deepEqual(Object.keys(result).sort(), ["branch_result", "envelope"]);
+  assert.equal(result.envelope.artifact_outputs["item.artifacts.evidence_report"], null);
+  assert.deepEqual(JSON.parse(result.envelope.item.data.evidence_candidate).candidates, []);
+}
+
 test("all four branches produce the closed fixture result and one evidence-report slot", async () => {
   const calls = [];
   const rawProfile = profile();
@@ -463,15 +473,30 @@ test("persisted Task 3 state is the sole source of checkout trust and retry path
   const tamperedState = structuredClone(fixture.state);
   tamperedState.receipt = { ...tamperedState.receipt, base_url: "http://127.0.0.1:4174" };
   await writeFile(fixture.receipt.state_file, JSON.stringify(tamperedState));
-  await assert.rejects(runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("state"); }, dependencies }), /persisted|receipt|state/);
+  assertEnvironmentVerificationFailure(await runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("state"); }, dependencies }));
 
   await writeFile(fixture.receipt.state_file, JSON.stringify({ ...fixture.state, owner_token: "" }));
-  await assert.rejects(runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("owner"); }, dependencies }), /persisted|ownership|state/);
+  assertEnvironmentVerificationFailure(await runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("owner"); }, dependencies }));
 
   await writeFile(fixture.receipt.state_file, JSON.stringify(fixture.state));
   await writeFile(fixture.receipt.pid_file, `${process.pid + 1}\n`);
-  await assert.rejects(runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("pid"); }, dependencies }), /PID|pid|state/);
+  assertEnvironmentVerificationFailure(await runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("pid"); }, dependencies }));
+
+  await rm(fixture.receipt.state_file);
+  assertEnvironmentVerificationFailure(await runBranch({ branch: "api", plan: rawPlan, profile: rawProfile, environmentReceipt: fixture.receipt, runId: "run-1", attemptId: "attempt-1", execute: async () => { calls.push("missing"); }, dependencies }));
   assert.deepEqual(calls.filter((entry) => typeof entry === "string"), []);
+});
+
+test("environment verifier exceptions become the uniform infrastructure envelope before execute", async () => {
+  const rawProfile = profile();
+  let executions = 0;
+  const result = await runBranch({
+    branch: "api", plan: plan(rawProfile), profile: rawProfile, environmentReceipt: environmentReceipt(), runId: "run-1", attemptId: "attempt-1",
+    execute: async () => { executions += 1; },
+    dependencies: { verifyEnvironment: async () => { throw new Error("persisted state disappeared"); } },
+  });
+  assertEnvironmentVerificationFailure(result);
+  assert.equal(executions, 0);
 });
 
 test("code requires a verified READY checkout and never falls back to the worker cwd", async () => {
@@ -600,15 +625,17 @@ test("concurrent reset and fixture mutations remain isolated behind a real overl
   assert.equal(store.size, 5);
 });
 
-function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = "screenshot", traceBytes = "trace", requestUrl = "http://127.0.0.1:4173/app.js", interactionRequestUrl = "http://127.0.0.1:4173/api/checkout" } = {}) {
+function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = "screenshot", traceBytes = "trace", requestUrl = "http://127.0.0.1:4173/app.js", interactionRequestUrl = "http://127.0.0.1:4173/api/checkout", webSocketUrl = null, responseBodyError = null, contextCloseError = null, browserCloseError = null } = {}) {
   const events = [];
   let routeHandler;
+  let webSocketHandler;
+  const state = { contextOptions: null };
   const responseBody = Buffer.from(JSON.stringify({ paymentId: "id", amountCents: 1000, paymentMethod: "bank" }));
   const response = {
     url: () => "http://127.0.0.1:4173/api/checkout", status: () => 201,
     request: () => ({ method: () => "POST", postDataJSON: () => ({ paymentMethod: "bank" }) }),
     headerValue: async (name) => name === "content-type" ? "application/json" : String(responseBody.byteLength),
-    body: async () => responseBody,
+    body: async () => { events.push("response-body"); if (responseBodyError) throw responseBodyError; return responseBody; },
   };
   const page = {
     async goto() {
@@ -623,6 +650,12 @@ function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = 
       if (role === "button") return { click: async () => {
         const route = { request: () => ({ url: () => interactionRequestUrl }), continue: async () => events.push("interaction-continue"), abort: async () => events.push("interaction-abort") };
         await routeHandler(route);
+        if (webSocketUrl && webSocketHandler) await webSocketHandler({
+          url: () => webSocketUrl,
+          close: async () => events.push("websocket-close"),
+          connectToServer: () => { events.push("websocket-connect"); return {}; },
+        });
+        else if (webSocketUrl) events.push("websocket-unrouted");
         events.push("click");
       } };
       return { filter: () => ({ waitFor: async () => events.push("receipt"), textContent: async () => "Payment recorded by bank transfer." }) };
@@ -631,11 +664,16 @@ function fakeUiBrowser({ finalUrl = "http://127.0.0.1:4173/", screenshotBytes = 
   };
   const context = {
     tracing: { start: async () => events.push("trace-start"), stop: async ({ path }) => { events.push("trace-stop"); await writeFile(path, traceBytes); } },
-    route: async (_pattern, handler) => { routeHandler = handler; }, newPage: async () => page,
-    close: async () => events.push("context-close"), setDefaultTimeout: () => {},
+    route: async (_pattern, handler) => { routeHandler = handler; },
+    routeWebSocket: async (_pattern, handler) => { webSocketHandler = handler; },
+    newPage: async () => page,
+    close: async () => { events.push("context-close"); if (contextCloseError) throw contextCloseError; }, setDefaultTimeout: () => {},
   };
-  const browser = { newContext: async () => context, close: async () => events.push("browser-close") };
-  return { chromium: { launch: async () => browser }, events };
+  const browser = {
+    newContext: async (options) => { state.contextOptions = options; return context; },
+    close: async () => { events.push("browser-close"); if (browserCloseError) throw browserCloseError; },
+  };
+  return { chromium: { launch: async () => browser }, events, state };
 }
 
 test("UI assertion, screenshot, and trace share one isolated context and clean temporary files", async (t) => {
@@ -647,6 +685,7 @@ test("UI assertion, screenshot, and trace share one isolated context and clean t
   assert.equal(harness.events.indexOf("click") < harness.events.indexOf("screenshot"), true);
   assert.equal(harness.events.indexOf("screenshot") < harness.events.indexOf("trace-stop"), true);
   assert.deepEqual(result.candidates.map((entry) => entry.kind), ["screenshot", "trace"]);
+  assert.deepEqual(harness.state.contextOptions, { serviceWorkers: "block" });
   assert.deepEqual(await readdir(artifactRoot), []);
   assert.deepEqual(harness.events.slice(-2), ["context-close", "browser-close"]);
 });
@@ -656,6 +695,7 @@ test("UI rejects cross-origin navigation or requests and removes oversized evide
     { finalUrl: "https://evil.example/" },
     { requestUrl: "https://evil.example/script.js" },
     { interactionRequestUrl: "https://evil.example/exfiltrate" },
+    { webSocketUrl: "wss://evil.example/exfiltrate" },
     { screenshotBytes: "x".repeat(1025) },
   ].entries()) {
     const artifactRoot = await mkdtemp(join(tmpdir(), `qah-ui-reject-${index}-`));
@@ -663,6 +703,31 @@ test("UI rejects cross-origin navigation or requests and removes oversized evide
     const harness = fakeUiBrowser(configuration);
     const input = paydemoInput("ui");
     await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(input, { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /origin|artifact|size|scope/i);
+    assert.deepEqual(await readdir(artifactRoot), []);
+    assert.equal(harness.events.includes("context-close"), true);
+    assert.equal(harness.events.includes("browser-close"), true);
+  }
+});
+
+test("UI assertion never materializes an untrusted response body", async (t) => {
+  const artifactRoot = await mkdtemp(join(tmpdir(), "qah-ui-no-body-"));
+  t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+  const harness = fakeUiBrowser({ responseBodyError: new Error("body is decompressed and unbounded") });
+  const result = await paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 });
+  assert.equal(result.classification.product_result, "PASS");
+  assert.equal(harness.events.includes("response-body"), false);
+  assert.deepEqual(await readdir(artifactRoot), []);
+});
+
+test("UI cleanup failures reject the adapter, attempt all cleanup, and remove evidence", async (t) => {
+  for (const [index, configuration] of [
+    { contextCloseError: new Error("context cleanup failed") },
+    { browserCloseError: new Error("browser cleanup failed") },
+  ].entries()) {
+    const artifactRoot = await mkdtemp(join(tmpdir(), `qah-ui-cleanup-${index}-`));
+    t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+    const harness = fakeUiBrowser(configuration);
+    await assert.rejects(paydemoAdapterModule.runPaydemoUiProbe(paydemoInput("ui"), { chromium: harness.chromium, artifactRoot, maxArtifactBytes: 1024 }), /cleanup/i);
     assert.deepEqual(await readdir(artifactRoot), []);
     assert.equal(harness.events.includes("context-close"), true);
     assert.equal(harness.events.includes("browser-close"), true);

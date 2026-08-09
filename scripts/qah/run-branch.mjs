@@ -309,8 +309,13 @@ export async function runBranch({ branch, plan: rawPlan, profile: rawProfile, en
   if (receipt.environment_status !== "READY") return infraOutput(context, "ENVIRONMENT_NOT_READY");
 
   const verifyEnvironment = dependencies.verifyEnvironment ?? ((input) => verifyPreparedEnvironment(input, { ...dependencies, trustedStateRoot }));
-  const verified = await verifyEnvironment({ receipt, plan, profile, runId, attemptId });
-  if (!verified || verified.receipt !== receipt || typeof verified.checkout !== "string") throw new Error("environment verifier returned an invalid trusted checkout");
+  let verified;
+  try {
+    verified = await verifyEnvironment({ receipt, plan, profile, runId, attemptId });
+    if (!verified || verified.receipt !== receipt || typeof verified.checkout !== "string") throw new Error("environment verifier returned an invalid trusted checkout");
+  } catch {
+    return infraOutput(context, "ENVIRONMENT_VERIFICATION_FAILED");
+  }
   if (branch === "ui") {
     const prepared = exactUrl(receipt.base_url, "prepared UI origin");
     if (receipt.base_url !== prepared.origin || !profile.safety.allowed_origins.includes(prepared.origin)) throw new Error("prepared UI origin must exactly match a profile allowed origin");
