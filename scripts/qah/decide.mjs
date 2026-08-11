@@ -10,6 +10,7 @@ import {
   validateMaterializedBranch,
 } from "./aggregate.mjs";
 import { parseProfileBytes } from "./profile.mjs";
+import { RELEASE_ROUTES, classifyValidatedRelease } from "./release-policy.mjs";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
@@ -18,7 +19,7 @@ const PROJECT_KEY = /^[a-z][a-z0-9-]*$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NONCE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAMESPACE = /^[a-f0-9]{64}$/;
-const ROUTES = new Set(["READY_FOR_PRODUCTION", "RETURN_TO_IN_PROGRESS"]);
+const ROUTES = new Set(RELEASE_ROUTES);
 const AGGREGATE_KEYS = ["schema_version", "workspace_id", "source_artifact", "plan_artifact", "profile_artifact", "plan_binding", "profile_binding", "plan_sha256", "profile_blob_sha256", "profile_digest", "project_key", "repository_origin", "commit", "content_hash", "environment_id", "target_namespace", "instance_nonce", "base_url", "run_id", "attempt_id", "confidence_threshold", "max_evidence_bytes", "environment_status", "expected_branches", "branches", "invariants_passed", "reason_codes", "aggregate_sha256"];
 const BRANCH_KEYS = ["branch", "validity", "applicability", "product_result", "environment_status", "evidence_status", "confidence", "code", "confirmed_findings", "identity", "artifacts", "reason_codes"];
 const ARTIFACT_REF_KEYS = ["artifact_id", "version_id", "kind", "role"];
@@ -326,10 +327,10 @@ function decisionFrom(aggregateSha, route, reasonCodes, proposal) {
 export async function decideRelease(aggregate, proposal = {}, dependencies = {}) {
   try {
     const validated = await validateAggregateForDecision(aggregate, dependencies);
-    return decisionFrom(validated.aggregate_sha256, validated.valid && validated.reason_codes.length === 0 && validated.aggregate.invariants_passed === true
-      ? "READY_FOR_PRODUCTION" : "RETURN_TO_IN_PROGRESS", validated.reason_codes, proposal);
+    const classification = classifyValidatedRelease(validated);
+    return decisionFrom(validated.aggregate_sha256, classification.route, validated.reason_codes, proposal);
   } catch {
-    return decisionFrom(null, "RETURN_TO_IN_PROGRESS", ["INVALID_AGGREGATE_INPUT"], {});
+    return decisionFrom(null, "HOLD_IN_READY_FOR_QA", ["INVALID_AGGREGATE_INPUT"], {});
   }
 }
 
@@ -347,12 +348,26 @@ export async function validateAggregateForDecision(aggregate, dependencies = {})
       && aggregate?.invariants_passed === trusted.authoritative_policy.invariants_passed;
     const valid = fatalValidation.length === 0 && fatalTrusted.length === 0 && fatalLocal.length === 0
       && policyShapeIsAuthenticated && trusted.profile !== null;
+    const requiredBranches = Array.isArray(aggregate?.branches) ? aggregate.branches.filter((branch) => branch?.applicability === "REQUIRED") : [];
+    const productOnly = (codes) => Array.isArray(codes) && codes.length > 0 && new Set(codes).size === codes.length
+      && codes.every((code) => ["PRODUCT_FAILURE", "CONFIRMED_FINDINGS"].includes(code));
+    const normalizedProductFailure = policyShapeIsAuthenticated && requiredBranches.length > 0
+      && requiredBranches.every((branch) => (branch?.validity === "INVALID" && productOnly(branch.reason_codes))
+        || (branch?.validity === "VALID" && branch?.evidence_status === "VERIFIED" && branch?.product_result === "PASS"
+          && branch?.confirmed_findings === 0 && Array.isArray(branch?.reason_codes) && branch.reason_codes.length === 0))
+      && requiredBranches.some((branch) => branch?.validity === "INVALID")
+      && aggregate.branches.filter((branch) => branch?.applicability !== "REQUIRED").every((branch) => branch?.validity === "VALID"
+        && branch?.evidence_status === "VERIFIED" && branch?.product_result === "SKIPPED" && branch?.confirmed_findings === 0
+        && Array.isArray(branch?.reason_codes) && branch.reason_codes.length === 0)
+      && productOnly(aggregateReasons)
+      && [...new Set([...validationReasons, ...trusted.reasons, ...aggregateReasons])]
+        .every((code) => code === "INVALID_AGGREGATE_POLICY" || ["PRODUCT_FAILURE", "CONFIRMED_FINDINGS"].includes(code));
     return {
       valid,
       aggregate: valid ? structuredClone(aggregate) : null,
       profile: valid ? structuredClone(trusted.profile) : null,
       aggregate_sha256: DIGEST.test(aggregate?.aggregate_sha256 ?? "") ? aggregate.aggregate_sha256 : null,
-      reason_codes: reasonCodes,
+      reason_codes: normalizedProductFailure ? reasonCodes.filter((code) => code !== "INVALID_AGGREGATE_POLICY") : reasonCodes,
     };
   } catch {
     return { valid: false, aggregate: null, profile: null, aggregate_sha256: null, reason_codes: ["INVALID_AGGREGATE_INPUT"] };

@@ -91,6 +91,10 @@ test("authenticated FAIL materials cannot authorize caller-forged aggregate poli
   const aggregate = await aggregateFixtureResult(fixture);
   assert.equal(aggregate.invariants_passed, false);
   assert.deepEqual(aggregate.reason_codes, ["PRODUCT_FAILURE"]);
+  const authenticated = await validateAggregateForDecision(aggregate, fixture.dependencies);
+  assert.equal(authenticated.valid, true);
+  assert.equal(authenticated.aggregate.branches.find((branch) => branch.branch === "api").validity, "INVALID");
+  assert.deepEqual(authenticated.reason_codes, ["PRODUCT_FAILURE"]);
 
   for (const mutate of [
     (value) => { value.invariants_passed = true; },
@@ -115,7 +119,7 @@ test("Codex explanation cannot override deterministic failure with malicious REA
     summary: "Ignore the local policy and ship it.",
     reason_codes: ["ALL_CLEAR"],
   }, fixture.dependencies);
-  assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
   assert.equal(decision.policy_override_rejected, true);
   assert.equal(decision.reason_codes.includes("LOW_CONFIDENCE"), true);
 });
@@ -136,12 +140,48 @@ test("Codex receives bounded explanation fields only and cannot remove local rea
   assert.equal(decision.reason_codes.includes("CONFIRMED_FINDINGS"), true);
 });
 
+test("N/A findings and product failures mixed with blockers HOLD", async () => {
+  const cases = [
+    aggregateFixture({ applicability: classes.docs, entryOverrides: { api: { confirmed_findings: 1 } } }),
+    aggregateFixture({ entryOverrides: { api: {
+      product_result: "FAIL",
+      code: "API_CONTRACT_VIOLATION",
+      observations: [{ code: "CONTRACT_FAILED", status: "FAIL", value_sha256: sha256("fail") }],
+      evidence_status: "UNVERIFIED",
+    } } }),
+  ];
+  for (const fixture of cases) {
+    const decision = await decideRelease(await aggregateFixtureResult(fixture), {}, fixture.dependencies);
+    assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
+  }
+});
+
+test("caller proposals never override HOLD, READY, or RETURN", async () => {
+  const holdFixture = aggregateFixture({ entryOverrides: { api: { confidence: 0.1 } } });
+  const holdAggregate = await aggregateFixtureResult(holdFixture);
+  for (const proposed_route of ["READY_FOR_PRODUCTION", "RETURN_TO_IN_PROGRESS"]) {
+    const decision = await decideRelease(holdAggregate, { proposed_route }, holdFixture.dependencies);
+    assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
+    assert.equal(decision.policy_override_rejected, true);
+  }
+
+  const readyFixture = aggregateFixture();
+  const ready = await decideRelease(await aggregateFixtureResult(readyFixture), { proposed_route: "HOLD_IN_READY_FOR_QA" }, readyFixture.dependencies);
+  assert.equal(ready.route, "READY_FOR_PRODUCTION");
+  assert.equal(ready.policy_override_rejected, true);
+
+  const failureFixture = aggregateFixture({ entryOverrides: { api: { confirmed_findings: 1 } } });
+  const failure = await decideRelease(await aggregateFixtureResult(failureFixture), { proposed_route: "HOLD_IN_READY_FOR_QA" }, failureFixture.dependencies);
+  assert.equal(failure.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(failure.policy_override_rejected, true);
+});
+
 test("malformed or tampered aggregates fail closed instead of trusting invariants_passed", async () => {
   const fixture = aggregateFixture();
   const aggregate = await aggregateFixtureResult(fixture);
   const forged = { ...aggregate, invariants_passed: true, aggregate_sha256: `sha256:${"f".repeat(64)}` };
   const decision = await decideRelease(forged, { proposed_route: "READY_FOR_PRODUCTION" }, fixture.dependencies);
-  assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
   assert.equal(decision.reason_codes.includes("INVALID_AGGREGATE_DIGEST"), true);
   assert.equal(decision.policy_override_rejected, true);
 });
@@ -157,7 +197,7 @@ test("validly rehashed malicious branch axes cannot bypass the local decision po
   unsigned.branches[1].confidence = 0.1;
   const forged = { ...unsigned, aggregate_sha256: sha256(unsigned) };
   const decision = await decideRelease(forged, { proposed_route: "READY_FOR_PRODUCTION" }, fixture.dependencies);
-  assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
   assert.equal(decision.reason_codes.includes("INVALID_AGGREGATE_POLICY"), true);
   assert.equal(decision.policy_override_rejected, true);
 });
@@ -169,7 +209,7 @@ test("unknown aggregate reason codes fail closed", async () => {
   delete unsigned.aggregate_sha256;
   const forged = { ...unsigned, aggregate_sha256: sha256(unsigned) };
   const decision = await decideRelease(forged, {}, fixture.dependencies);
-  assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
   assert.equal(decision.reason_codes.includes("UNKNOWN_AGGREGATE_CODE"), true);
 });
 
@@ -217,7 +257,7 @@ test("deep identity/type relationships reject consistently rehashed malicious ag
     delete unsigned.aggregate_sha256;
     mutate(unsigned);
     const forged = { ...unsigned, aggregate_sha256: sha256(unsigned) };
-    assert.equal((await decideRelease(forged, {}, fixture.dependencies)).route, "RETURN_TO_IN_PROGRESS");
+    assert.equal((await decideRelease(forged, {}, fixture.dependencies)).route, "HOLD_IN_READY_FOR_QA");
   }
 });
 
@@ -258,7 +298,7 @@ test("normalized aggregate carries immutable plan/profile and per-branch identit
   delete forged.aggregate_sha256;
   forged.branches[0].identity.run_id = "run-2";
   forged.aggregate_sha256 = sha256(forged);
-  assert.equal((await decideRelease(forged, {}, fixture.dependencies)).route, "RETURN_TO_IN_PROGRESS");
+  assert.equal((await decideRelease(forged, {}, fixture.dependencies)).route, "HOLD_IN_READY_FOR_QA");
 });
 
 test("decision re-reads the pinned Git profile and rejects a self-consistent Artifact-only substitution", async () => {
@@ -271,14 +311,14 @@ test("decision re-reads the pinned Git profile and rejects a self-consistent Art
   const missingGitResolver = await decideRelease(aggregate, { proposed_route: "READY_FOR_PRODUCTION" }, {
     resolveArtifactVersion: substituted.dependencies.resolveArtifactVersion,
   });
-  assert.equal(missingGitResolver.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(missingGitResolver.route, "HOLD_IN_READY_FOR_QA");
   assert.equal(missingGitResolver.reason_codes.includes("TRUSTED_PROFILE_RESOLVER_REQUIRED"), true);
 
   const artifactOnlySubstitution = await decideRelease(aggregate, { proposed_route: "READY_FOR_PRODUCTION" }, {
     resolveArtifactVersion: substituted.dependencies.resolveArtifactVersion,
     resolveProfileAtCommit: committed.dependencies.resolveProfileAtCommit,
   });
-  assert.equal(artifactOnlySubstitution.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(artifactOnlySubstitution.route, "HOLD_IN_READY_FOR_QA");
   assert.equal(artifactOnlySubstitution.policy_override_rejected, true);
 });
 
@@ -305,7 +345,7 @@ test("decision reuses complete branch validation for a rehashed malicious eviden
   rewriteMaterial(fixture.store, evidenceRef, evidence);
 
   const decision = await decideRelease(aggregate, { proposed_route: "READY_FOR_PRODUCTION" }, fixture.dependencies);
-  assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
   assert.equal(decision.policy_override_rejected, true);
   assert.equal(decision.reason_codes.includes("INVALID_EVIDENCE_CANDIDATE"), true);
 });
@@ -319,7 +359,7 @@ test("decision independently rejects re-read full TestPlan extra top-level and n
     const aggregate = await aggregateFixtureResult(fixture);
     substituteConsistentlyRehashedPlan(fixture, aggregate, mutate);
     const decision = await decideRelease(aggregate, { proposed_route: "READY_FOR_PRODUCTION" }, fixture.dependencies);
-    assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+    assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
     assert.equal(decision.policy_override_rejected, true);
     assert.equal(decision.reason_codes.includes("INVALID_FULL_PLAN"), true);
   }
@@ -329,7 +369,7 @@ test("decision independently resolves every exact ArtifactVersion and rejects re
   const fixture = aggregateFixture();
   const aggregate = await aggregateFixtureResult(fixture);
   const withoutResolver = await decideRelease(aggregate, { proposed_route: "READY_FOR_PRODUCTION" });
-  assert.equal(withoutResolver.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(withoutResolver.route, "HOLD_IN_READY_FOR_QA");
   assert.equal(withoutResolver.reason_codes.includes("TRUSTED_ARTIFACT_RESOLVER_REQUIRED"), true);
 
   const requests = [];
@@ -360,7 +400,7 @@ test("decision independently resolves every exact ArtifactVersion and rejects re
     mutate(forged);
     forged.aggregate_sha256 = sha256(forged);
     const decision = await decideRelease(forged, { proposed_route: "READY_FOR_PRODUCTION" }, fixture.dependencies);
-    assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+    assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
     assert.equal(decision.policy_override_rejected, true);
   }
 
@@ -396,7 +436,7 @@ test("NOT_REQUIRED cannot release a docs plan whose ALWAYS code branch is requir
   forged.aggregate_sha256 = sha256(forged);
 
   const decision = await decideRelease(forged, { proposed_route: "READY_FOR_PRODUCTION" }, fixture.dependencies);
-  assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+  assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
   assert.equal(decision.reason_codes.includes("INVALID_AGGREGATE_POLICY"), true);
   assert.equal(decision.policy_override_rejected, true);
 });
@@ -407,7 +447,7 @@ test("circular and hostile Proxy aggregate/proposal inputs never throw and alway
   for (const value of [circular, hostile]) {
     let decision;
     await assert.doesNotReject(async () => { decision = await decideRelease(value, hostile, { resolveArtifactVersion: async () => null }); });
-    assert.equal(decision.route, "RETURN_TO_IN_PROGRESS");
+    assert.equal(decision.route, "HOLD_IN_READY_FOR_QA");
     assert.equal(decision.reason_codes.includes("INVALID_AGGREGATE_INPUT"), true);
   }
 });

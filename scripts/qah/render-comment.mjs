@@ -1,6 +1,7 @@
 import { canonicalJson, sha256 } from "./canonical.mjs";
 import { resolveArtifactVersionForSlot, resolvePlatformEntityVersion } from "./aggregate.mjs";
 import { decideRelease, validateAggregateForDecision } from "./decide.mjs";
+import { RELEASE_ROUTES } from "./release-policy.mjs";
 
 export const COMMENT_HTML_MAX_BYTES = 8_192;
 export const COMMENT_LIST_MAX_BYTES = 1_048_576;
@@ -48,7 +49,7 @@ export function artifactReference(value, expectedKind, expectedRole) {
 function validateDecision(value) {
   if (!exactKeys(value, DECISION_KEYS) || value.schema_version !== "nuanu.qa-release-route.v1"
     || !(value.aggregate_sha256 === null || DIGEST.test(value.aggregate_sha256))
-    || !["READY_FOR_PRODUCTION", "RETURN_TO_IN_PROGRESS"].includes(value.route)
+    || !RELEASE_ROUTES.includes(value.route)
     || typeof value.policy_override_rejected !== "boolean"
     || !Array.isArray(value.reason_codes) || value.reason_codes.length > 64 || new Set(value.reason_codes).size !== value.reason_codes.length
     || value.reason_codes.some((code) => typeof code !== "string" || !CODE.test(code))
