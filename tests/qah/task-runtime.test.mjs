@@ -309,9 +309,11 @@ test("non-interactive graph commands execute real Task1-6 functions with trusted
     phase: "prepare",
     workspace_id: fixture.input.workspace_id, project_id: raw_context.project_uuid, issue_id: raw_context.issue_uuid,
     source_artifact: fixture.plan.source_artifact,
+    profile_artifact: fixture.input.profile_artifact,
   }, runtimeOptions(root, "resolve-flow-item", { dependencies }));
   assert.equal(resolved.files[0].name, "resolve-flow-item.json");
   const resolvedFinal = await completePrepared(root, "resolve-flow-item", { resolved_item: actualRef() }, { dependencies });
+  assert.deepEqual(resolvedFinal.item.data.profile_ref, fixture.input.profile_artifact);
   const loaded = await runTaskCommand("load-project-context", { phase: "prepare", raw_context, profile: fixture.profile, profile_install }, runtimeOptions(root, "load-project-context", { dependencies }));
   const context = JSON.parse(await readFile(join(root, "qah", "load-project-context", "load-project-context.json"), "utf8"));
   assert.equal(loaded.files[0].name, "load-project-context.json");

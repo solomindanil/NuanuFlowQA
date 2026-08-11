@@ -341,7 +341,7 @@ export async function runLocalQaHarness({ fixture, mode = "pass", buildCanonical
     const profileInstall = { workspace_id: WORKSPACE_ID, profile_artifact: profileRef, repository_origin: profile.repository.allowed_origin, commit: rawContext.commit, profile_digest: rawContext.profile_digest };
     const workerEnvelopes = {};
 
-    const resolved = await task(root, "resolve-flow-item", { phase: "prepare", workspace_id: WORKSPACE_ID, project_id: PROJECT_ID, issue_id: ISSUE_ID, source_artifact: SOURCE_REF }, { dependencies });
+    const resolved = await task(root, "resolve-flow-item", { phase: "prepare", workspace_id: WORKSPACE_ID, project_id: PROJECT_ID, issue_id: ISSUE_ID, source_artifact: SOURCE_REF, profile_artifact: profileRef }, { dependencies });
     ({ envelope: workerEnvelopes.resolve_flow_item } = await complete(root, store, "resolve-flow-item", resolved.result, { dependencies }));
 
     const loaded = await task(root, "load-project-context", { phase: "prepare", raw_context: rawContext, profile, profile_install: profileInstall }, { dependencies });

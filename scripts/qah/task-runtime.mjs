@@ -494,11 +494,12 @@ export async function runTaskCommand(command, input, options = {}) {
   }
 
   if (command === "resolve-flow-item") {
-    prepareInput(input, ["workspace_id", "project_id", "issue_id", "source_artifact"], "resolve-flow-item input");
+    prepareInput(input, ["workspace_id", "project_id", "issue_id", "source_artifact", "profile_artifact"], "resolve-flow-item input");
+    artifactRef(input.profile_artifact, "document", "implementation", "profile_artifact");
     const source = await resolvePlatformEntityVersion(input.source_artifact, { workspaceId: input.workspace_id, ...dependencies }, 262144);
     if (source.project_id !== input.project_id || source.work_item_id !== input.issue_id) throw new Error("source Flow item identity mismatch");
-    const value = { schema_version: "nuanu.qa-resolved-flow-item.v1", source_ref: input.source_artifact, workspace_id: input.workspace_id, project_id: input.project_id, issue_id: input.issue_id };
-    await writeCompletionState(outputDir, taskKey, { source_ref: input.source_artifact, workspace_id: input.workspace_id, project_id: input.project_id, issue_id: input.issue_id });
+    const value = { schema_version: "nuanu.qa-resolved-flow-item.v1", source_ref: input.source_artifact, profile_ref: input.profile_artifact, workspace_id: input.workspace_id, project_id: input.project_id, issue_id: input.issue_id };
+    await writeCompletionState(outputDir, taskKey, { source_ref: input.source_artifact, profile_ref: input.profile_artifact, workspace_id: input.workspace_id, project_id: input.project_id, issue_id: input.issue_id });
     return writeSingleArtifact(taskKey, outputDir, "resolve-flow-item.json", "resolved_item", value);
   }
   if (command === "load-project-context") {
