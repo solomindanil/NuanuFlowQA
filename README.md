@@ -109,16 +109,17 @@ Templates and config are ready for big suites: Page Objects + fixtures (`tests/_
 
 ## Universal QA harness verification
 
-The local universal-flow proof drives canonical API-only, UI-only, docs-only, and mixed tickets through the committed profile, resolved context, deterministic plan, environment lifecycle, concurrent branch runners, immutable ArtifactVersion materialization, evidence aggregation, independent release decision, comment publication, cleanup, and final transition gate.
+Nuanu owns the Column triggers, BPMN topology and execution, Journeys, Artifacts, status Ends, retries, and Assist/Auto control. QAH owns deterministic browser/API/code/domain execution, immutable evidence verification, the closed three-way release policy, and final claim materialization. The local universal-flow proof drives canonical API-only, UI-only, docs-only, and mixed tickets through the committed profile, resolved context, deterministic plan, environment lifecycle, concurrent branch runners, immutable ArtifactVersion materialization, evidence aggregation, independent release decision, comment publication, cleanup, and final transition gate.
 
 ```bash
-npm run test:qah       # universal contracts and local end-to-end matrix
-npm run verify:qah     # universal matrix + legacy PayDemo harness + TypeScript
+npm run test:qah:proof-gate # focused local Proof Gate product proof
+npm run test:qah            # universal contracts and local end-to-end matrix
+npm run verify:qah          # universal matrix + legacy PayDemo harness + TypeScript
 ```
 
-The matrix proves exact required/skipped branches, UI-adapter invocation only for UI scope, no managed product environment for docs while the pinned repository code/static-analysis branch still runs, overlapping mixed-ticket branch bodies, fail-closed product/missing-evidence routing, and the comment-plus-cleanup gate before either final state. The docs case loads the committed `tests/qah/fixtures/qa-harness.docs.yaml` bytes without rewriting them; the runtime independently verifies the temporary checkout's exact real Git root, origin, clean status, and HEAD before executing the profile's code argv itself. The main `qa-harness.yaml` remains the managed PayDemo profile. The proof is deterministic and local: it does not save or activate a Nuanu process or mutate any live Nuanu Artifact, Agent, comment, work item, run, or state.
+The matrix proves exact required/skipped branches, UI-adapter invocation only for UI scope, no managed product environment for docs while the pinned repository code/static-analysis branch still runs, overlapping mixed-ticket branch bodies, fail-closed product/missing-evidence routing, and the comment-plus-cleanup gate before either final state. A READY claim maps to Proof Gate outcome `passed`; a proven product failure maps to `not_passed`; uncertainty maps to `unable_to_verify` and the neutral End leaves the item in Ready for QA. The docs case loads the committed `tests/qah/fixtures/qa-harness.docs.yaml` bytes without rewriting them; the runtime independently verifies the temporary checkout's exact real Git root, origin, clean status, and HEAD before executing the profile's code argv itself. The main `qa-harness.yaml` remains the managed PayDemo profile. The proof is deterministic and local: it does not save or activate a Nuanu process or mutate any live Nuanu Artifact, Agent, comment, work item, run, or state.
 
-Live installation remains explicit `NO_GO`. The direct install preflight, pinned generic AgentVersions, exact profile ArtifactVersion, and other Task 7 installation attestations must all pass before a canary; this local command is not an install attestation and does not weaken those preconditions.
+Live Auto remains explicit `NO_GO` until the Assist compatibility probe and all three outcome canaries (`passed`, `not_passed`, and `unable_to_verify`) are observed with exact read-back. The direct install preflight, pinned generic AgentVersions, exact profile ArtifactVersion, and other installation attestations must all pass before a canary; local proof does not weaken those preconditions. See `docs/operations/universal-qa-proof-gate-runbook.md` for the bounded operator sequence.
 
 ## Safety rules
 

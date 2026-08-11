@@ -1,0 +1,143 @@
+# Universal QA Proof Gate operator runbook
+
+## 1. Scope and prohibited Nuanu/source changes
+
+This runbook proves the repository-owned Universal QAH product locally and defines the later, approval-gated Nuanu validation sequence. Local verification is not evidence that a live Process was saved, activated, attached to a Column, or exercised by Auto.
+
+During preflight and local proof:
+
+- do not save, activate, patch, or replace a Process template, binding, Agent, Artifact, Journey, Flow item, comment, run, or status;
+- do not edit the live server graph, generated Column Start, repository source, pinned profile, prompts, or install policy to make observed state pass;
+- do not accept a paused or invalid binding: the direct preflight requires the exact active binding with `invalid: false` and `needs_attention: false`;
+- do not retry an ambiguous write. Read back the exact object and obtain a fresh definition ETag before any separately authorized write;
+- do not expose API or worker credentials in command arguments, logs, reports, Artifacts, or handoff evidence.
+
+`scripts/qah/preflight-report.mjs` is a production-only, server-read-only command. It accepts one absolute canonical JSON request, runs and consumes direct preflight authority in the same process, and writes only a closed canonical report. It reads only the optional API origin and the three required Nuanu credentials from the environment. Test mode is forbidden. `scripts/qah/install-process.mjs` renders only; its output is not a save or activation receipt.
+
+## 2. Exact local verification commands
+
+Run from the repository root at the exact intended commit:
+
+```bash
+node --test tests/qah/preflight-report.test.mjs tests/qah/task7-round4.test.mjs
+npm run test:qah:proof-gate
+npm run test:qah
+npm run verify:qah
+npm run typecheck
+git diff --check
+```
+
+Generate a sanitized production preflight report only after placing the canonical request in an operator-controlled regular file:
+
+```bash
+npm run qah:preflight-report -- --request /absolute/operator-owned/preflight-request.json
+```
+
+The report is not an installation receipt. A false `install_ready` or any `unmet_preconditions` preserves `NO_GO`. A loopback-listener `EPERM` may be classified as a restricted test-execution limitation only when the exact command passes under approved unsandboxed execution; assertion, timeout, worker-pin, or product failures are not environment exceptions.
+
+## 3. Finalization and FlowStepResult boundary
+
+For every Agent Task that materializes an output, preserve this exact custody chain:
+
+1. Run the repository runtime with `phase=prepare`; do not synthesize its output.
+2. Publish the prepared canonical JSON as an `application/json` ArtifactVersion in the declared output slot.
+3. Read back that exact Artifact and version, including bytes and the closed reference `{artifact_id, version_id, kind, role}`.
+4. Run `phase=complete` with the prepared input and the actual read-back reference.
+5. Encode the admitted result into the worker transport envelope: scalar data stays under `item.data`, `item.artifacts` stays empty, and the reference is placed in `artifact_outputs` for its declared slot.
+6. Materialize and validate the transport back to the closed `nuanu.flow-step-result.v1` boundary before Proof Gate routing.
+
+For finalization, publication and cleanup must both have exact receipts. The finalization ArtifactVersion is reread byte-for-byte; aggregate authority, decision, evidence versions, comment attestation, cleanup receipt, tested commit, verdict, and checks must agree. Any mismatch blocks transition and must never be repaired by editing a claimed result.
+
+## 4. Closed outcome matrix
+
+| QAH authority | FlowStepResult claim | Proof Gate outcome | End behavior |
+| --- | --- | --- | --- |
+| All required checks are trusted and pass | `verdict: pass`, `target_state: ready_for_production` | `passed` | Move to the exact Ready for Production state |
+| Trusted evidence proves a product failure | `verdict: fail`, `target_state: in_progress` | `not_passed` | Move to the exact In Progress state |
+| Evidence, transport, cleanup, publication, identity, or classification is uncertain | `verdict: blocked`, `target_state: ready_for_qa` | `unable_to_verify` | Neutral End; remain in Ready for QA |
+
+There is no default or free-form branch. Unknown, missing, extra, coerced, or contradictory claim data fails closed.
+
+## 5. Read-only server validation checklist
+
+- Confirm the workspace, project, Column binding, Process template, and three state IDs are the intended objects.
+- Confirm the binding is `active`, `invalid: false`, `needs_attention: false`, targets the exact Ready for QA state, and references the exact workspace Process template.
+- Read the selection view for `project_start` plus its neighbor and incident edge. Confirm one generated Start, no incoming edge, one outgoing edge, and exact binding/project/state identities.
+- Record the current definition ETag and graph hash; do not infer either from a previous response.
+- Confirm the QA and decision Agents are distinct, active, online, and pinned to the exact published AgentVersion IDs.
+- Confirm each worker identity independently using its scoped worker credential.
+- Confirm the repository origin, commit, install-policy digest, prompt bytes, profile bytes, and profile ArtifactVersion checksum match the pinned Git material.
+- Confirm the profile is an internal file ArtifactVersion, not an external resource.
+- Run the same-process preflight report and retain only its sanitized closed fields. Any rejected read or unmet precondition remains `NO_GO`.
+
+## 6. Fresh-ETag patch and exact read-back checklist
+
+This checklist applies only after separate authorization for the live mutation:
+
+1. Reread the exact template graph immediately before the write and capture its fresh definition ETag and graph hash.
+2. Reconfirm binding, template, state, AgentVersion, and profile ArtifactVersion identities against the approved install request.
+3. Render from the committed blueprint and same-process direct preflight authority. Never use the report JSON as render authority.
+4. Submit one bounded patch/save with the fresh ETag. Do not activate in the same ambiguous operation.
+5. If the write response is ambiguous, stop. Do not retry until exact template and graph read-back proves whether the write applied.
+6. Reread the template, full graph, node/edge counts, generated Start, final Proof Gate, three outcome edges, Ends, Agent pins, and output contracts.
+7. Record definition ETag before and after plus the exact post-write graph hash. Any unexpected change triggers pause and rollback assessment.
+8. Activate only through a separately authorized operation, then reread template activation and final binding status.
+
+## 7. Assist compatibility probe checklist
+
+- Use one dedicated canary Flow item and Assist mode; do not enable Auto.
+- Record the exact item, template, binding, commit, graph hash, definition ETag, AgentVersion IDs, run, journey, and mode before execution.
+- Observe `phase=prepare`, JSON Artifact publication, exact ArtifactVersion read-back, `phase=complete`, worker transport, materialized FlowStepResult, Proof Gate outcome, and End behavior.
+- Confirm task-scoped tools cannot write outside the declared comment/Artifact duties and that source instructions cannot add commands, URLs, policy, or output fields.
+- Confirm all output Artifacts use the declared kind, role, media type, and exact version reference.
+- Confirm comment publication and cleanup read-back precede the final claim.
+- Confirm the applied transition flag and final binding status by exact read-back.
+- Treat any schema coercion, missing output, stale input, retry drift, unexpected tool, or manual repair as a failed probe.
+
+## 8. Pause and rollback response matrix
+
+| Observation | Immediate response | Resume condition |
+| --- | --- | --- |
+| Preflight rejects identity, bytes, binding health, Agent pin, or worker identity | Stop before render/save | Exact read-only validation passes with fresh evidence |
+| Save/patch response is ambiguous | Pause; perform exact read-back; do not retry | Applied/not-applied state is authoritative and reconciled |
+| Post-write graph, ETag, Start, Proof Gate, or Agent pins differ | Keep inactive or pause binding; preserve evidence | Approved graph is restored and exact read-back passes |
+| Assist transport or Artifact read-back is uncertain | Pause canary; leave item in Ready for QA | Root cause fixed and a new isolated Assist probe passes |
+| Product failure routes anywhere except In Progress | Pause binding and Auto promotion | `not_passed` canary proves the exact In Progress End |
+| Uncertainty changes item status | Pause binding and Auto promotion | `unable_to_verify` canary proves the neutral Ready for QA End |
+| Credentials or protected response content appear in output | Stop, contain evidence, rotate affected credentials | Sanitized rerun passes and exposure response is complete |
+| Auto produces an unexpected run or duplicate side effect | Disable/pause Auto and binding; reconcile by IDs | Ownership, idempotency, and retry behavior are proven again |
+
+Rollback uses the last exact approved template definition and a fresh server ETag. Never reconstruct rollback state from console text, screenshots, or a rendered file alone. Read back the restored graph and binding before resuming.
+
+## 9. Auto promotion prerequisites
+
+Auto remains `NO_GO` until all of the following are observed on the intended live objects:
+
+- local focused proof, full QAH, legacy regression, typecheck, structural scan, and secret scan pass at the recorded product commit and blueprint fingerprint;
+- the production direct preflight has no unmet preconditions and uses authoritative worker version, capabilities, and strongest published model observations;
+- one Assist compatibility probe completes the full Artifact/transport/FlowStepResult boundary without repair;
+- isolated `passed`, `not_passed`, and `unable_to_verify` canaries reach their exact Ends and read back the expected applied-transition behavior;
+- retries, comment idempotency, cleanup ownership, run/journey observability, and final binding health are proven;
+- an operator has an exact pause/rollback target and evidence set, and explicitly approves Auto promotion.
+
+## 10. Sanitized handoff evidence fields
+
+Record only the following bounded fields, with no credentials, headers, raw response bodies, prompts containing protected values, or unrestricted logs:
+
+- product commit;
+- blueprint hash;
+- binding ID;
+- template ID;
+- definition ETag before and after;
+- graph hash;
+- canary item ID;
+- run ID;
+- journey ID;
+- mode (`local`, `Assist`, or `Auto`);
+- outcome (`passed`, `not_passed`, or `unable_to_verify`);
+- intended target;
+- applied-transition flag;
+- Artifact IDs and exact versions;
+- final binding status.
+
+Local handoff must state that no live Nuanu mutation has been proved. A rendered graph, successful local suite, report JSON, command exit code, or UI toast is not a durable save, activation, canary, transition, or Auto receipt.
