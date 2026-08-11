@@ -10,7 +10,7 @@ import {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /__BINDING_[A-Z0-9_]+__/g;
 const TOKEN_LIKE = /__BINDING|__[A-Z][A-Z0-9_]{2,}__/i;
-const BLUEPRINT_FINGERPRINT = "sha256:a2bcd641b4dbfccaf741563b931f38145e823bb65438c92e8c6cd398daf97e48";
+const BLUEPRINT_FINGERPRINT = "sha256:b85c9e7490f8abf1812c942527ad0a16181d21db8f9d8f145980306e325ccf34";
 const REQUIRED_BINDING_KEYS = Object.freeze([
   "project_process_binding_id",
   "project_id",
@@ -149,10 +149,14 @@ export function validateFinalProofGate(graph, expectedStates) {
     if (typeof expectedStates[key] !== "string" || !UUID.test(expectedStates[key])) fail(`${key} must be a UUID`);
   }
   if (!graph || typeof graph !== "object" || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) fail("graph must contain node and edge arrays");
+  if (graph.nodes.some((node) => node?.key === "transition_route"
+    || node?.id === "10000000-0000-5000-8000-000000000019")) {
+    fail("legacy transition_route gateway must be absent");
+  }
   const nodes = new Map(graph.nodes.map((node) => [node.key, node]));
   const exactNodes = {
     finalize_transition: "10000000-0000-5000-8000-000000000018",
-    transition_route: "10000000-0000-5000-8000-000000000019",
+    transition_proof_gate: "10000000-0000-5000-8000-000000000026",
     ready_for_production_end: "10000000-0000-5000-8000-000000000020",
     in_progress_end: "10000000-0000-5000-8000-000000000021",
     qa_needs_human_end: "10000000-0000-5000-8000-000000000022",
@@ -161,25 +165,30 @@ export function validateFinalProofGate(graph, expectedStates) {
     if (nodes.get(key)?.id !== id) fail(`${key} must preserve ID ${id}`);
   }
   const finalizer = nodes.get("finalize_transition");
-  const route = nodes.get("transition_route");
+  const route = nodes.get("transition_proof_gate");
   const ready = nodes.get("ready_for_production_end");
   const rejected = nodes.get("in_progress_end");
   const hold = nodes.get("qa_needs_human_end");
-  if (route.type !== "proof_gate") fail("transition_route must be proof_gate");
+  if (route.type !== "proof_gate") fail("transition_proof_gate must be proof_gate");
   if (canonicalJson(route.config) !== canonicalJson({ profile_key: "qa_result_v1", profile_version: "1", ai_assessment: "off" })) {
-    fail("transition_route must use stock qa_result_v1@1 with AI assessment off");
+    fail("transition_proof_gate must use stock qa_result_v1@1 with AI assessment off");
   }
   const incoming = graph.edges.filter(({ target }) => target === route.id);
-  if (canonicalJson(incoming) !== canonicalJson([{
+  const expectedIncoming = [{
     id: "20000000-0000-5000-8000-000000000022", source: finalizer.id, target: route.id,
-  }])) fail("transition_route must have the exact direct finalizer edge");
+  }];
+  if (canonicalJson(incoming) !== canonicalJson(expectedIncoming)) fail("transition_proof_gate must have the exact direct finalizer edge");
+  const finalizerOutgoing = graph.edges.filter(({ source }) => source === finalizer.id);
+  if (canonicalJson(finalizerOutgoing) !== canonicalJson(expectedIncoming)) {
+    fail("finalize_transition must route only to transition_proof_gate");
+  }
   const expectedOutgoing = [
     { id: "20000000-0000-5000-8000-000000000023", source: route.id, target: ready.id, name: "passed", when: { outcome: "passed" } },
     { id: "20000000-0000-5000-8000-000000000024", source: route.id, target: rejected.id, name: "not_passed", when: { outcome: "not_passed" } },
     { id: "20000000-0000-5000-8000-000000000025", source: route.id, target: hold.id, name: "unable_to_verify", when: { outcome: "unable_to_verify" } },
   ];
   const outgoing = graph.edges.filter(({ source }) => source === route.id);
-  if (canonicalJson(outgoing) !== canonicalJson(expectedOutgoing)) fail("transition_route must have the exact three direct outcome edges");
+  if (canonicalJson(outgoing) !== canonicalJson(expectedOutgoing)) fail("transition_proof_gate must have the exact three direct outcome edges");
   if (new Set(outgoing.map((edge) => edge.when?.outcome)).size !== 3) fail("Proof Gate outcomes must be unique");
   for (const edge of outgoing) {
     for (const key of ["var", "raw", "otherwise", "branch"]) {

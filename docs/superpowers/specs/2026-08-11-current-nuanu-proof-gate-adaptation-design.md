@@ -40,7 +40,7 @@ Nuanu Flow:
 
 ```text
 finalize_transition
-  -> transition_route (type: proof_gate, profile: qa_result_v1)
+  -> transition_proof_gate (type: proof_gate, profile: qa_result_v1)
        | passed            -> Ready for Production
        | not_passed        -> In Progress
        ` unable_to_verify  -> остаться в Ready for QA
@@ -67,7 +67,7 @@ Proof Gate является только штатным серверным ад�
 ## Контракт финального результата
 
 `finalize_transition` остаётся `agent_task`, единственным непосредственным
-предшественником `transition_route` и единственным узлом, которому разрешено
+предшественником `transition_proof_gate` и единственным узлом, которому разрешено
 выпускать QA claim. Он продолжает проверять подтверждённый комментарий, cleanup
 receipt, общую candidate identity и точные ArtifactVersion. После этой проверки
 его `item.data` дополнительно содержит плоские поля, которые ожидает штатный
@@ -211,11 +211,12 @@ checks, где каждый `status=passed`. `fail` требует непуст�
 
 ## Изменение Process blueprint
 
-Адаптация сохраняет существующие UUID и semantic key маршрутизатора, чтобы не
-создавать лишний identity drift:
+Адаптация сохраняет UUID существующих End и рёбер, но следует stock-контракту
+неизменяемого `node.type`: legacy gateway удаляется только после явного
+переподключения, а Proof Gate получает новую identity.
 
-1. Узел `transition_route` меняет `type: gateway` на `type: proof_gate` и
-   получает конфигурацию:
+1. Добавляется узел `transition_proof_gate` с UUID
+   `10000000-0000-5000-8000-000000000026`, `type: proof_gate` и конфигурацией:
 
    ```json
    {
@@ -225,7 +226,9 @@ checks, где каждый `status=passed`. `fail` требует непуст�
    }
    ```
 
-2. Безусловное ребро `finalize_transition -> transition_route` сохраняется.
+2. Безусловное ребро `...022` переподключается как
+   `finalize_transition -> transition_proof_gate`; после переподключения legacy
+   `transition_route` (`...019`, `type: gateway`) удаляется.
 3. Ребро к `ready_for_production_end` использует только
    `{"outcome":"passed"}`.
 4. Ребро к `in_progress_end` использует только
@@ -320,7 +323,8 @@ Read-only `validate_process_graph` доказывает структурную �
 
 ### Blueprint contract
 
-- `transition_route.type === "proof_gate"`;
+- `transition_proof_gate.type === "proof_gate"` и legacy `transition_route`
+  отсутствует;
 - профиль равен точному `qa_result_v1@1`, AI assessment выключен;
 - присутствуют ровно три outcome: `passed`, `not_passed`,
   `unable_to_verify`;

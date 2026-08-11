@@ -15,7 +15,7 @@
 - Do not author or upload raw BPMN XML. Author only the structured Process v1 graph.
 - Do not add a QA-column poller, a custom ticket-state router, a second decision inbox, a custom Journey database, or a duplicate Artifact registry. Nuanu already owns those capabilities.
 - Preserve the server-owned Column Start node and edge byte-for-byte.
-- Preserve existing UUIDs `10000000-0000-5000-8000-000000000019` through `10000000-0000-5000-8000-000000000021` and edges `20000000-0000-5000-8000-000000000022` through `20000000-0000-5000-8000-000000000024`.
+- Preserve existing End UUIDs `10000000-0000-5000-8000-000000000020` and `...021` plus edge UUIDs `...022` through `...024`. Because stock Nuanu makes node type immutable, remove the legacy gateway `...019` only after reconnecting those edges to the new Proof Gate `...026`.
 - Product failure is not the fallback for uncertainty. Infra/provider failure, low confidence, missing evidence, stale identity, unknown codes, and human-required checks route to `HOLD_IN_READY_FOR_QA`.
 - A failed finalization-integrity check produces no admitted or linked Artifact reference, ProcessItem, claim, or Proof Gate visit. If complete-phase read-back rejects an already published immutable `finalization.json` ArtifactVersion, record it as unbound/orphaned evidence and do not delete it without a separately authorized Artifact lifecycle operation.
 - The local classifier does not claim that the Nuanu repository workspace exists. The stock Proof Gate owns the final repository-head check and may downgrade any local verdict to `unable_to_verify`.
@@ -995,13 +995,13 @@ test("routes only through the exact stock qa_result_v1 Proof Gate outcomes", () 
   const graph = renderProcess(blueprint, bindings);
   const nodes = byKey(graph);
   const finalizer = nodes.get("finalize_transition");
-  const route = nodes.get("transition_route");
+  const route = nodes.get("transition_proof_gate");
   const ready = nodes.get("ready_for_production_end");
   const rejected = nodes.get("in_progress_end");
   const hold = nodes.get("qa_needs_human_end");
   assert.deepEqual([finalizer.id, route.id, ready.id, rejected.id, hold.id], [
     "10000000-0000-5000-8000-000000000018",
-    "10000000-0000-5000-8000-000000000019",
+    "10000000-0000-5000-8000-000000000026",
     "10000000-0000-5000-8000-000000000020",
     "10000000-0000-5000-8000-000000000021",
     "10000000-0000-5000-8000-000000000022",
@@ -1044,14 +1044,27 @@ test("final Proof Gate validator rejects every alternate routing dialect", () =>
     ["duplicate outcome", (graph) => { graph.edges.find(({ id }) => id.endsWith("025")).when = { outcome: "passed" }; }],
     ["raw condition", (graph) => { graph.edges.find(({ id }) => id.endsWith("023")).when = { raw: "true" }; }],
     ["var condition", (graph) => { graph.edges.find(({ id }) => id.endsWith("024")).when = { var: "finalize_transition.data.target_state", op: "eq", value: "in_progress" }; }],
-    ["wrong profile", (graph) => { byKey(graph).get("transition_route").config.profile_key = "custom_qa"; }],
-    ["wrong profile version", (graph) => { byKey(graph).get("transition_route").config.profile_version = "2"; }],
+    ["wrong profile", (graph) => { byKey(graph).get("transition_proof_gate").config.profile_key = "custom_qa"; }],
+    ["wrong profile version", (graph) => { byKey(graph).get("transition_proof_gate").config.profile_version = "2"; }],
     ["non-neutral hold", (graph) => { byKey(graph).get("qa_needs_human_end").config.project_status.target_state_id = bindings.in_progress_state_id; }],
     ["indirect End", (graph) => { graph.edges.find(({ id }) => id.endsWith("025")).target = byKey(graph).get("publication_cleanup_join").id; }],
     ["changed route UUID", (graph) => {
-      const route = byKey(graph).get("transition_route"); const old = route.id;
+      const route = byKey(graph).get("transition_proof_gate"); const old = route.id;
       route.id = "17171717-1717-4717-8717-171717171717";
       for (const edge of graph.edges) { if (edge.source === old) edge.source = route.id; if (edge.target === old) edge.target = route.id; }
+    }],
+    ["legacy gateway parallel route", (graph) => {
+      graph.nodes.push({
+        id: "10000000-0000-5000-8000-000000000019",
+        key: "transition_route",
+        type: "gateway",
+        name: "Legacy final route",
+      });
+      graph.edges.push({
+        id: "20000000-0000-5000-8000-000000000026",
+        source: byKey(graph).get("finalize_transition").id,
+        target: "10000000-0000-5000-8000-000000000019",
+      });
     }],
     ["changed outcome edge UUID", (graph) => { graph.edges.find(({ id }) => id.endsWith("023")).id = "18181818-1818-4818-8818-181818181818"; }],
   ];
@@ -1062,7 +1075,7 @@ test("final Proof Gate validator rejects every alternate routing dialect", () =>
 });
 ```
 
-Also add `assert.deepEqual(incoming.get("qa_needs_human_end"), ["transition_route"]);` to the existing immediate-incoming-edge test.
+Also add `assert.deepEqual(incoming.get("qa_needs_human_end"), ["transition_proof_gate"]);` to the existing immediate-incoming-edge test.
 
 - [ ] **Step 2: Run RED against the old exclusive gateway**
 
@@ -1099,7 +1112,7 @@ In `processes/universal-qa-flow.graph.json`:
   "checks": { "type": "json", "description": "Closed checks derived from exact verified branch ArtifactVersions" }
 }
 ```
-5. Change node `10000000-0000-5000-8000-000000000019` to `type: "proof_gate"` with:
+5. Add node `10000000-0000-5000-8000-000000000026`, key `transition_proof_gate`, type `proof_gate`, with:
 
 ```json
 {
@@ -1109,15 +1122,17 @@ In `processes/universal-qa-flow.graph.json`:
 }
 ```
 
-6. Change edge `...023` name/condition to `passed` / `{"outcome":"passed"}`.
-7. Change edge `...024` name/condition to `not_passed` / `{"outcome":"not_passed"}`.
-8. Add node `10000000-0000-5000-8000-000000000022`, key `qa_needs_human_end`, name `Keep in Ready for QA`, type `end`, config `{"project_status":{"target_state_id":null}}`.
-9. Add edge `20000000-0000-5000-8000-000000000025` from route to hold End, name `unable_to_verify`, condition `{"outcome":"unable_to_verify"}`.
+6. Retarget edge `...022` from `finalize_transition` to the new Proof Gate.
+7. Change edge `...023` source/name/condition to the new Proof Gate / `passed` / `{"outcome":"passed"}`.
+8. Change edge `...024` source/name/condition to the new Proof Gate / `not_passed` / `{"outcome":"not_passed"}`.
+9. Add node `10000000-0000-5000-8000-000000000022`, key `qa_needs_human_end`, name `Keep in Ready for QA`, type `end`, config `{"project_status":{"target_state_id":null}}`.
+10. Add edge `20000000-0000-5000-8000-000000000025` from the new Proof Gate to hold End, name `unable_to_verify`, condition `{"outcome":"unable_to_verify"}`.
+11. Remove legacy gateway `transition_route` (`...019`) after all three incident edges have been reconnected.
 
 After these exact edits, the canonical parsed-blueprint fingerprint must be:
 
 ```text
-sha256:a2bcd641b4dbfccaf741563b931f38145e823bb65438c92e8c6cd398daf97e48
+sha256:b85c9e7490f8abf1812c942527ad0a16181d21db8f9d8f145980306e325ccf34
 ```
 
 - [ ] **Step 4: Harden renderer validation around the final topology**
@@ -1126,7 +1141,7 @@ In `scripts/qah/render-process.mjs`:
 
 - set `BLUEPRINT_FINGERPRINT` to the exact value above;
 - update authored topology counts to 21/24;
-- export `validateFinalProofGate(graph, expectedStates)`, requiring the exact two-key `{ ready_for_production_state_id, in_progress_state_id }` object and throwing a `TypeError` whose message begins `FINAL_PROOF_GATE_INVALID:`; it checks exact route ID/type/config, one incoming finalizer edge, three unique direct outcome edges, exact target IDs, Ready/In Progress End target-state equality to `expectedStates`, neutral hold target `null`, preserved IDs, and absence of `var`, `raw`, `otherwise`, `branch`;
+- export `validateFinalProofGate(graph, expectedStates)`, requiring the exact two-key `{ ready_for_production_state_id, in_progress_state_id }` object and throwing a `TypeError` whose message begins `FINAL_PROOF_GATE_INVALID:`; it rejects legacy node key `transition_route` and legacy node ID `...019`, checks exact new route ID/type/config, requires `finalize_transition` to have only the one incoming Proof Gate edge, three unique direct outcome edges, exact target IDs, Ready/In Progress End target-state equality to `expectedStates`, neutral hold target `null`, retained non-route IDs, and absence of `var`, `raw`, `otherwise`, `branch`;
 - call it from `validateRenderedGraph` with only the two normalized state IDs from renderer bindings;
 - reuse it in Task 7 against the bounded server read-back so local render and live verification enforce one invariant;
 - keep `renderProcess`, `renderProcessJson`, `renderProcessForInstall`, and blueprint version unchanged.
@@ -1638,7 +1653,7 @@ Require:
 - local worktree clean;
 - the exact `codex/universal-qah` commit pushed or otherwise reachable by the worker's repository checkout;
 - worker adapter 0.3.14 digest still equals the Task 1 pin;
-- rendered graph fingerprint still equals `sha256:a2bcd641b4dbfccaf741563b931f38145e823bb65438c92e8c6cd398daf97e48`;
+- rendered graph fingerprint still equals `sha256:b85c9e7490f8abf1812c942527ad0a16181d21db8f9d8f145980306e325ccf34`;
 - MCP transport available. A repeated HTTP 522 blocks only this live task; it does not invalidate local GREEN.
 
 - [ ] **Step 2: Rebuild fresh read-only Nuanu state**
@@ -1648,7 +1663,7 @@ Read, in this order:
 1. exact project Process binding for Ready for QA;
 2. current binding status and invalid/attention flags;
 3. current Process graph summary;
-4. bounded selection containing `resolve_flow_item`, `independent_release_decision`, `finalize_transition`, `transition_route`, all current End nodes, and incident edges;
+4. bounded selection containing `resolve_flow_item`, `independent_release_decision`, `finalize_transition`, the legacy `transition_route`, all current End nodes, and incident edges;
 5. active Process runs and Journeys for the binding;
 6. exact pinned QA/decision Agent versions and current worker identity;
 7. a pre-existing synthetic PayDemo canary item already in Ready for QA, with no active run and `get_flow_item_process_control` proving Assist mode before binding activation.
@@ -1682,19 +1697,21 @@ Call `patch_process_graph` with the fresh ETag and one ordered operation list th
 1. updates `resolve_flow_item` instruction to worker 0.3.14;
 2. updates the decision instruction to include HOLD;
 3. updates `finalize_transition` instruction and seven-field output;
-4. updates `transition_route` to the exact Proof Gate config;
-5. updates edge `...023` to `passed`;
-6. updates edge `...024` to `not_passed`;
-7. adds the neutral hold End `...022`;
-8. adds outcome edge `...025`.
+4. adds `transition_proof_gate` (`...026`) with the exact Proof Gate config;
+5. retargets incoming edge `...022` to the new Proof Gate;
+6. updates edge `...023` source and outcome to `passed`;
+7. updates edge `...024` source and outcome to `not_passed`;
+8. adds the neutral hold End `...022`;
+9. adds outcome edge `...025`;
+10. removes the now-disconnected legacy gateway `transition_route` (`...019`).
 
-Because update operations use JSON Merge Patch, explicitly set obsolete touched fields to `null`: gateway `kind`, gateway `mode`, edge `var`, `op`, `value`, and `otherwise`. Do not send `{}` to remove an old object.
+Because update operations use JSON Merge Patch, explicitly set obsolete edge fields to `null`: `raw`, `var`, `op`, `value`, `otherwise`, and `branch`. Do not send `{}` to remove an old object, and do not attempt an immutable `gateway -> proof_gate` type update.
 
 On `STALE_PROCESS_GRAPH`, use the returned recovery selection, then reread the exact binding, active runs, fresh project states, Column Start, touched nodes/edges, and final Ends. Require binding still paused, active-run set empty, and every Start/state/End/touched identity unchanged. If any candidate graph byte changed, rerun `validate_process_graph` once against the newly rendered complete candidate and require the same exact valid/ready result. Only then use the newly returned ETag for one retry. Do not auto-merge any other conflict or reuse the first run-safety lease.
 
 - [ ] **Step 6: Read back before activation**
 
-Verify the mutation receipt, then call `get_process_graph` for the same bounded selection. Require:
+Verify the mutation receipt, then call `get_process_graph` with a new post-patch selection containing `resolve_flow_item`, `independent_release_decision`, `finalize_transition`, `transition_proof_gate`, all three End nodes, and every incident edge. Do not request the deleted legacy key `transition_route`, because a selection containing any missing key fails closed. Separately require the graph summary and returned selection to contain neither legacy key `transition_route` nor legacy node ID `...019`. Require:
 
 - exact Proof Gate type/config;
 - exact three `when.outcome` values;
@@ -1702,7 +1719,7 @@ Verify the mutation receipt, then call `get_process_graph` for the same bounded 
 - exact Ready for Production and In Progress End `target_state_id` values from the fresh project-state read;
 - exact neutral target `null`;
 - exact seven finalizer output fields;
-- preserved Column Start and old UUIDs;
+- preserved Column Start and every retained UUID, with legacy route UUID `...019` absent;
 - new graph hash and definition ETag from the server.
 
 Persist only the bounded structured `selection` response to `/private/tmp/nuanu-qah-final-route-readback.json`. Persist the exact freshly read Ready for Production and In Progress state UUIDs to canonical `/private/tmp/nuanu-qah-final-states.json` with exactly keys `ready_for_production_state_id` and `in_progress_state_id`. Then run the same invariant used by local rendering:
@@ -1741,7 +1758,7 @@ This records the approved second preflight; it does not claim a general install-
 
 - [ ] **Step 9: Run one dedicated Assist compatibility probe**
 
-Immediately before dispatch, reread the exact active binding, active-run set, bounded final-route selection, graph hash/definition ETag, and the pre-existing synthetic PayDemo item's process control. Require binding active, no active run, final-route invariant still valid against the fresh project-state UUIDs, graph hash/ETag equal Steps 6–8, and item mode still Assist. Any drift enters the mandatory pause path without dispatch.
+Immediately before dispatch, reread the exact active binding, active-run set, the Step 6 post-patch final-route selection (new Proof Gate and three Ends, explicitly omitting deleted `transition_route`), graph summary/hash/definition ETag, and the pre-existing synthetic PayDemo item's process control. Require binding active, no active run, final-route invariant still valid against the fresh project-state UUIDs, the legacy key/ID still absent, graph hash/ETag equal Steps 6–8, and item mode still Assist. Any drift enters the mandatory pause path without dispatch.
 
 Only after that last lease succeeds, use one stable idempotency key for `run_flow_item_column_process` and never retrigger on an ambiguous response.
 

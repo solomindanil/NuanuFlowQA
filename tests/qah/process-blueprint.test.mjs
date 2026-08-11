@@ -59,7 +59,7 @@ const expectedKeys = [
   "cleanup_environment",
   "publication_cleanup_join",
   "finalize_transition",
-  "transition_route",
+  "transition_proof_gate",
   "ready_for_production_end",
   "in_progress_end",
   "qa_needs_human_end",
@@ -218,17 +218,27 @@ test("requires an explicit distinct capable strongest-Codex decision binding", (
   ]) assert.throws(() => renderProcess(blueprint, { ...bindings, ...invalid }), /decision agent.*(?:required|distinct)/i);
 });
 
+test("uses a fresh Proof Gate identity instead of mutating the legacy gateway type", () => {
+  const graph = renderProcess(blueprint, bindings);
+  const nodes = byKey(graph);
+  const route = nodes.get("transition_proof_gate");
+  assert.equal(nodes.has("transition_route"), false);
+  assert.equal(graph.nodes.some(({ id }) => id === "10000000-0000-5000-8000-000000000019"), false);
+  assert.equal(route.id, "10000000-0000-5000-8000-000000000026");
+  assert.equal(route.type, "proof_gate");
+});
+
 test("routes only through the exact stock qa_result_v1 Proof Gate outcomes", () => {
   const graph = renderProcess(blueprint, bindings);
   const nodes = byKey(graph);
   const finalizer = nodes.get("finalize_transition");
-  const route = nodes.get("transition_route");
+  const route = nodes.get("transition_proof_gate");
   const ready = nodes.get("ready_for_production_end");
   const rejected = nodes.get("in_progress_end");
   const hold = nodes.get("qa_needs_human_end");
   assert.deepEqual([finalizer.id, route.id, ready.id, rejected.id, hold.id], [
     "10000000-0000-5000-8000-000000000018",
-    "10000000-0000-5000-8000-000000000019",
+    "10000000-0000-5000-8000-000000000026",
     "10000000-0000-5000-8000-000000000020",
     "10000000-0000-5000-8000-000000000021",
     "10000000-0000-5000-8000-000000000022",
@@ -271,14 +281,27 @@ test("final Proof Gate validator rejects every alternate routing dialect", () =>
     ["duplicate outcome", (graph) => { graph.edges.find(({ id }) => id.endsWith("025")).when = { outcome: "passed" }; }],
     ["raw condition", (graph) => { graph.edges.find(({ id }) => id.endsWith("023")).when = { raw: "true" }; }],
     ["var condition", (graph) => { graph.edges.find(({ id }) => id.endsWith("024")).when = { var: "finalize_transition.data.target_state", op: "eq", value: "in_progress" }; }],
-    ["wrong profile", (graph) => { byKey(graph).get("transition_route").config.profile_key = "custom_qa"; }],
-    ["wrong profile version", (graph) => { byKey(graph).get("transition_route").config.profile_version = "2"; }],
+    ["wrong profile", (graph) => { byKey(graph).get("transition_proof_gate").config.profile_key = "custom_qa"; }],
+    ["wrong profile version", (graph) => { byKey(graph).get("transition_proof_gate").config.profile_version = "2"; }],
     ["non-neutral hold", (graph) => { byKey(graph).get("qa_needs_human_end").config.project_status.target_state_id = bindings.in_progress_state_id; }],
     ["indirect End", (graph) => { graph.edges.find(({ id }) => id.endsWith("025")).target = byKey(graph).get("publication_cleanup_join").id; }],
     ["changed route UUID", (graph) => {
-      const route = byKey(graph).get("transition_route"); const old = route.id;
+      const route = byKey(graph).get("transition_proof_gate"); const old = route.id;
       route.id = "17171717-1717-4717-8717-171717171717";
       for (const edge of graph.edges) { if (edge.source === old) edge.source = route.id; if (edge.target === old) edge.target = route.id; }
+    }],
+    ["legacy gateway parallel route", (graph) => {
+      graph.nodes.push({
+        id: "10000000-0000-5000-8000-000000000019",
+        key: "transition_route",
+        type: "gateway",
+        name: "Legacy final route",
+      });
+      graph.edges.push({
+        id: "20000000-0000-5000-8000-000000000026",
+        source: byKey(graph).get("finalize_transition").id,
+        target: "10000000-0000-5000-8000-000000000019",
+      });
     }],
     ["changed outcome edge UUID", (graph) => { graph.edges.find(({ id }) => id.endsWith("023")).id = "18181818-1818-4818-8818-181818181818"; }],
   ];
@@ -295,10 +318,10 @@ test("places verified comment and cleanup before either End", () => {
   for (const [source, target] of pairs) incoming.get(target).push(source);
   assert.deepEqual(incoming.get("publication_cleanup_join"), ["publish_flow_item_comment", "cleanup_environment"]);
   assert.deepEqual(incoming.get("finalize_transition"), ["publication_cleanup_join"]);
-  assert.deepEqual(incoming.get("transition_route"), ["finalize_transition"]);
-  assert.deepEqual(incoming.get("ready_for_production_end"), ["transition_route"]);
-  assert.deepEqual(incoming.get("in_progress_end"), ["transition_route"]);
-  assert.deepEqual(incoming.get("qa_needs_human_end"), ["transition_route"]);
+  assert.deepEqual(incoming.get("transition_proof_gate"), ["finalize_transition"]);
+  assert.deepEqual(incoming.get("ready_for_production_end"), ["transition_proof_gate"]);
+  assert.deepEqual(incoming.get("in_progress_end"), ["transition_proof_gate"]);
+  assert.deepEqual(incoming.get("qa_needs_human_end"), ["transition_proof_gate"]);
 });
 
 test("blueprint is universal and contains no product, host, path, model, or installation literals", () => {
