@@ -55,7 +55,9 @@ For every Agent Task that materializes an output, preserve this exact custody ch
 5. Encode the admitted result into the worker transport envelope: scalar data stays under `item.data`, `item.artifacts` stays empty, and the reference is placed in `artifact_outputs` for its declared slot.
 6. Materialize and validate the transport back to the closed `nuanu.flow-step-result.v1` boundary before Proof Gate routing.
 
-For finalization, publication and cleanup must both have exact receipts. The finalization ArtifactVersion is reread byte-for-byte; aggregate authority, decision, evidence versions, comment attestation, cleanup receipt, tested commit, verdict, and checks must agree. Any mismatch blocks transition and must never be repaired by editing a claimed result.
+For finalization, publication and cleanup must both have exact receipts. The finalization ArtifactVersion is reread byte-for-byte; aggregate authority, decision, evidence versions, comment attestation, cleanup receipt, tested commit, verdict, and checks must agree. Ordinary QA uncertainty may produce a blocked claim only after the authenticated result is admitted into the closed hold classification and every finalization-integrity check passes.
+
+If cleanup, publication read-back, identity, or classification admission is missing, uncertain, or contradictory, finalization fails before output materialization: emit no `ProcessItem`, no claim, and do not visit Proof Gate. If an immutable finalization ArtifactVersion was already published before a later integrity check failed, record its exact ID and version as unbound evidence. Do not link, delete, or rewrite it without a separately authorized Artifact lifecycle operation.
 
 ## 4. Closed outcome matrix
 
@@ -63,9 +65,10 @@ For finalization, publication and cleanup must both have exact receipts. The fin
 | --- | --- | --- | --- |
 | All required checks are trusted and pass | `verdict: pass`, `target_state: ready_for_production` | `passed` | Move to the exact Ready for Production state |
 | Trusted evidence proves a product failure | `verdict: fail`, `target_state: in_progress` | `not_passed` | Move to the exact In Progress state |
-| Evidence, transport, cleanup, publication, identity, or classification is uncertain | `verdict: blocked`, `target_state: ready_for_qa` | `unable_to_verify` | Neutral End; remain in Ready for QA |
+| Ordinary authenticated QA uncertainty whose closed hold classification is admitted and whose finalization integrity remains valid | `verdict: blocked`, `target_state: ready_for_qa` | `unable_to_verify` | Neutral End; remain in Ready for QA |
+| Finalization integrity failure: cleanup, publication, identity, or classification admission is missing, uncertain, or contradictory | No `ProcessItem` or claim is materialized | Do not visit Proof Gate | Stop before routing; remain in Ready for QA and record any already published finalization file as an unbound ArtifactVersion |
 
-There is no default or free-form branch. Unknown, missing, extra, coerced, or contradictory claim data fails closed.
+There is no default or free-form branch. Unknown, missing, extra, coerced, or contradictory claim data fails closed before routing; it is not converted into a blocked claim.
 
 ## 5. Read-only server validation checklist
 
@@ -110,7 +113,8 @@ This checklist applies only after separate authorization for the live mutation:
 | Preflight rejects identity, bytes, binding health, Agent pin, or worker identity | Stop before render/save | Exact read-only validation passes with fresh evidence |
 | Save/patch response is ambiguous | Pause; perform exact read-back; do not retry | Applied/not-applied state is authoritative and reconciled |
 | Post-write graph, ETag, Start, Proof Gate, or Agent pins differ | Keep inactive or pause binding; preserve evidence | Approved graph is restored and exact read-back passes |
-| Assist transport or Artifact read-back is uncertain | Pause canary; leave item in Ready for QA | Root cause fixed and a new isolated Assist probe passes |
+| Authenticated QA result is inconclusive but its closed classification and finalization integrity are valid | Permit only the blocked claim and neutral `unable_to_verify` End | Exact read-back proves the item remained in Ready for QA |
+| Cleanup, publication, identity, classification admission, transport materialization, or Artifact read-back fails integrity validation | Stop finalization; emit no `ProcessItem` or claim and do not visit Proof Gate; record any already published file as an unbound ArtifactVersion | Root cause fixed and a new isolated Assist probe passes without repair |
 | Product failure routes anywhere except In Progress | Pause binding and Auto promotion | `not_passed` canary proves the exact In Progress End |
 | Uncertainty changes item status | Pause binding and Auto promotion | `unable_to_verify` canary proves the neutral Ready for QA End |
 | Credentials or protected response content appear in output | Stop, contain evidence, rotate affected credentials | Sanitized rerun passes and exposure response is complete |

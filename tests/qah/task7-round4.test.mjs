@@ -78,6 +78,29 @@ function request(git) {
   return { workspace_slug: "acme", workspace_id: ids.workspace, project_id: ids.project, project_process_binding_id: ids.binding, process_template_id: ids.template, ready_for_qa_state_id: ids.ready, in_progress_state_id: ids.progress, ready_for_production_state_id: ids.production, qa_agent_employee_id: ids.qa, qa_agent_version_id: ids.qav, decision_agent_employee_id: ids.decision, decision_agent_version_id: ids.decisionv, decision_agent_metadata: { requested_model: "openai/gpt-5.6-sol-pro", required_capabilities: ["git", "nuanu_mcp", "tool_execution"] }, profile_artifact: { artifact_id: ids.artifact, version_id: ids.artifactv, kind: "document", role: "implementation" }, repository_origin: git.origin ?? "https://github.com/solomindanil/NuanuFlowQA.git", repository_path: git.dir, commit: git.commit };
 }
 
+test("direct preflight rejects extra nested request authority fields before any transport", async (t) => {
+  const preflight = await import("../../scripts/qah/install-preflight.mjs");
+  const base = request({
+    dir: "/tmp",
+    origin: "https://github.com/solomindanil/NuanuFlowQA.git",
+    commit: "a".repeat(40),
+  });
+  for (const [name, malformed, pattern] of [
+    [
+      "decision metadata operator token",
+      { ...base, decision_agent_metadata: { ...base.decision_agent_metadata, operator_token: "must-not-cross-boundary" } },
+      /decision metadata must have exact fields/,
+    ],
+    [
+      "profile artifact operator token",
+      { ...base, profile_artifact: { ...base.profile_artifact, operator_token: "must-not-cross-boundary" } },
+      /profile ref must have exact fields/,
+    ],
+  ]) await t.test(name, async () => {
+    await assert.rejects(preflight.runDirectInstallPreflight(malformed, { environment: {} }), pattern);
+  });
+});
+
 test("production install path exposes no callback adapter or public attestation constructor", async () => {
   const old = await import("../../scripts/qah/nuanu-install-adapter.mjs").catch(() => ({}));
   assert.equal(old.createNuanuInstallAdapter, undefined);

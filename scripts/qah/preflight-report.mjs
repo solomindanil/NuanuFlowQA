@@ -23,6 +23,25 @@ const REPORT_FIELDS = Object.freeze([
   "test_mode",
   "unmet_preconditions",
 ]);
+const BINDING_FIELDS = Object.freeze([
+  "project_process_binding_id",
+  "project_id",
+  "ready_for_qa_state_id",
+  "in_progress_state_id",
+  "ready_for_production_state_id",
+  "qa_agent_employee_id",
+  "qa_agent_version_id",
+  "decision_agent_employee_id",
+  "decision_agent_version_id",
+  "decision_agent_metadata",
+  "platform_start_node",
+  "platform_start_edge",
+  "platform_start_fingerprint",
+  "platform_start_edge_fingerprint",
+  "profile_artifact",
+]);
+const DECISION_AGENT_METADATA_FIELDS = Object.freeze(["requested_model", "required_capabilities"]);
+const PROFILE_ARTIFACT_FIELDS = Object.freeze(["artifact_id", "version_id", "kind", "role"]);
 const ALLOWED_ENVIRONMENT_FIELDS = Object.freeze([
   "NUANU_API_URL",
   "NUANU_API_KEY",
@@ -88,9 +107,9 @@ function productionEnvironment(environment) {
 function validateConsumedPayload(payload) {
   exactOwnKeys(payload, REPORT_FIELDS, "consumed preflight payload");
   assertClosedJson(payload, "consumed preflight payload");
-  if (payload.bindings === null || typeof payload.bindings !== "object" || Array.isArray(payload.bindings)) {
-    throw new TypeError("bindings must be an object");
-  }
+  exactOwnKeys(payload.bindings, BINDING_FIELDS, "bindings");
+  exactOwnKeys(payload.bindings.decision_agent_metadata, DECISION_AGENT_METADATA_FIELDS, "decision_agent_metadata");
+  exactOwnKeys(payload.bindings.profile_artifact, PROFILE_ARTIFACT_FIELDS, "profile_artifact");
   for (const field of ["graph_hash", "definition_etag", "profile_digest", "policy_digest"]) {
     if (typeof payload[field] !== "string" || !DIGEST.test(payload[field])) throw new TypeError(`${field} must be a SHA-256 digest`);
   }
@@ -111,6 +130,7 @@ function containsReportText(value, text) {
 }
 
 function rejectSecretReflection(report, environment) {
+  if (containsReportText(report, "operator_token")) throw new Error("preflight report reflects a forbidden operator credential field");
   for (const key of SECRET_ENVIRONMENT_FIELDS) {
     if (containsReportText(report, key)) throw new Error("preflight report reflects a credential field name");
     const secret = environment?.[key];

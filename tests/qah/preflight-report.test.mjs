@@ -7,8 +7,28 @@ import { join } from "node:path";
 import { canonicalJson } from "../../scripts/qah/canonical.mjs";
 import { createPreflightReport, main } from "../../scripts/qah/preflight-report.mjs";
 
+const ref = (digit) => `${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
 const payload = Object.freeze({
-  bindings: { project_process_binding_id: "11111111-1111-4111-8111-111111111111" },
+  bindings: {
+    project_process_binding_id: ref("1"),
+    project_id: ref("2"),
+    ready_for_qa_state_id: ref("3"),
+    in_progress_state_id: ref("4"),
+    ready_for_production_state_id: ref("5"),
+    qa_agent_employee_id: ref("6"),
+    qa_agent_version_id: ref("7"),
+    decision_agent_employee_id: ref("8"),
+    decision_agent_version_id: ref("9"),
+    decision_agent_metadata: {
+      requested_model: "openai/gpt-5.6-sol-pro",
+      required_capabilities: ["git", "nuanu_mcp", "tool_execution"],
+    },
+    platform_start_node: { id: ref("a"), key: "project_start", type: "start" },
+    platform_start_edge: { id: ref("b"), source: ref("a"), target: ref("c") },
+    platform_start_fingerprint: `sha256:${"e".repeat(64)}`,
+    platform_start_edge_fingerprint: `sha256:${"f".repeat(64)}`,
+    profile_artifact: { artifact_id: ref("d"), version_id: ref("e"), kind: "document", role: "implementation" },
+  },
   graph_hash: `sha256:${"a".repeat(64)}`,
   definition_etag: `sha256:${"b".repeat(64)}`,
   profile_digest: `sha256:${"c".repeat(64)}`,
@@ -81,6 +101,40 @@ test("report rejects closed-shape coercion hostile values and secret reflection"
   const proxy = new Proxy({}, { ownKeys() { throw new Error("hostile"); } });
   const cases = [
     ["extra consumed field", { result: { ...payload, extra: true }, environment: {} }],
+    ["operator token in consumed bindings", {
+      result: { ...payload, bindings: { ...payload.bindings, operator_token: "must-not-cross-boundary" } },
+      environment: {},
+    }],
+    ["operator token in decision metadata", {
+      result: {
+        ...payload,
+        bindings: {
+          ...payload.bindings,
+          decision_agent_metadata: { ...payload.bindings.decision_agent_metadata, operator_token: "must-not-cross-boundary" },
+        },
+      },
+      environment: {},
+    }],
+    ["operator token in profile artifact", {
+      result: {
+        ...payload,
+        bindings: {
+          ...payload.bindings,
+          profile_artifact: { ...payload.bindings.profile_artifact, operator_token: "must-not-cross-boundary" },
+        },
+      },
+      environment: {},
+    }],
+    ["operator token nested in server-owned binding data", {
+      result: {
+        ...payload,
+        bindings: {
+          ...payload.bindings,
+          platform_start_node: { ...payload.bindings.platform_start_node, operator_token: "must-not-cross-boundary" },
+        },
+      },
+      environment: {},
+    }],
     ["missing consumed field", { result: missing, environment: {} }],
     ["cycle", { result: cyclic, environment: {} }],
     ["Proxy", { result: proxy, environment: {} }],
@@ -109,4 +163,20 @@ test("report rejects closed-shape coercion hostile values and secret reflection"
       runAndConsume: async () => result,
     }));
   });
+});
+
+test("operator runbook separates admitted QA uncertainty from finalization-integrity failure", async () => {
+  const runbook = await readFile(new URL("../../docs/operations/universal-qa-proof-gate-runbook.md", import.meta.url), "utf8");
+  assert.match(
+    runbook,
+    /Ordinary authenticated QA uncertainty[^\n]*\|[^\n]*`verdict: blocked`, `target_state: ready_for_qa`[^\n]*\|[^\n]*`unable_to_verify`/,
+  );
+  assert.match(
+    runbook,
+    /Finalization integrity failure[^\n]*(?:cleanup[^\n]*publication[^\n]*identity[^\n]*classification admission|classification admission[^\n]*identity[^\n]*publication[^\n]*cleanup)[^\n]*\|[^\n]*No `ProcessItem` or claim[^\n]*\|[^\n]*Do not visit Proof Gate[^\n]*\|[^\n]*unbound ArtifactVersion/,
+  );
+  assert.doesNotMatch(
+    runbook,
+    /Evidence, transport, cleanup, publication, identity, or classification is uncertain[^\n]*`unable_to_verify`/,
+  );
 });

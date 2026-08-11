@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { promisify } from "node:util";
+import { promisify, types } from "node:util";
 import { canonicalJson, sha256 } from "./canonical.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -43,17 +43,33 @@ function required(value, keys, label) {
   return value;
 }
 
+function exactDataObject(value, keys, label) {
+  object(value, label);
+  if (types.isProxy(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw new TypeError(`${label} must have exact fields`);
+  }
+  const actual = Reflect.ownKeys(value);
+  if (actual.some((key) => typeof key !== "string") || canonicalJson([...actual].sort()) !== canonicalJson([...keys].sort())) {
+    throw new TypeError(`${label} must have exact fields`);
+  }
+  for (const key of actual) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) throw new TypeError(`${label} must have exact fields`);
+  }
+  return value;
+}
+
 function requestShape(value) {
   const keys = ["workspace_slug", "workspace_id", "project_id", "project_process_binding_id", "process_template_id", "ready_for_qa_state_id", "in_progress_state_id", "ready_for_production_state_id", "qa_agent_employee_id", "qa_agent_version_id", "decision_agent_employee_id", "decision_agent_version_id", "decision_agent_metadata", "profile_artifact", "repository_origin", "repository_path", "commit"];
-  if (canonicalJson(Object.keys(object(value, "install request")).sort()) !== canonicalJson(keys.sort())) throw new TypeError("install request must have exact keys");
+  exactDataObject(value, keys, "install request");
   for (const key of keys.filter((key) => key.endsWith("_id"))) if (!UUID.test(value[key])) throw new TypeError(`${key} must be a UUID`);
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(value.workspace_slug) || !COMMIT.test(value.commit) || !isAbsolute(value.repository_path)) throw new TypeError("install request workspace/commit/repository path is invalid");
   const origin = new URL(value.repository_origin);
   if (origin.username || origin.password || origin.search || origin.hash || origin.href !== value.repository_origin) throw new TypeError("repository origin must be exact and credential-free");
   if (new Set([value.ready_for_qa_state_id, value.in_progress_state_id, value.ready_for_production_state_id]).size !== 3) throw new TypeError("states must be distinct");
   if (value.qa_agent_employee_id === value.decision_agent_employee_id || value.qa_agent_version_id === value.decision_agent_version_id) throw new TypeError("agents must be distinct");
-  required(value.decision_agent_metadata, ["requested_model", "required_capabilities"], "decision metadata");
-  required(value.profile_artifact, ["artifact_id", "version_id", "kind", "role"], "profile ref");
+  exactDataObject(value.decision_agent_metadata, ["requested_model", "required_capabilities"], "decision metadata");
+  exactDataObject(value.profile_artifact, ["artifact_id", "version_id", "kind", "role"], "profile ref");
   if (!UUID.test(value.profile_artifact.artifact_id) || !UUID.test(value.profile_artifact.version_id) || value.profile_artifact.kind !== "document" || value.profile_artifact.role !== "implementation") throw new TypeError("profile ref is invalid");
   return structuredClone(value);
 }
