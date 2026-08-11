@@ -52,6 +52,12 @@ export const ARTIFACT_SLOT_POLICY = Object.freeze({
   occurrence: Object.freeze({ kind: "document", role: "evidence", name: "occurrence.json", media_type: "application/json" }),
   evidence: Object.freeze({ kind: "document", role: "evidence", name: "evidence.json", media_type: "application/json" }),
   review_bundle: Object.freeze({ kind: "document", role: "evidence", name: "review-bundle.json", media_type: "application/json" }),
+  finalization_report: Object.freeze({
+    kind: "document",
+    role: "output",
+    name: "finalization.json",
+    media_type: "application/json",
+  }),
 });
 
 class PolicyError extends Error {

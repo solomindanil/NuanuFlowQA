@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
-import { aggregateEvidence } from "../../scripts/qah/aggregate.mjs";
+import { aggregateEvidence, resolveArtifactVersionForSlot } from "../../scripts/qah/aggregate.mjs";
 import { parseProfileBytes } from "../../scripts/qah/profile.mjs";
 
 const qtest = import.meta.url.includes("fixtures-only") ? () => {} : test;
@@ -369,6 +369,53 @@ export function aggregateFixture({ applicability, receipt = readyReceipt(), entr
 export async function aggregateFixtureResult(fixture) {
   return aggregateEvidence(fixture.input, fixture.dependencies);
 }
+
+qtest("finalization_report resolves only exact canonical immutable bytes", async () => {
+  const fixture = aggregateFixture();
+  const report = {
+    schema_version: "nuanu.qa-finalization-result.v1",
+    transition_allowed: true,
+    target_state: "ready_for_production",
+    reason_codes: [],
+    kind: "qa",
+    verdict: "pass",
+    tested_head_sha: "a".repeat(40),
+    checks: [{ name: "universal_qah_code", status: "passed", evidence: "artifact:33333333-3333-4333-8333-333333333333@44444444-4444-4444-8444-444444444444" }],
+  };
+  const ref = materialize(fixture.store, { index: 400, semanticRole: "finalization_report", payload: report });
+  material(fixture.store, ref).artifact.name = "finalization.json";
+  const resolved = await resolveArtifactVersionForSlot(ref, "finalization_report", {
+    workspaceId,
+    resolveArtifactVersion: fixture.dependencies.resolveArtifactVersion,
+  }, 262_144);
+  assert.deepEqual(resolved.reference, ref);
+  assert.deepEqual(resolved.payload, report);
+  assert.equal(resolved.bytes.toString("utf8"), canonicalJson(report));
+});
+
+qtest("finalization_report rejects every mutable or mismatched Artifact axis", async (t) => {
+  const mutations = [
+    ["wrong version", ({ ref }) => { ref.version_id = "17171717-1717-4717-8717-171717171717"; }],
+    ["latest substitution", ({ ref, record }) => { record.artifact.current_version = "18181818-1818-4818-8818-181818181818"; ref.version_id = record.artifact.current_version; }],
+    ["wrong role", ({ ref }) => { ref.role = "evidence"; }],
+    ["wrong workspace", ({ record }) => { record.workspace_id = "19191919-1919-4919-8919-191919191919"; }],
+    ["wrong name", ({ record }) => { record.artifact.name = "latest.json"; }],
+    ["wrong MIME", ({ record }) => { record.artifact.mime_type = "text/plain"; }],
+    ["wrong checksum", ({ record }) => { record.artifact.versions[0].checksum = "f".repeat(64); }],
+    ["wrong bytes", ({ record }) => { record.bytes = Buffer.from("{}"); }],
+  ];
+  for (const [name, mutate] of mutations) await t.test(name, async () => {
+    const fixture = aggregateFixture();
+    const ref = materialize(fixture.store, { index: 400, semanticRole: "finalization_report", payload: { schema_version: "nuanu.qa-finalization-result.v1" } });
+    const record = material(fixture.store, ref);
+    record.artifact.name = "finalization.json";
+    mutate({ ref, record });
+    await assert.rejects(resolveArtifactVersionForSlot(ref, "finalization_report", {
+      workspaceId,
+      resolveArtifactVersion: fixture.dependencies.resolveArtifactVersion,
+    }, 262_144), undefined, name);
+  });
+});
 
 function reasons(aggregate) {
   return new Set(aggregate.reason_codes);
