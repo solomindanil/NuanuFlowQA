@@ -1,5 +1,11 @@
 import { canonicalJson, sha256 } from "./canonical.mjs";
-import { consumeDirectInstallAttestation, runDirectInstallPreflight } from "./install-preflight.mjs";
+import {
+  consumeDirectInstallAttestation,
+  normalizeDecisionAgentMetadata,
+  projectPlatformStart,
+  projectPlatformStartEdge,
+  runDirectInstallPreflight,
+} from "./install-preflight.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /__BINDING_[A-Z0-9_]+__/g;
@@ -35,8 +41,6 @@ const EXPECTED_TOKENS = Object.freeze([
   "__BINDING_PROFILE_KIND__",
   "__BINDING_PROFILE_ROLE__",
 ]);
-const REQUIRED_DECISION_CAPABILITIES = Object.freeze(["git", "nuanu_mcp", "tool_execution"]);
-
 function exactObject(value, required, optional, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
   const allowed = new Set([...required, ...optional]);
@@ -52,43 +56,23 @@ function uuid(value, label) {
 }
 
 function normalizeDecisionMetadata(value) {
-  exactObject(value, ["requested_model", "required_capabilities"], [], "decision_agent_metadata");
-  if (value.requested_model !== "openai/gpt-5.6-sol-pro") throw new TypeError("decision_agent_metadata must request the strongest published Codex model");
-  if (!Array.isArray(value.required_capabilities)
-    || canonicalJson([...value.required_capabilities].sort()) !== canonicalJson([...REQUIRED_DECISION_CAPABILITIES].sort())) {
-    throw new TypeError("decision_agent_metadata capabilities must include exact Git, Nuanu MCP, and tool execution bindings");
-  }
-  return { requested_model: value.requested_model, required_capabilities: [...REQUIRED_DECISION_CAPABILITIES] };
+  return normalizeDecisionAgentMetadata(value);
 }
 
 function normalizePlatformStart(value, bindings) {
-  exactObject(value, ["id", "key", "type", "name", "trigger", "config"], [], "platform_start_node");
-  uuid(value.id, "platform_start_node.id");
-  if (value.type !== "start" || value.key !== "project_start") throw new TypeError("platform_start_node must be the generated Column Start");
-  if (typeof value.name !== "string" || value.name.length < 1 || value.name.length > 80) throw new TypeError("platform_start_node name is invalid");
-  exactObject(value.trigger, ["mode"], [], "platform_start_node.trigger");
-  if (value.trigger.mode !== "manual") throw new TypeError("platform_start_node trigger must be preserved from the live Column graph");
-  exactObject(value.config, ["project_process_start", "output"], [], "platform_start_node.config");
-  const generated = exactObject(value.config.project_process_start, ["binding_id", "project_id", "state_id"], [], "platform_start_node.config.project_process_start");
-  if (generated.binding_id !== bindings.project_process_binding_id || generated.project_id !== bindings.project_id || generated.state_id !== bindings.ready_for_qa_state_id) {
-    throw new TypeError("platform_start_node immutable Column Start binding changed");
-  }
-  if (typeof bindings.platform_start_fingerprint !== "string" || sha256(value) !== bindings.platform_start_fingerprint) {
+  const projected = projectPlatformStart(value, bindings);
+  if (canonicalJson(value) !== canonicalJson(projected)) throw new TypeError("platform_start_node must be the exact safe Column Start projection");
+  if (typeof bindings.platform_start_fingerprint !== "string" || sha256(projected) !== bindings.platform_start_fingerprint) {
     throw new TypeError("platform_start_node does not match its live Column Start fingerprint");
   }
-  return JSON.parse(canonicalJson(value));
+  return projected;
 }
 
 function normalizePlatformStartEdge(value, start, fingerprint) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("platform_start_edge must be the complete live edge object");
-  for (const key of ["id", "source", "target"]) if (!Object.hasOwn(value, key)) throw new TypeError(`platform_start_edge is missing ${key}`);
-  uuid(value.id, "platform_start_edge.id");
-  uuid(value.source, "platform_start_edge.source");
-  uuid(value.target, "platform_start_edge.target");
-  if (value.source !== start.id || value.target === start.id) throw new TypeError("platform_start_edge source/target does not match the live Column Start");
-  if (typeof fingerprint !== "string" || sha256(value) !== fingerprint) throw new TypeError("platform_start_edge does not match its live fingerprint");
-  if (TOKEN_LIKE.test(canonicalJson(value))) throw new TypeError("platform_start_edge contains an unresolved token");
-  return structuredClone(value);
+  const projected = projectPlatformStartEdge(value, start);
+  if (canonicalJson(value) !== canonicalJson(projected)) throw new TypeError("platform_start_edge must be the exact safe projection");
+  if (typeof fingerprint !== "string" || sha256(projected) !== fingerprint) throw new TypeError("platform_start_edge does not match its live fingerprint");
+  return projected;
 }
 
 function normalizedBindings(value) {

@@ -122,8 +122,10 @@ test("preserves the live generated Column Start byte-equivalently and authors no
     undefined,
     { ...liveStart.node, type: "agent_task" },
     { ...liveStart.node, id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+    { ...liveStart.node, trigger: { mode: "manual" } },
+    { ...liveStart.node, config: { ...liveStart.node.config, output: { ...liveStart.node.config.output, data: { ...liveStart.node.config.output.data, payload: { description: "stale payload", type: "json" } } } } },
     { ...liveStart.node, config: { ...liveStart.node.config, project_process_start: { ...liveStart.node.config.project_process_start, state_id: bindings.in_progress_state_id } } },
-  ]) assert.throws(() => renderProcess(blueprint, { ...bindings, platform_start_node: mutation }), /platform_start_node|Column Start/);
+  ]) assert.throws(() => renderProcess(blueprint, { ...bindings, platform_start_node: mutation }), /platform_start_node|platform Start|Column Start/);
 });
 
 test("carries only topology-local immediate inputs through declared ProcessItems", () => {

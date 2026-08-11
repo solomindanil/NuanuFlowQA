@@ -14,6 +14,17 @@ const MAX_FILE = 262144;
 const POLICY_PATH = "qah/install-policy.v1.json";
 const ALLOWED_REPOSITORY_ORIGIN = "https://github.com/solomindanil/NuanuFlowQA.git";
 const INSTALL_POLICY_SHA256 = "sha256:ae833be3ff1ea80b19d39b3f575becf9e5e564246bbe355663ffb79b848d4c27";
+export const REQUIRED_DECISION_MODEL = "openai/gpt-5.6-sol-pro";
+export const REQUIRED_DECISION_CAPABILITIES = Object.freeze(["git", "nuanu_mcp", "tool_execution"]);
+const CURRENT_PLATFORM_START_OUTPUT = Object.freeze({
+  data: Object.freeze({
+    invoked_at: Object.freeze({ description: "When this Process run was invoked", type: "string" }),
+    trigger: Object.freeze({ description: "How this Process run started", type: "string" }),
+  }),
+  artifacts: Object.freeze({
+    flow_item: Object.freeze({ description: "Exact Flow item snapshot that invoked this Process", kind: "flow_item" }),
+  }),
+});
 const ATTESTATIONS = new WeakMap();
 const GIT_CHILD_ENVIRONMENT = Object.freeze({
   PATH: "/usr/bin:/bin",
@@ -37,6 +48,19 @@ function object(value, label) {
   return value;
 }
 
+function dataObject(value, label) {
+  object(value, label);
+  if (types.isProxy(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw new TypeError(`${label} must be a plain data object`);
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") throw new TypeError(`${label} must contain only string fields`);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) throw new TypeError(`${label} must contain only enumerable data fields`);
+  }
+  return value;
+}
+
 function required(value, keys, label) {
   object(value, label);
   for (const key of keys) if (!Object.hasOwn(value, key)) throw new TypeError(`${label} is missing ${key}`);
@@ -44,19 +68,96 @@ function required(value, keys, label) {
 }
 
 function exactDataObject(value, keys, label) {
-  object(value, label);
-  if (types.isProxy(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
-    throw new TypeError(`${label} must have exact fields`);
-  }
+  dataObject(value, label);
   const actual = Reflect.ownKeys(value);
   if (actual.some((key) => typeof key !== "string") || canonicalJson([...actual].sort()) !== canonicalJson([...keys].sort())) {
     throw new TypeError(`${label} must have exact fields`);
   }
-  for (const key of actual) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor?.enumerable || !("value" in descriptor)) throw new TypeError(`${label} must have exact fields`);
-  }
   return value;
+}
+
+function uuid(value, label) {
+  if (typeof value !== "string" || !UUID.test(value)) throw new TypeError(`${label} must be a UUID`);
+  return value;
+}
+
+function exactCurrentPlatformStartOutput(value) {
+  exactDataObject(value, ["data", "artifacts"], "platform Start output");
+  exactDataObject(value.data, ["invoked_at", "trigger"], "platform Start output.data");
+  exactDataObject(value.data.invoked_at, ["description", "type"], "platform Start invoked_at descriptor");
+  exactDataObject(value.data.trigger, ["description", "type"], "platform Start trigger descriptor");
+  exactDataObject(value.artifacts, ["flow_item"], "platform Start output.artifacts");
+  exactDataObject(value.artifacts.flow_item, ["description", "kind"], "platform Start flow_item descriptor");
+  if (canonicalJson(value) !== canonicalJson(CURRENT_PLATFORM_START_OUTPUT)) {
+    throw new TypeError("platform Start output must match the current closed Column contract");
+  }
+  return JSON.parse(canonicalJson(CURRENT_PLATFORM_START_OUTPUT));
+}
+
+export function normalizeDecisionAgentMetadata(value) {
+  exactDataObject(value, ["requested_model", "required_capabilities"], "decision metadata");
+  if (value.requested_model !== REQUIRED_DECISION_MODEL) throw new TypeError("decision metadata model must match the code-owned contract");
+  if (!Array.isArray(value.required_capabilities) || types.isProxy(value.required_capabilities)
+    || value.required_capabilities.length !== REQUIRED_DECISION_CAPABILITIES.length) {
+    throw new TypeError("decision metadata capabilities and order must match the code-owned contract");
+  }
+  const keys = Reflect.ownKeys(value.required_capabilities);
+  if (canonicalJson(keys.map(String).sort()) !== canonicalJson(["0", "1", "2", "length"].sort())) {
+    throw new TypeError("decision metadata capabilities must be a closed array");
+  }
+  for (let index = 0; index < REQUIRED_DECISION_CAPABILITIES.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value.required_capabilities, index);
+    if (!descriptor?.enumerable || !("value" in descriptor) || descriptor.value !== REQUIRED_DECISION_CAPABILITIES[index]) {
+      throw new TypeError("decision metadata capabilities and order must match the code-owned contract");
+    }
+  }
+  return { requested_model: REQUIRED_DECISION_MODEL, required_capabilities: [...REQUIRED_DECISION_CAPABILITIES] };
+}
+
+export function projectPlatformStart(value, expected) {
+  dataObject(value, "platform_start_node");
+  uuid(value.id, "platform Start id");
+  if (value.key !== "project_start" || value.type !== "start") throw new TypeError("platform Start identity is invalid");
+  if (typeof value.name !== "string" || value.name.length < 1 || value.name.length > 80 || Buffer.byteLength(value.name, "utf8") > 256) {
+    throw new TypeError("platform Start name is outside bounds");
+  }
+  dataObject(value.trigger, "platform Start trigger");
+  if (value.trigger.mode !== "from_project") throw new TypeError("platform Start trigger mode must be from_project");
+  exactDataObject(value.config, ["project_process_start", "output"], "platform Start config");
+  const generated = exactDataObject(
+    value.config.project_process_start,
+    ["binding_id", "project_id", "state_id"],
+    "platform Start project binding",
+  );
+  for (const field of ["binding_id", "project_id", "state_id"]) uuid(generated[field], `platform Start ${field}`);
+  if (generated.binding_id !== expected.project_process_binding_id
+    || generated.project_id !== expected.project_id
+    || generated.state_id !== expected.ready_for_qa_state_id) {
+    throw new TypeError("platform Start project binding is foreign");
+  }
+  const projected = {
+    id: value.id,
+    key: "project_start",
+    type: "start",
+    name: value.name,
+    trigger: { mode: "from_project" },
+    config: {
+      project_process_start: {
+        binding_id: generated.binding_id,
+        project_id: generated.project_id,
+        state_id: generated.state_id,
+      },
+      output: exactCurrentPlatformStartOutput(value.config.output),
+    },
+  };
+  return JSON.parse(canonicalJson(projected));
+}
+
+export function projectPlatformStartEdge(value, start) {
+  dataObject(value, "platform Start edge");
+  for (const field of ["id", "source", "target"]) uuid(value[field], `platform Start edge ${field}`);
+  if (value.source !== start.id || value.target === start.id) throw new TypeError("platform Start edge identity is foreign");
+  return JSON.parse(canonicalJson({ id: value.id, source: value.source, target: value.target }));
 }
 
 function requestShape(value) {
@@ -68,10 +169,12 @@ function requestShape(value) {
   if (origin.username || origin.password || origin.search || origin.hash || origin.href !== value.repository_origin) throw new TypeError("repository origin must be exact and credential-free");
   if (new Set([value.ready_for_qa_state_id, value.in_progress_state_id, value.ready_for_production_state_id]).size !== 3) throw new TypeError("states must be distinct");
   if (value.qa_agent_employee_id === value.decision_agent_employee_id || value.qa_agent_version_id === value.decision_agent_version_id) throw new TypeError("agents must be distinct");
-  exactDataObject(value.decision_agent_metadata, ["requested_model", "required_capabilities"], "decision metadata");
+  const decisionAgentMetadata = normalizeDecisionAgentMetadata(value.decision_agent_metadata);
   exactDataObject(value.profile_artifact, ["artifact_id", "version_id", "kind", "role"], "profile ref");
   if (!UUID.test(value.profile_artifact.artifact_id) || !UUID.test(value.profile_artifact.version_id) || value.profile_artifact.kind !== "document" || value.profile_artifact.role !== "implementation") throw new TypeError("profile ref is invalid");
-  return structuredClone(value);
+  const normalized = structuredClone(value);
+  normalized.decision_agent_metadata = decisionAgentMetadata;
+  return normalized;
 }
 
 export function managementPath(path) { if (!path.startsWith("/api/")) throw new TypeError("management path must start /api/"); return `/be${path}`; }
@@ -167,13 +270,14 @@ export function validateFileArtifactVersion(version) {
 export function validateLiveStartSelection(selection, request) {
   const starts = selection?.nodes?.filter((node) => node?.type === "start" || node?.key === "project_start") ?? [];
   if (starts.length !== 1 || starts[0].key !== "project_start" || starts[0].type !== "start") throw new Error("current graph must contain exactly one server-owned Start");
-  const start = structuredClone(starts[0]); delete start.derived_inputs;
-  const outgoing = selection.edges?.filter((edge) => edge?.source === start.id) ?? [];
-  const incoming = selection.edges?.filter((edge) => edge?.target === start.id) ?? [];
+  const rawStart = starts[0];
+  const outgoing = selection.edges?.filter((edge) => edge?.source === rawStart.id) ?? [];
+  const incoming = selection.edges?.filter((edge) => edge?.target === rawStart.id) ?? [];
   if (outgoing.length !== 1 || incoming.length !== 0) throw new Error("platform Start requires exactly one outgoing edge and no incoming edge");
-  const generated = start.config?.project_process_start;
-  if (generated?.binding_id !== request.project_process_binding_id || generated?.project_id !== request.project_id || generated?.state_id !== request.ready_for_qa_state_id || !selection.nodes.some((node) => node.id === outgoing[0].target)) throw new Error("live Start/edge readback is foreign");
-  return { start, edge: structuredClone(outgoing[0]) };
+  if (!selection.nodes.some((node) => node.id === outgoing[0].target)) throw new Error("live Start/edge readback is foreign");
+  const start = projectPlatformStart(rawStart, request);
+  const edge = projectPlatformStartEdge(outgoing[0], start);
+  return { start, edge };
 }
 
 function verifyAgent(agent, version, whoami, request, role) {

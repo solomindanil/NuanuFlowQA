@@ -44,10 +44,29 @@ async function apiFixture(git, override = {}) {
   const profile = await readFile(new URL("../../qa-harness.yaml", import.meta.url));
   const calls = [];
   let base;
-  const start = { id: ids.start, key: "project_start", type: "start", name: "Enter Ready for QA", trigger: { mode: "manual" }, config: { project_process_start: { binding_id: ids.binding, project_id: ids.project, state_id: ids.ready }, output: { data: {}, artifacts: {} } } };
+  const start = {
+    id: ids.start,
+    key: "project_start",
+    type: "start",
+    name: "Enter Ready for QA",
+    trigger: { mode: "from_project" },
+    config: {
+      project_process_start: { binding_id: ids.binding, project_id: ids.project, state_id: ids.ready },
+      output: {
+        data: {
+          invoked_at: { description: "When this Process run was invoked", type: "string" },
+          trigger: { description: "How this Process run started", type: "string" },
+        },
+        artifacts: {
+          flow_item: { description: "Exact Flow item snapshot that invoked this Process", kind: "flow_item" },
+        },
+      },
+    },
+    ...(override.startExtra ?? {}),
+  };
   const responses = {
     [`/api/workspaces/acme/projects/${ids.project}/process-bindings/${ids.binding}/`]: { id: ids.binding, kind: "column", project_state: { id: ids.ready, name: "Ready for QA", color: "#fff", group: "started", sequence: 1 }, status: "active", process_template: { id: ids.template, workspace_id: ids.workspace, is_column_process: true }, invalid: false, needs_attention: false },
-    [`/api/workspaces/acme/process-templates/${ids.template}/graph/?view=selection&node_keys=project_start&include_neighbors=true&include_incident_edges=true`]: { process_template_id: ids.template, definition_etag: `sha256:${"a".repeat(64)}`, graph_hash: `sha256:${"b".repeat(64)}`, graph_ref: {}, schema_version: 1, view: "selection", selection: { requested_node_keys: ["project_start"], nodes: [start, { id: ids.first, key: "resolve_flow_item", type: "agent_task", name: "Resolve" }], edges: [{ id: ids.edge, source: ids.start, target: ids.first }] } },
+    [`/api/workspaces/acme/process-templates/${ids.template}/graph/?view=selection&node_keys=project_start&include_neighbors=true&include_incident_edges=true`]: { process_template_id: ids.template, definition_etag: `sha256:${"a".repeat(64)}`, graph_hash: `sha256:${"b".repeat(64)}`, graph_ref: {}, schema_version: 1, view: "selection", selection: { requested_node_keys: ["project_start"], nodes: [start, { id: ids.first, key: "resolve_flow_item", type: "agent_task", name: "Resolve" }], edges: [{ id: ids.edge, source: ids.start, target: ids.first, ...(override.edgeExtra ?? {}) }] } },
     "/api/workspaces/acme/agent-employees/": { results: [
       { id: ids.qa, runtime: "remote", is_active: true, active_version: { id: ids.qav }, remote_profile: { health_status: "online" } },
       { id: ids.decision, runtime: "remote", is_active: true, active_version: { id: ids.decisionv }, remote_profile: { health_status: "online" } },
@@ -96,9 +115,50 @@ test("direct preflight rejects extra nested request authority fields before any 
       { ...base, profile_artifact: { ...base.profile_artifact, operator_token: "must-not-cross-boundary" } },
       /profile ref must have exact fields/,
     ],
+    [
+      "synthetic decision capability",
+      { ...base, decision_agent_metadata: { ...base.decision_agent_metadata, required_capabilities: [...base.decision_agent_metadata.required_capabilities, "synthetic-secret"] } },
+      /decision metadata|capabilit/i,
+    ],
+    [
+      "arbitrary requested model",
+      { ...base, decision_agent_metadata: { ...base.decision_agent_metadata, requested_model: "synthetic-secret-like-model" } },
+      /decision metadata|model/i,
+    ],
+    [
+      "reordered decision capabilities",
+      { ...base, decision_agent_metadata: { ...base.decision_agent_metadata, required_capabilities: ["tool_execution", "nuanu_mcp", "git"] } },
+      /decision metadata|capabilit|order/i,
+    ],
   ]) await t.test(name, async () => {
     await assert.rejects(preflight.runDirectInstallPreflight(malformed, { environment: {} }), pattern);
   });
+});
+
+test("direct preflight emits only a projected current Column Start and edge", async (t) => {
+  const preflight = await import("../../scripts/qah/install-preflight.mjs");
+  const { sha256 } = await import("../../scripts/qah/canonical.mjs");
+  const git = await gitFixture(); t.after(() => rm(git.dir, { recursive: true, force: true }));
+  const api = await apiFixture(git, {
+    startExtra: { access_token: "synthetic-secret" },
+    edgeExtra: { secret: "synthetic-secret" },
+  });
+  t.after(api.close);
+  const attestation = await preflight.runDirectInstallPreflight(request(git), { environment: {
+    NUANU_API_URL: api.base,
+    NUANU_API_KEY: "user-key",
+    NUANU_QA_AGENT_KEY: "qa-key",
+    NUANU_DECISION_AGENT_KEY: "decision-key",
+    NUANU_QAH_PREFLIGHT_TEST_MODE: "1",
+  } });
+  const consumed = preflight.consumeDirectInstallAttestation(attestation);
+  assert.deepEqual(Object.keys(consumed.bindings.platform_start_node).sort(), ["config", "id", "key", "name", "trigger", "type"]);
+  assert.deepEqual(Object.keys(consumed.bindings.platform_start_edge).sort(), ["id", "source", "target"]);
+  assert.equal(consumed.bindings.platform_start_node.trigger.mode, "from_project");
+  assert.equal(Object.hasOwn(consumed.bindings.platform_start_node.config.output.data, "payload"), false);
+  assert.equal(consumed.bindings.platform_start_fingerprint, sha256(consumed.bindings.platform_start_node));
+  assert.equal(consumed.bindings.platform_start_edge_fingerprint, sha256(consumed.bindings.platform_start_edge));
+  assert.doesNotMatch(JSON.stringify(consumed.bindings), /synthetic-secret|access_token|"secret"/);
 });
 
 test("production install path exposes no callback adapter or public attestation constructor", async () => {

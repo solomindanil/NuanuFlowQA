@@ -74,7 +74,7 @@ There is no default or free-form branch. Unknown, missing, extra, coerced, or co
 
 - Confirm the workspace, project, Column binding, Process template, and three state IDs are the intended objects.
 - Confirm the binding is `active`, `invalid: false`, `needs_attention: false`, targets the exact Ready for QA state, and references the exact workspace Process template.
-- Read the selection view for `project_start` plus its neighbor and incident edge. Confirm one generated Start, no incoming edge, one outgoing edge, and exact binding/project/state identities.
+- Read the selection view for `project_start` plus its neighbor and incident edge. Confirm one generated Start, no incoming edge, one outgoing edge, exact binding/project/state identities, `trigger.mode: from_project`, and the current closed output contract (`invoked_at`, `trigger`, and `flow_item`; no legacy `payload`).
 - Record the current definition ETag and graph hash; do not infer either from a previous response.
 - Confirm the QA and decision Agents are distinct, active, online, and pinned to the exact published AgentVersion IDs.
 - Confirm each worker identity independently using its scoped worker credential.

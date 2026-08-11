@@ -5,9 +5,12 @@ import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { types } from "node:util";
 
-import { canonicalJson } from "./canonical.mjs";
+import { canonicalJson, sha256 } from "./canonical.mjs";
 import {
   consumeDirectInstallAttestation,
+  normalizeDecisionAgentMetadata,
+  projectPlatformStart,
+  projectPlatformStartEdge,
   runDirectInstallPreflight,
 } from "./install-preflight.mjs";
 
@@ -42,6 +45,8 @@ const BINDING_FIELDS = Object.freeze([
 ]);
 const DECISION_AGENT_METADATA_FIELDS = Object.freeze(["requested_model", "required_capabilities"]);
 const PROFILE_ARTIFACT_FIELDS = Object.freeze(["artifact_id", "version_id", "kind", "role"]);
+const PLATFORM_START_FIELDS = Object.freeze(["config", "id", "key", "name", "trigger", "type"]);
+const PLATFORM_START_EDGE_FIELDS = Object.freeze(["id", "source", "target"]);
 const ALLOWED_ENVIRONMENT_FIELDS = Object.freeze([
   "NUANU_API_URL",
   "NUANU_API_KEY",
@@ -53,6 +58,7 @@ const SECRET_ENVIRONMENT_FIELDS = Object.freeze([
   "NUANU_QA_AGENT_KEY",
   "NUANU_DECISION_AGENT_KEY",
 ]);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 
 function exactOwnKeys(value, expected, label) {
@@ -110,6 +116,32 @@ function validateConsumedPayload(payload) {
   exactOwnKeys(payload.bindings, BINDING_FIELDS, "bindings");
   exactOwnKeys(payload.bindings.decision_agent_metadata, DECISION_AGENT_METADATA_FIELDS, "decision_agent_metadata");
   exactOwnKeys(payload.bindings.profile_artifact, PROFILE_ARTIFACT_FIELDS, "profile_artifact");
+  exactOwnKeys(payload.bindings.platform_start_node, PLATFORM_START_FIELDS, "platform_start_node");
+  exactOwnKeys(payload.bindings.platform_start_edge, PLATFORM_START_EDGE_FIELDS, "platform_start_edge");
+  for (const field of [
+    "project_process_binding_id", "project_id", "ready_for_qa_state_id", "in_progress_state_id", "ready_for_production_state_id",
+    "qa_agent_employee_id", "qa_agent_version_id", "decision_agent_employee_id", "decision_agent_version_id",
+  ]) if (typeof payload.bindings[field] !== "string" || !UUID.test(payload.bindings[field])) throw new TypeError(`${field} must be a UUID`);
+  if (!UUID.test(payload.bindings.profile_artifact.artifact_id)
+    || !UUID.test(payload.bindings.profile_artifact.version_id)
+    || payload.bindings.profile_artifact.kind !== "document"
+    || payload.bindings.profile_artifact.role !== "implementation") {
+    throw new TypeError("profile_artifact must be the exact implementation document reference");
+  }
+  const decisionMetadata = normalizeDecisionAgentMetadata(payload.bindings.decision_agent_metadata);
+  if (canonicalJson(decisionMetadata) !== canonicalJson(payload.bindings.decision_agent_metadata)) {
+    throw new TypeError("decision_agent_metadata is not canonical");
+  }
+  const start = projectPlatformStart(payload.bindings.platform_start_node, payload.bindings);
+  const edge = projectPlatformStartEdge(payload.bindings.platform_start_edge, start);
+  if (canonicalJson(start) !== canonicalJson(payload.bindings.platform_start_node)
+    || canonicalJson(edge) !== canonicalJson(payload.bindings.platform_start_edge)) {
+    throw new TypeError("platform Start bindings must be exact safe projections");
+  }
+  if (payload.bindings.platform_start_fingerprint !== sha256(start)
+    || payload.bindings.platform_start_edge_fingerprint !== sha256(edge)) {
+    throw new TypeError("platform Start fingerprints must cover the emitted projections");
+  }
   for (const field of ["graph_hash", "definition_etag", "profile_digest", "policy_digest"]) {
     if (typeof payload[field] !== "string" || !DIGEST.test(payload[field])) throw new TypeError(`${field} must be a SHA-256 digest`);
   }
@@ -130,7 +162,6 @@ function containsReportText(value, text) {
 }
 
 function rejectSecretReflection(report, environment) {
-  if (containsReportText(report, "operator_token")) throw new Error("preflight report reflects a forbidden operator credential field");
   for (const key of SECRET_ENVIRONMENT_FIELDS) {
     if (containsReportText(report, key)) throw new Error("preflight report reflects a credential field name");
     const secret = environment?.[key];

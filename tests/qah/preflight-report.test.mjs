@@ -4,10 +4,30 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { canonicalJson } from "../../scripts/qah/canonical.mjs";
+import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
 import { createPreflightReport, main } from "../../scripts/qah/preflight-report.mjs";
 
 const ref = (digit) => `${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
+const platformStartNode = {
+  id: ref("a"),
+  key: "project_start",
+  type: "start",
+  name: "Enter Ready for QA",
+  trigger: { mode: "from_project" },
+  config: {
+    project_process_start: { binding_id: ref("1"), project_id: ref("2"), state_id: ref("3") },
+    output: {
+      data: {
+        invoked_at: { description: "When this Process run was invoked", type: "string" },
+        trigger: { description: "How this Process run started", type: "string" },
+      },
+      artifacts: {
+        flow_item: { description: "Exact Flow item snapshot that invoked this Process", kind: "flow_item" },
+      },
+    },
+  },
+};
+const platformStartEdge = { id: ref("b"), source: ref("a"), target: ref("c") };
 const payload = Object.freeze({
   bindings: {
     project_process_binding_id: ref("1"),
@@ -23,10 +43,10 @@ const payload = Object.freeze({
       requested_model: "openai/gpt-5.6-sol-pro",
       required_capabilities: ["git", "nuanu_mcp", "tool_execution"],
     },
-    platform_start_node: { id: ref("a"), key: "project_start", type: "start" },
-    platform_start_edge: { id: ref("b"), source: ref("a"), target: ref("c") },
-    platform_start_fingerprint: `sha256:${"e".repeat(64)}`,
-    platform_start_edge_fingerprint: `sha256:${"f".repeat(64)}`,
+    platform_start_node: platformStartNode,
+    platform_start_edge: platformStartEdge,
+    platform_start_fingerprint: sha256(platformStartNode),
+    platform_start_edge_fingerprint: sha256(platformStartEdge),
     profile_artifact: { artifact_id: ref("d"), version_id: ref("e"), kind: "document", role: "implementation" },
   },
   graph_hash: `sha256:${"a".repeat(64)}`,
@@ -133,6 +153,73 @@ test("report rejects closed-shape coercion hostile values and secret reflection"
           platform_start_node: { ...payload.bindings.platform_start_node, operator_token: "must-not-cross-boundary" },
         },
       },
+      environment: {},
+    }],
+    ["synthetic capability in decision metadata", {
+      result: {
+        ...payload,
+        bindings: {
+          ...payload.bindings,
+          decision_agent_metadata: {
+            ...payload.bindings.decision_agent_metadata,
+            required_capabilities: [...payload.bindings.decision_agent_metadata.required_capabilities, "synthetic-secret"],
+          },
+        },
+      },
+      environment: {},
+    }],
+    ["arbitrary requested model in decision metadata", {
+      result: {
+        ...payload,
+        bindings: {
+          ...payload.bindings,
+          decision_agent_metadata: {
+            ...payload.bindings.decision_agent_metadata,
+            requested_model: "synthetic-secret-like-model",
+          },
+        },
+      },
+      environment: {},
+    }],
+    ["reordered decision capabilities", {
+      result: {
+        ...payload,
+        bindings: {
+          ...payload.bindings,
+          decision_agent_metadata: {
+            ...payload.bindings.decision_agent_metadata,
+            required_capabilities: ["tool_execution", "nuanu_mcp", "git"],
+          },
+        },
+      },
+      environment: {},
+    }],
+    ["access token in platform Start", {
+      result: {
+        ...payload,
+        bindings: {
+          ...payload.bindings,
+          platform_start_node: { ...payload.bindings.platform_start_node, access_token: "synthetic-secret" },
+        },
+      },
+      environment: {},
+    }],
+    ["secret in platform Start edge", {
+      result: {
+        ...payload,
+        bindings: {
+          ...payload.bindings,
+          platform_start_edge: { ...payload.bindings.platform_start_edge, secret: "synthetic-secret" },
+        },
+      },
+      environment: {},
+    }],
+    ["stale platform Start fingerprint", {
+      result: { ...payload, bindings: { ...payload.bindings, platform_start_fingerprint: `sha256:${"0".repeat(64)}` } },
+      environment: {},
+    }],
+    ["stale platform Start edge fingerprint", {
+      result: { ...payload, bindings: { ...payload.bindings, platform_start_edge_fingerprint: `sha256:${"0".repeat(64)}` } },
       environment: {},
     }],
     ["missing consumed field", { result: missing, environment: {} }],
