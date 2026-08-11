@@ -178,7 +178,7 @@ function requestShape(value) {
 }
 
 export function managementPath(path) { if (!path.startsWith("/api/")) throw new TypeError("management path must start /api/"); return `/be${path}`; }
-export function workerPath(path) { if (!path.startsWith("/agent-worker/")) throw new TypeError("worker path must start /agent-worker/"); return `/api${path}`; }
+export function workerPath(path) { if (!path.startsWith("/agent-worker/")) throw new TypeError("worker path must start /agent-worker/"); return `/be/api${path}`; }
 
 function apiOrigin(environment) {
   const value = environment.NUANU_API_URL ?? "https://flow.nuanu.com";

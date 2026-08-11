@@ -181,7 +181,7 @@ test("direct fixed-route preflight accepts a faithful loopback API and actual Gi
     "/be/api/workspaces/acme/agent-employees/",
     `/be/api/workspaces/acme/agent-employees/${ids.qa}/versions/${ids.qav}/`,
     `/be/api/workspaces/acme/agent-employees/${ids.decision}/versions/${ids.decisionv}/`,
-    "/api/agent-worker/whoami/", "/api/agent-worker/whoami/",
+    "/be/api/agent-worker/whoami/", "/be/api/agent-worker/whoami/",
     `/be/api/workspaces/acme/artifacts/${ids.artifact}/`,
     `/be/api/workspaces/acme/artifacts/${ids.artifact}/download/?version=${ids.artifactv}&proxy=1`,
   ]);

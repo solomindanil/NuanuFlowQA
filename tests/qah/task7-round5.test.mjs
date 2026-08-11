@@ -6,7 +6,7 @@ const module = await import("../../scripts/qah/install-preflight.mjs");
 
 test("management and worker routes use the two current production ingress contracts", () => {
   assert.equal(module.managementPath("/api/workspaces/demo/agent-employees/"), "/be/api/workspaces/demo/agent-employees/");
-  assert.equal(module.workerPath("/agent-worker/whoami/"), "/api/agent-worker/whoami/");
+  assert.equal(module.workerPath("/agent-worker/whoami/"), "/be/api/agent-worker/whoami/");
 });
 
 test("real native remote snapshot has no model, exact empty MCP, and matches trusted prompt bytes", async () => {
