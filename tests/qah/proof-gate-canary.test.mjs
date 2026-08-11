@@ -102,7 +102,7 @@ test("prepare exports the exact clean index and installs dependencies only in th
     execFile: async (file, args, options) => {
       calls.push({ file, args, cwd: options.cwd, shell: options.shell });
       commandEnvironments.push(options.env);
-      return { stdout: "installed", stderr: "" };
+      return { stdout: "installed", stderr: file === "npm" ? "npm warn fixture\n" : "" };
     },
     readProfile: async (checkout) => {
       calls.push("profile");

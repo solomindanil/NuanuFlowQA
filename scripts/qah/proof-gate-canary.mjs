@@ -102,7 +102,7 @@ async function prepareVerificationWorkspace(checkout, outputDir, command = execF
   });
   if ((exported.stderr ?? "") !== "") throw new Error("verified source export emitted stderr");
   const environment = await privateCommandEnvironment(snapshot);
-  const installed = await command("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
+  await command("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
     cwd: snapshot,
     env: environment,
     encoding: "utf8",
@@ -111,7 +111,6 @@ async function prepareVerificationWorkspace(checkout, outputDir, command = execF
     killSignal: "SIGKILL",
     shell: false,
   });
-  if ((installed.stderr ?? "") !== "") throw new Error("locked dependency installation emitted stderr");
   return snapshot;
 }
 
