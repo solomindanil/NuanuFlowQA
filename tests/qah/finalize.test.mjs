@@ -645,3 +645,12 @@ test("pure classification agreement rejects a digest-valid route mismatch", asyn
     /FINALIZATION_CLASSIFICATION_INVALID/,
   );
 });
+
+test("pure classification agreement normalizes malformed boundary inputs", () => {
+  for (const input of [null, undefined, {}, { aggregate: null }, { decision: null }, { aggregate: null, decision: null, extra: true }]) {
+    assert.throws(
+      () => validateFinalizationClassification(input),
+      /FINALIZATION_CLASSIFICATION_INVALID/,
+    );
+  }
+});

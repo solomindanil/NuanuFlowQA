@@ -25,8 +25,9 @@ function diagnostic(reasons) {
   };
 }
 
-export function validateFinalizationClassification({ aggregate, decision } = {}) {
-  if (!exactKeys(arguments[0], ["aggregate", "decision"])) throw new Error("FINALIZATION_CLASSIFICATION_INVALID");
+export function validateFinalizationClassification(input) {
+  if (!exactKeys(input, ["aggregate", "decision"])) throw new Error("FINALIZATION_CLASSIFICATION_INVALID");
+  const { aggregate, decision } = input;
   const classification = classifyValidatedRelease({ valid: true, aggregate, reason_codes: decision?.reason_codes });
   if (classification.route !== decision?.route) throw new Error("FINALIZATION_CLASSIFICATION_INVALID");
   return classification;
