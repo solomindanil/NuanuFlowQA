@@ -50,6 +50,7 @@ async function fixture(t, verification = { exit_code: 0, stdout: "verified", std
   const dependencies = {
     checkout,
     readRepositoryIdentity: async () => ({ checkout, commit, origin, clean: true }),
+    installDependencies: async () => {},
     readProfile: async () => ({ profile, bytes: Buffer.from("profile-bytes") }),
     runVerification: async () => verification,
   };
@@ -84,6 +85,53 @@ test("production canary ignores the launcher checkout and verifies the superviso
   assert.equal(observedCheckout, process.cwd());
   const verification = JSON.parse(await readFile(join(value.outputDir, "qah-verification.json"), "utf8"));
   assert.equal(verification.tested_head_sha, value.commit);
+});
+
+test("prepare installs the exact locked dependencies before profile and verification reads", async (t) => {
+  const value = await fixture(t);
+  const calls = [];
+  const { installDependencies: _fixtureInstaller, ...fixtureDependencies } = value.dependencies;
+  value.dependencies = {
+    ...fixtureDependencies,
+    readRepositoryIdentity: async (checkout) => {
+      calls.push("repository");
+      return { checkout, commit: value.commit, origin: value.origin, clean: true };
+    },
+    execFile: async (file, args, options) => {
+      calls.push({ file, args, cwd: options.cwd, shell: options.shell });
+      return { stdout: "installed", stderr: "" };
+    },
+    readProfile: async (checkout) => {
+      calls.push("profile");
+      assert.equal(checkout, value.checkout);
+      return { profile: value.profile, bytes: Buffer.from("profile-bytes") };
+    },
+    runVerification: async (checkout) => {
+      calls.push("verification");
+      assert.equal(checkout, value.checkout);
+      return { exit_code: 0, stdout: "verified", stderr: "" };
+    },
+  };
+
+  await runProofGateCanaryPhase("prepare", {
+    phase: "prepare",
+    source_ref: SOURCE_REF,
+    source_name: "PAYD-33 · Fresh checkout bootstrap",
+    source_media_type: "application/vnd.nuanu.flow-item+json",
+  }, value);
+
+  assert.deepEqual(calls, [
+    "repository",
+    {
+      file: "npm",
+      args: ["ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+      cwd: value.checkout,
+      shell: false,
+    },
+    "repository",
+    "profile",
+    "verification",
+  ]);
 });
 
 test("single-task canary publishes exact verification and finalization refs before Proof Gate completion", async (t) => {
@@ -169,7 +217,11 @@ test("failed repository verification becomes fail-closed blocked evidence, never
   const report = JSON.parse(await readFile(join(value.outputDir, "finalization.json"), "utf8"));
   assert.equal(report.claim.verdict, "blocked");
   assert.equal(report.claim.target_state, "ready_for_qa");
-  assert.deepEqual(report.claim.checks, []);
+  assert.deepEqual(report.claim.checks, [{
+    name: "universal_qah_repository_verification",
+    status: "failed",
+    evidence: `artifact:${VERIFICATION_REF.artifact_id}@${VERIFICATION_REF.version_id}`,
+  }]);
   assert.equal(report.qa_reason_code, "HARNESS_VERIFICATION_FAILED");
 });
 

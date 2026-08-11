@@ -5,7 +5,6 @@ import { lstat, mkdir, readFile, readdir, realpath, rename, writeFile } from "no
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import YAML from "yaml";
 
 import { canonicalJson, sha256 } from "./canonical.mjs";
 import { validateProfile } from "./contracts.mjs";
@@ -68,9 +67,23 @@ async function readRepositoryIdentity(checkout) {
 }
 
 async function readProfile(checkout) {
+  const { default: YAML } = await import("yaml");
   const bytes = await readFile(join(checkout, "qa-harness.yaml"));
   if (bytes.byteLength < 1 || bytes.byteLength > 262_144) throw new Error("qa-harness.yaml is outside its byte bound");
   return { profile: validateProfile(YAML.parse(bytes.toString("utf8"))), bytes };
+}
+
+async function installLockedDependencies(checkout, command = execFile) {
+  const result = await command("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
+    cwd: checkout,
+    env: minimalEnvironment(),
+    encoding: "utf8",
+    maxBuffer: MAX_COMMAND_BYTES,
+    timeout: 15 * 60_000,
+    killSignal: "SIGKILL",
+    shell: false,
+  });
+  if ((result.stderr ?? "") !== "") throw new Error("locked dependency installation emitted stderr");
 }
 
 async function runVerification(checkout) {
@@ -169,6 +182,9 @@ async function prepare(input, context) {
   if (repository.checkout !== context.checkout || !SHA.test(repository.commit) || typeof repository.origin !== "string" || repository.clean !== true) {
     throw new Error("repository identity is not exact and clean");
   }
+  await context.installDependencies(context.checkout);
+  const installedRepository = await context.readRepositoryIdentity(context.checkout);
+  if (canonicalJson(installedRepository) !== canonicalJson(repository)) throw new Error("repository identity changed during dependency installation");
   const { profile, bytes } = await context.readProfile(context.checkout);
   if (!profile || profile.repository?.allowed_origin !== repository.origin || !Buffer.isBuffer(bytes)) throw new Error("profile and repository origin are not bound");
   const result = await context.runVerification(context.checkout);
@@ -222,11 +238,11 @@ async function finalize(input, context) {
     kind: "qa",
     verdict: passed ? "pass" : "blocked",
     tested_head_sha: state.verification.tested_head_sha,
-    checks: passed ? [{
+    checks: [{
       name: "universal_qah_repository_verification",
-      status: "passed",
+      status: passed ? "passed" : "failed",
       evidence: `artifact:${verificationRef.artifact_id}@${verificationRef.version_id}`,
-    }] : [],
+    }],
   };
   const report = {
     schema_version: "nuanu.qah-proof-gate-canary-finalization.v1",
@@ -286,6 +302,7 @@ export async function runProofGateCanaryPhase(phase, input, options = {}) {
     outputDir,
     checkout,
     readRepositoryIdentity: injected.readRepositoryIdentity ?? readRepositoryIdentity,
+    installDependencies: injected.installDependencies ?? ((root) => installLockedDependencies(root, injected.execFile ?? execFile)),
     readProfile: injected.readProfile ?? readProfile,
     runVerification: injected.runVerification ?? runVerification,
   };
