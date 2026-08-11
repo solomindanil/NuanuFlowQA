@@ -9,10 +9,14 @@ test("management and worker routes use the two current production ingress contra
   assert.equal(module.workerPath("/agent-worker/whoami/"), "/be/api/agent-worker/whoami/");
 });
 
-test("real native remote snapshot has no model, exact empty MCP, and matches trusted prompt bytes", async () => {
+test("real native remote snapshot has no model, exact empty MCP, and only the stock terminal-LF normalization", async () => {
   const prompt = await readFile(new URL("../../qah/generic-qa.v1.md", import.meta.url));
-  const snapshot = { configuration_schema_version: 1, runtime: "remote", remote_protocol: "native", system_prompt: prompt.toString("utf8"), endpoint_url: "", health_path: "", tools: ["git", "tool_execution"], skills: [{ source: "git", url: "https://github.com/solomindanil/NuanuFlowQA.git", subpath: "skills/qa-check", pinned_sha: "a".repeat(40) }], integrations: [], memory_loadout: { enabled: false, bindings: [] }, mcp_servers: [], a2a: null, capability_ceiling: { tools: ["git", "tool_execution"], integrations: [], mcp_servers: [], memory: [] }, execution_policy: { external_side_effects: "remote_admission_policy" }, catalog_provenance: { version: 1, curated_skill_catalog_revision: 1 } };
+  assert.equal(prompt.at(-1), 0x0a);
+  const persistedPrompt = prompt.subarray(0, -1).toString("utf8");
+  const snapshot = { configuration_schema_version: 1, runtime: "remote", remote_protocol: "native", system_prompt: persistedPrompt, endpoint_url: "", health_path: "", tools: ["git", "tool_execution"], skills: [{ source: "git", url: "https://github.com/solomindanil/NuanuFlowQA.git", subpath: "skills/qa-check", pinned_sha: "a".repeat(40) }], integrations: [], memory_loadout: { enabled: false, bindings: [] }, mcp_servers: [], a2a: null, capability_ceiling: { tools: ["git", "tool_execution"], integrations: [], mcp_servers: [], memory: [] }, execution_policy: { external_side_effects: "remote_admission_policy" }, catalog_provenance: { version: 1, curated_skill_catalog_revision: 1 } };
   assert.doesNotThrow(() => module.validateRemoteSnapshot(snapshot, { prompt_bytes: prompt, tools: ["git", "tool_execution"], integrations: [], skills: snapshot.skills }));
+  assert.throws(() => module.validateRemoteSnapshot({ ...snapshot, system_prompt: prompt.toString("utf8") }, { prompt_bytes: prompt, tools: snapshot.tools, integrations: [], skills: snapshot.skills }), /prompt bytes/i);
+  assert.throws(() => module.validateRemoteSnapshot({ ...snapshot, system_prompt: persistedPrompt.slice(0, -1) }, { prompt_bytes: prompt, tools: snapshot.tools, integrations: [], skills: snapshot.skills }), /prompt bytes/i);
   assert.throws(() => module.validateRemoteSnapshot({ ...snapshot, base_model: "openai/gpt" }, { prompt_bytes: prompt, tools: snapshot.tools, integrations: [], skills: snapshot.skills }), /base_model|remote snapshot/i);
 });
 

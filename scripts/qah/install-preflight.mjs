@@ -251,7 +251,8 @@ function list(value, label) {
 export function validateRemoteSnapshot(snapshot, expected) {
   object(snapshot, "remote snapshot");
   if (Object.hasOwn(snapshot, "base_model") || snapshot.runtime !== "remote" || snapshot.remote_protocol !== "native" || canonicalJson(snapshot.mcp_servers) !== "[]") throw new Error("remote snapshot runtime/base_model/MCP contract is invalid");
-  if (!Buffer.from(snapshot.system_prompt ?? "", "utf8").equals(expected.prompt_bytes)) throw new Error("remote snapshot prompt bytes do not match trusted policy template");
+  const persistedPromptBytes = expected.prompt_bytes.at(-1) === 0x0a ? expected.prompt_bytes.subarray(0, -1) : expected.prompt_bytes;
+  if (!Buffer.from(snapshot.system_prompt ?? "", "utf8").equals(persistedPromptBytes)) throw new Error("remote snapshot prompt bytes do not match trusted policy template");
   for (const field of ["tools", "skills", "integrations"]) if (canonicalJson(snapshot[field]) !== canonicalJson(expected[field])) throw new Error(`remote snapshot ${field} do not exactly match trusted policy`);
 }
 
