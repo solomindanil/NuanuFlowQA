@@ -4,9 +4,8 @@ import { createServer } from "node:http";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFile as execFileCallback, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { promisify } from "node:util";
 
 const root = new URL("../..", import.meta.url);
 const ids = {
@@ -20,7 +19,6 @@ const ids = {
   first: "99999999-9999-4999-8999-999999999999", edge: "12121212-1212-4121-8121-121212121212",
 };
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const execFile = promisify(execFileCallback);
 
 async function gitFixture() {
   const dir = await realpath(await mkdtemp(join(tmpdir(), "qah-direct-preflight-")));
@@ -106,15 +104,44 @@ test("direct fixed-route preflight accepts a faithful loopback API and actual Gi
   ]);
 });
 
-test("Git reads require a present local commit and use one from-nothing child environment", async (t) => {
+test("Git read spawn spec is closed and disables lazy fetch plus replacement refs", async () => {
+  const preflight = await import("../../scripts/qah/install-preflight.mjs");
+  assert.deepEqual(
+    preflight.buildGitReadSpawnSpec("/absolute/repository", ["cat-file", "-e", `${"a".repeat(40)}^{commit}`], 4096),
+    {
+      file: "git",
+      args: ["-C", "/absolute/repository", "cat-file", "-e", `${"a".repeat(40)}^{commit}`],
+      options: {
+        encoding: "buffer",
+        timeout: 10000,
+        maxBuffer: 4096,
+        env: {
+          PATH: "/usr/bin:/bin",
+          LANG: "C",
+          LC_ALL: "C",
+          GIT_OPTIONAL_LOCKS: "0",
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_NO_LAZY_FETCH: "1",
+          GIT_NO_REPLACE_OBJECTS: "1",
+        },
+      },
+    },
+  );
+});
+
+test("production attestation keeps Git execution module-owned and contains no Git fetch command", async () => {
+  const source = await readFile(new URL("../../scripts/qah/install-preflight.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /executeGit/);
+  assert.doesNotMatch(source, /\[\s*"fetch"/);
+  assert.match(source, /buildGitReadSpawnSpec\(repositoryPath, args, maxBuffer\)/);
+});
+
+test("Git reads require a present local commit and never create FETCH_HEAD", async (t) => {
   const preflight = await import("../../scripts/qah/install-preflight.mjs");
   const git = await gitFixture(); t.after(() => rm(git.dir, { recursive: true, force: true }));
   const api = await apiFixture(git); t.after(api.close);
-  const calls = [];
-  const executeGit = async (...args) => {
-    calls.push(args);
-    return execFile(...args);
-  };
   const environment = {
     NUANU_API_URL: api.base,
     NUANU_API_KEY: "user-key",
@@ -125,28 +152,10 @@ test("Git reads require a present local commit and use one from-nothing child en
     NODE_OPTIONS: "--must-not-reach-git",
     HTTPS_PROXY: "https://must-not-reach-git.invalid",
   };
-  await preflight.runDirectInstallPreflight(request(git), { environment, executeGit });
-  const expectedChildEnvironment = {
-    PATH: "/usr/bin:/bin",
-    LANG: "C",
-    LC_ALL: "C",
-    GIT_OPTIONAL_LOCKS: "0",
-    GIT_TERMINAL_PROMPT: "0",
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: "/dev/null",
-  };
-  assert.ok(calls.length > 0);
-  for (const [file, args, options] of calls) {
-    assert.equal(file, "git");
-    assert.equal(args[0], "-C");
-    assert.equal(args[1], git.dir);
-    assert.deepEqual(options.env, expectedChildEnvironment);
-  }
-  assert.equal(calls.some(([, args]) => args.includes("fetch")), false);
-  assert.equal(calls.some(([, args]) => args.includes("cat-file") && args.includes("-e") && args.includes(`${git.commit}^{commit}`)), true);
+  await preflight.runDirectInstallPreflight(request(git), { environment });
   await assert.rejects(readFile(join(git.dir, ".git", "FETCH_HEAD")), { code: "ENOENT" });
   await assert.rejects(
-    preflight.runDirectInstallPreflight(request({ ...git, commit: "f".repeat(40) }), { environment, executeGit }),
+    preflight.runDirectInstallPreflight(request({ ...git, commit: "f".repeat(40) }), { environment }),
     /commit|present|Git/i,
   );
 });
