@@ -191,6 +191,11 @@ test("declares one supervisor-pushed commit output for stock provider verificati
   });
   assert.match(finalizer.config.instruction, /repository supervisor/i);
   assert.match(finalizer.config.instruction, /verified_commit/);
+  assert.match(finalizer.config.instruction, /pre-supervisor raw result/i);
+  assert.match(finalizer.config.instruction, /stdout.*phase=complete/is);
+  assert.match(finalizer.config.instruction, /artifact_outputs.*finalization_report.*qah_verification/is);
+  assert.match(finalizer.config.instruction, /artifact_outputs.*must not contain verified_commit/is);
+  assert.match(finalizer.config.instruction, /no markdown|без markdown/i);
 });
 
 test("uses a fresh Proof Gate identity instead of mutating the legacy gateway type", () => {

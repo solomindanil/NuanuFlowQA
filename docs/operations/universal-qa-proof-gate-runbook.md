@@ -99,6 +99,14 @@ For the current single-task compatibility canary, use this exact boundary:
    commit, or populate `verified_commit`; the stock repository supervisor owns
    that third output.
 
+The pre-supervisor response is deliberately narrower than the frozen Process
+output definition: it is the verbatim JSON stdout of `phase=complete`, with
+exactly `item` and `artifact_outputs`; `item.artifacts` is empty and
+`artifact_outputs` contains only `finalization_report` and `qah_verification`.
+It contains no Markdown, prose, or `verified_commit`. The stock worker validates
+that raw response first, then verifies and pushes the task branch and injects
+the server-owned `verified_commit` candidate.
+
 The longer custody chain below remains the target for the later full product QA
 extension, but it must be composed within one task authority or another stock
 Nuanu-supported shared custody boundary; it cannot be spread across task-scoped
