@@ -62,6 +62,12 @@ if rg -n '411111111111111'\
 'body' scripts/qah processes/universal-qa-flow.graph.json docs/operations README.md --glob '!local-harness.mjs'; then exit 1; else secret_scan_rc=$?; test "$secret_scan_rc" -eq 1; fi
 ```
 
+The complete host gate above includes the real Chromium isolation regression.
+The stock Nuanu App Server task runs `npm run verify:qah:proof-gate` instead:
+App Server intentionally uses a workspace-write sandbox that cannot acquire
+macOS Chromium Mach ports. Browser/product execution remains a separate
+host/browser-worker lane and is never inferred from this orchestration canary.
+
 The continued adjacent shell literals above form the exact required regular expressions while preventing the runbook from becoming a match in its own scan. In each wrapper, `rg` status `0` is a prohibited match and exits `1`; only native no-match status `1` is accepted and normalized to wrapper status `0`. Any other `rg` status remains a failure.
 
 Generate a sanitized production preflight report only after placing the canonical request in an operator-controlled regular file:

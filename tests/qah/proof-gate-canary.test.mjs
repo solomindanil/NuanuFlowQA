@@ -72,7 +72,7 @@ test("single-task canary publishes exact verification and finalization refs befo
   assert.equal(verification.status, "passed");
   assert.equal(verification.tested_head_sha, value.commit);
   assert.deepEqual(verification.source_ref, SOURCE_REF);
-  assert.equal(verification.command, "npm run verify:qah");
+  assert.equal(verification.command, "npm run verify:qah:proof-gate");
 
   const finalized = await runProofGateCanaryPhase("finalize", {
     phase: "finalize",

@@ -75,7 +75,7 @@ async function readProfile(checkout) {
 
 async function runVerification(checkout) {
   try {
-    const result = await execFile("npm", ["run", "verify:qah"], {
+    const result = await execFile("npm", ["run", "verify:qah:proof-gate"], {
       cwd: checkout,
       env: minimalEnvironment(),
       encoding: "utf8",
@@ -179,7 +179,7 @@ async function prepare(input, context) {
   const verification = {
     schema_version: "nuanu.qah-repository-verification.v1",
     status,
-    command: "npm run verify:qah",
+    command: "npm run verify:qah:proof-gate",
     exit_code: result.exit_code,
     tested_head_sha: repository.commit,
     repository_origin: repository.origin,

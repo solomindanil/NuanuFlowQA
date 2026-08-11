@@ -49,7 +49,7 @@ verification and the closed claim emitted by that one task.
 lease and task directory:
 
 1. `prepare` validates the platform source reference, exact clean Git root,
-   single origin, profile/origin binding, and runs `npm run verify:qah` with a
+   single origin, profile/origin binding, and runs `npm run verify:qah:proof-gate` with a
    minimal environment. It writes canonical `qah-verification.json`.
 2. The Agent publishes that file to the declared `qah_verification` output slot
    as `document/output/application-json` and passes only the actual closed
@@ -70,7 +70,7 @@ SHA-256 digests are recorded.
 This iteration proves repository/worker/Process/Proof-Gate compatibility. It is
 not yet a full Freeland product verdict.
 
-- clean repository plus `verify:qah` exit `0` emits `kind=qa`, `verdict=pass`,
+- clean repository plus `verify:qah:proof-gate` exit `0` emits `kind=qa`, `verdict=pass`,
   the exact tested HEAD, and one passed evidence check;
 - any verification failure emits `verdict=blocked`, an empty check list, and a
   neutral Ready-for-QA target;
