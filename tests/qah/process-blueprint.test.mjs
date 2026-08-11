@@ -39,6 +39,15 @@ const expectedFinalStates = Object.freeze({
   ready_for_production_state_id: bindings.ready_for_production_state_id,
   in_progress_state_id: bindings.in_progress_state_id,
 });
+const stockProofGateOutput = Object.freeze({
+  artifacts: {},
+  data: {
+    completion_verification_id: { description: "Exact persisted verification receipt", type: "string" },
+    outcome: { description: "Closed proof outcome used for BPMN routing", type: "string" },
+    reason_code: { description: "Deterministic reason for the proof outcome", type: "string" },
+    resolution: { description: "Proof outcome repeated as the routing resolution", type: "string" },
+  },
+});
 
 const expectedKeys = [
   "project_start",
@@ -272,6 +281,26 @@ test("routes only through the exact stock qa_result_v1 Proof Gate outcomes", () 
     assert.deepEqual(graph.nodes.filter((node) => Object.hasOwn(node.config?.output?.data ?? {}, field)).map(({ key }) => key), ["finalize_transition"]);
   }
   assert.doesNotThrow(() => validateFinalProofGate(graph, expectedFinalStates));
+});
+
+test("accepts only the exact stock server-normalized Proof Gate output", () => {
+  const clean = renderProcess(blueprint, bindings);
+  const route = byKey(clean).get("transition_proof_gate");
+  route.config.output = structuredClone(stockProofGateOutput);
+  const routeEdges = clean.edges.filter(({ source }) => source === route.id);
+  const nonRouteEdges = clean.edges.filter(({ source }) => source !== route.id);
+  clean.edges = [nonRouteEdges[0], ...routeEdges.slice(0, 2).reverse(), routeEdges[2], ...nonRouteEdges.slice(1)];
+  assert.doesNotThrow(() => validateFinalProofGate(clean, expectedFinalStates));
+
+  for (const [name, mutate] of [
+    ["extra output field", (output) => { output.data.synthetic = { description: "Synthetic", type: "string" }; }],
+    ["changed outcome description", (output) => { output.data.outcome.description = "Untrusted"; }],
+    ["unexpected output artifact", (output) => { output.artifacts.synthetic = { kind: "document" }; }],
+  ]) {
+    const hostile = structuredClone(clean);
+    mutate(byKey(hostile).get("transition_proof_gate").config.output);
+    assert.throws(() => validateFinalProofGate(hostile, expectedFinalStates), /FINAL_PROOF_GATE_INVALID/, name);
+  }
 });
 
 test("final Proof Gate validator rejects every alternate routing dialect", () => {

@@ -242,6 +242,17 @@ checks, где каждый `status=passed`. `fail` требует непуст�
 Proof Gate имеет ровно один вход и ровно три выхода прямо в End-узлы. Это
 закрытый контракт текущего Nuanu Process v1.
 
+Локальный authored graph хранит у Proof Gate только `profile_key`,
+`profile_version` и `ai_assessment`. После сохранения текущий Nuanu детерминированно
+добавляет server-owned `config.output` с ровно четырьмя строковыми полями:
+`completion_verification_id`, `outcome`, `reason_code`, `resolution` и пустым
+`artifacts`. Read-back валидатор принимает либо точный authored config до
+сохранения, либо точный server-normalized config после сохранения; любые лишние
+поля, изменённые descriptions/types или Artifact slots отклоняются.
+Порядок элементов массива `edges` не является семантикой read-back: три выхода
+сравниваются как точный набор по immutable edge ID, сохраняя точные source,
+target, name и `when.outcome`.
+
 ## Роль штатного `qa_result_v1`
 
 Профиль дополнительно проверяет:
@@ -326,6 +337,8 @@ Read-only `validate_process_graph` доказывает структурную �
 - `transition_proof_gate.type === "proof_gate"` и legacy `transition_route`
   отсутствует;
 - профиль равен точному `qa_result_v1@1`, AI assessment выключен;
+- server-derived Proof Gate output либо отсутствует в authored graph, либо
+  совпадает с точным четырёхполевым stock-контрактом;
 - присутствуют ровно три outcome: `passed`, `not_passed`,
   `unable_to_verify`;
 - каждый outcome ведёт прямо в свой End;

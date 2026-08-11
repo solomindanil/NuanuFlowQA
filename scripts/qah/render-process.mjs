@@ -11,6 +11,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const TOKEN = /__BINDING_[A-Z0-9_]+__/g;
 const TOKEN_LIKE = /__BINDING|__[A-Z][A-Z0-9_]{2,}__/i;
 const BLUEPRINT_FINGERPRINT = "sha256:b85c9e7490f8abf1812c942527ad0a16181d21db8f9d8f145980306e325ccf34";
+const STOCK_PROOF_GATE_OUTPUT = Object.freeze({
+  artifacts: {},
+  data: {
+    completion_verification_id: { description: "Exact persisted verification receipt", type: "string" },
+    outcome: { description: "Closed proof outcome used for BPMN routing", type: "string" },
+    reason_code: { description: "Deterministic reason for the proof outcome", type: "string" },
+    resolution: { description: "Proof outcome repeated as the routing resolution", type: "string" },
+  },
+});
 const REQUIRED_BINDING_KEYS = Object.freeze([
   "project_process_binding_id",
   "project_id",
@@ -170,7 +179,9 @@ export function validateFinalProofGate(graph, expectedStates) {
   const rejected = nodes.get("in_progress_end");
   const hold = nodes.get("qa_needs_human_end");
   if (route.type !== "proof_gate") fail("transition_proof_gate must be proof_gate");
-  if (canonicalJson(route.config) !== canonicalJson({ profile_key: "qa_result_v1", profile_version: "1", ai_assessment: "off" })) {
+  const authoredConfig = { profile_key: "qa_result_v1", profile_version: "1", ai_assessment: "off" };
+  const serverNormalizedConfig = { ...authoredConfig, output: STOCK_PROOF_GATE_OUTPUT };
+  if (![authoredConfig, serverNormalizedConfig].some((expected) => canonicalJson(route.config) === canonicalJson(expected))) {
     fail("transition_proof_gate must use stock qa_result_v1@1 with AI assessment off");
   }
   const incoming = graph.edges.filter(({ target }) => target === route.id);
@@ -187,7 +198,7 @@ export function validateFinalProofGate(graph, expectedStates) {
     { id: "20000000-0000-5000-8000-000000000024", source: route.id, target: rejected.id, name: "not_passed", when: { outcome: "not_passed" } },
     { id: "20000000-0000-5000-8000-000000000025", source: route.id, target: hold.id, name: "unable_to_verify", when: { outcome: "unable_to_verify" } },
   ];
-  const outgoing = graph.edges.filter(({ source }) => source === route.id);
+  const outgoing = graph.edges.filter(({ source }) => source === route.id).sort((left, right) => left.id.localeCompare(right.id));
   if (canonicalJson(outgoing) !== canonicalJson(expectedOutgoing)) fail("transition_proof_gate must have the exact three direct outcome edges");
   if (new Set(outgoing.map((edge) => edge.when?.outcome)).size !== 3) fail("Proof Gate outcomes must be unique");
   for (const edge of outgoing) {

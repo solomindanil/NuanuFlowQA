@@ -1075,6 +1075,14 @@ test("final Proof Gate validator rejects every alternate routing dialect", () =>
 });
 ```
 
+Also add `stockProofGateOutput` with exact empty `artifacts` and exact string
+definitions for `completion_verification_id`, `outcome`, `reason_code`, and
+`resolution`. A dedicated test adds that output to the rendered Proof Gate and
+reorders its outcome edges exactly as the server read-back does; it must pass,
+while an extra data field, changed description, or Artifact slot must each throw
+`FINAL_PROOF_GATE_INVALID`. This models deterministic stock normalization without
+weakening authored-graph checks or treating edge-array order as routing authority.
+
 Also add `assert.deepEqual(incoming.get("qa_needs_human_end"), ["transition_proof_gate"]);` to the existing immediate-incoming-edge test.
 
 - [ ] **Step 2: Run RED against the old exclusive gateway**
@@ -1141,7 +1149,8 @@ In `scripts/qah/render-process.mjs`:
 
 - set `BLUEPRINT_FINGERPRINT` to the exact value above;
 - update authored topology counts to 21/24;
-- export `validateFinalProofGate(graph, expectedStates)`, requiring the exact two-key `{ ready_for_production_state_id, in_progress_state_id }` object and throwing a `TypeError` whose message begins `FINAL_PROOF_GATE_INVALID:`; it rejects legacy node key `transition_route` and legacy node ID `...019`, checks exact new route ID/type/config, requires `finalize_transition` to have only the one incoming Proof Gate edge, three unique direct outcome edges, exact target IDs, Ready/In Progress End target-state equality to `expectedStates`, neutral hold target `null`, retained non-route IDs, and absence of `var`, `raw`, `otherwise`, `branch`;
+- export `validateFinalProofGate(graph, expectedStates)`, requiring the exact two-key `{ ready_for_production_state_id, in_progress_state_id }` object and throwing a `TypeError` whose message begins `FINAL_PROOF_GATE_INVALID:`; it rejects legacy node key `transition_route` and legacy node ID `...019`, checks exact new route ID/type/config, accepts only the authored three-key config or that same config plus the exact four-field server-owned stock output, requires `finalize_transition` to have only the one incoming Proof Gate edge, three unique direct outcome edges, exact target IDs, Ready/In Progress End target-state equality to `expectedStates`, neutral hold target `null`, retained non-route IDs, and absence of `var`, `raw`, `otherwise`, `branch`;
+- compare the three Proof Gate outcome edges after sorting only by immutable edge ID, so stock read-back ordering is irrelevant while every edge byte remains exact;
 - call it from `validateRenderedGraph` with only the two normalized state IDs from renderer bindings;
 - reuse it in Task 7 against the bounded server read-back so local render and live verification enforce one invariant;
 - keep `renderProcess`, `renderProcessJson`, `renderProcessForInstall`, and blueprint version unchanged.
@@ -1714,6 +1723,9 @@ On `STALE_PROCESS_GRAPH`, use the returned recovery selection, then reread the e
 Verify the mutation receipt, then call `get_process_graph` with a new post-patch selection containing `resolve_flow_item`, `independent_release_decision`, `finalize_transition`, `transition_proof_gate`, all three End nodes, and every incident edge. Do not request the deleted legacy key `transition_route`, because a selection containing any missing key fails closed. Separately require the graph summary and returned selection to contain neither legacy key `transition_route` nor legacy node ID `...019`. Require:
 
 - exact Proof Gate type/config;
+- exact server-normalized Proof Gate output: empty `artifacts` plus only
+  `completion_verification_id`, `outcome`, `reason_code`, and `resolution` with
+  the stock type/description bytes;
 - exact three `when.outcome` values;
 - zero `when.raw`, `when.var`, `otherwise`, or `branch` on the final route;
 - exact Ready for Production and In Progress End `target_state_id` values from the fresh project-state read;
