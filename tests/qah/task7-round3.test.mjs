@@ -95,10 +95,10 @@ test("worker UI uses pinned CDP, owns one isolated context, disconnects without 
   assert.deepEqual(runtime.runtimeEnvironmentForBranch?.("api", { PATH: "/bin", ...environment }), { PATH: "/bin" });
 });
 
-test("worker 0.3.13 completion validator is discovered portably and pinned by bytes", async () => {
+test("worker 0.3.14 completion validator is discovered portably and pinned by bytes", async () => {
   assert.equal(typeof workerContract.loadWorkerCompletionValidator, "function");
   const loaded = await workerContract.loadWorkerCompletionValidator();
-  assert.equal(loaded.version, "0.3.13");
+  assert.equal(loaded.version, "0.3.14");
   assert.equal(loaded.sha256, "sha256:9105a1b134fdd74b7aa5454aa4f622522939d683c413e83925ddbe3cadab4a41");
   assert.equal(typeof loaded.buildCanonicalCompletion, "function");
 });

@@ -104,7 +104,7 @@ test("runtime output is confined to a real NUANU_TASK_DIR/qah child and authored
   }
 });
 
-test("every graph task has a runtime-owned final worker 0.3.13 envelope protocol", () => {
+test("every graph task has a runtime-owned final worker 0.3.14 envelope protocol", () => {
   const graph = renderer.renderProcess(blueprint, bindings);
   for (const node of graph.nodes.filter((entry) => entry.type === "agent_task")) {
     const protocol = runtime.TASK_PROTOCOLS[node.key];
