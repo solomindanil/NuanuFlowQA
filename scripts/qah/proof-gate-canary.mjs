@@ -41,6 +41,21 @@ function minimalEnvironment(source = process.env) {
   return Object.fromEntries(SAFE_ENV.filter((key) => typeof source[key] === "string").map((key) => [key, source[key]]));
 }
 
+async function privateCommandEnvironment(root) {
+  const runtime = join(root, ".qah-runtime");
+  const cache = join(runtime, "npm-cache");
+  const temporary = join(runtime, "tmp");
+  await mkdir(cache, { recursive: true, mode: 0o700 });
+  await mkdir(temporary, { recursive: true, mode: 0o700 });
+  return {
+    ...minimalEnvironment(),
+    TMPDIR: temporary,
+    TMP: temporary,
+    TEMP: temporary,
+    NPM_CONFIG_CACHE: cache,
+  };
+}
+
 async function runGit(checkout, args) {
   const result = await execFile("git", ["-C", checkout, ...args], {
     cwd: checkout,
@@ -73,24 +88,39 @@ async function readProfile(checkout) {
   return { profile: validateProfile(YAML.parse(bytes.toString("utf8"))), bytes };
 }
 
-async function installLockedDependencies(checkout, command = execFile) {
-  const result = await command("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
+async function prepareVerificationWorkspace(checkout, outputDir, command = execFile) {
+  const snapshot = join(outputDir, ".source");
+  await mkdir(snapshot, { mode: 0o700 });
+  const exported = await command("git", ["-C", checkout, "checkout-index", "--all", `--prefix=${snapshot}${sep}`], {
     cwd: checkout,
     env: minimalEnvironment(),
+    encoding: "utf8",
+    maxBuffer: MAX_COMMAND_BYTES,
+    timeout: 60_000,
+    killSignal: "SIGKILL",
+    shell: false,
+  });
+  if ((exported.stderr ?? "") !== "") throw new Error("verified source export emitted stderr");
+  const environment = await privateCommandEnvironment(snapshot);
+  const installed = await command("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
+    cwd: snapshot,
+    env: environment,
     encoding: "utf8",
     maxBuffer: MAX_COMMAND_BYTES,
     timeout: 15 * 60_000,
     killSignal: "SIGKILL",
     shell: false,
   });
-  if ((result.stderr ?? "") !== "") throw new Error("locked dependency installation emitted stderr");
+  if ((installed.stderr ?? "") !== "") throw new Error("locked dependency installation emitted stderr");
+  return snapshot;
 }
 
 async function runVerification(checkout) {
+  const environment = await privateCommandEnvironment(checkout);
   try {
     const result = await execFile("npm", ["run", "verify:qah:proof-gate"], {
       cwd: checkout,
-      env: minimalEnvironment(),
+      env: environment,
       encoding: "utf8",
       maxBuffer: MAX_COMMAND_BYTES,
       timeout: 15 * 60_000,
@@ -182,12 +212,12 @@ async function prepare(input, context) {
   if (repository.checkout !== context.checkout || !SHA.test(repository.commit) || typeof repository.origin !== "string" || repository.clean !== true) {
     throw new Error("repository identity is not exact and clean");
   }
-  await context.installDependencies(context.checkout);
+  const verificationWorkspace = await context.prepareVerificationWorkspace(context.checkout, context.outputDir);
   const installedRepository = await context.readRepositoryIdentity(context.checkout);
   if (canonicalJson(installedRepository) !== canonicalJson(repository)) throw new Error("repository identity changed during dependency installation");
-  const { profile, bytes } = await context.readProfile(context.checkout);
+  const { profile, bytes } = await context.readProfile(verificationWorkspace);
   if (!profile || profile.repository?.allowed_origin !== repository.origin || !Buffer.isBuffer(bytes)) throw new Error("profile and repository origin are not bound");
-  const result = await context.runVerification(context.checkout);
+  const result = await context.runVerification(verificationWorkspace);
   if (!Number.isSafeInteger(result?.exit_code)) throw new Error("verification result exit code is invalid");
   const stdout = streamDigest(result.stdout);
   const stderr = streamDigest(result.stderr);
@@ -302,7 +332,7 @@ export async function runProofGateCanaryPhase(phase, input, options = {}) {
     outputDir,
     checkout,
     readRepositoryIdentity: injected.readRepositoryIdentity ?? readRepositoryIdentity,
-    installDependencies: injected.installDependencies ?? ((root) => installLockedDependencies(root, injected.execFile ?? execFile)),
+    prepareVerificationWorkspace: injected.prepareVerificationWorkspace ?? ((root, directory) => prepareVerificationWorkspace(root, directory, injected.execFile ?? execFile)),
     readProfile: injected.readProfile ?? readProfile,
     runVerification: injected.runVerification ?? runVerification,
   };

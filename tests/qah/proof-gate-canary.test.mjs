@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -50,7 +50,7 @@ async function fixture(t, verification = { exit_code: 0, stdout: "verified", std
   const dependencies = {
     checkout,
     readRepositoryIdentity: async () => ({ checkout, commit, origin, clean: true }),
-    installDependencies: async () => {},
+    prepareVerificationWorkspace: async (root) => root,
     readProfile: async () => ({ profile, bytes: Buffer.from("profile-bytes") }),
     runVerification: async () => verification,
   };
@@ -87,10 +87,12 @@ test("production canary ignores the launcher checkout and verifies the superviso
   assert.equal(verification.tested_head_sha, value.commit);
 });
 
-test("prepare installs the exact locked dependencies before profile and verification reads", async (t) => {
+test("prepare exports the exact clean index and installs dependencies only in the private task workspace", async (t) => {
   const value = await fixture(t);
   const calls = [];
-  const { installDependencies: _fixtureInstaller, ...fixtureDependencies } = value.dependencies;
+  const commandEnvironments = [];
+  const { prepareVerificationWorkspace: _fixtureWorkspace, ...fixtureDependencies } = value.dependencies;
+  const snapshot = join(await realpath(value.taskRoot), "qah", "proof-gate-canary", ".source");
   value.dependencies = {
     ...fixtureDependencies,
     readRepositoryIdentity: async (checkout) => {
@@ -99,16 +101,17 @@ test("prepare installs the exact locked dependencies before profile and verifica
     },
     execFile: async (file, args, options) => {
       calls.push({ file, args, cwd: options.cwd, shell: options.shell });
+      commandEnvironments.push(options.env);
       return { stdout: "installed", stderr: "" };
     },
     readProfile: async (checkout) => {
       calls.push("profile");
-      assert.equal(checkout, value.checkout);
+      assert.equal(checkout, snapshot);
       return { profile: value.profile, bytes: Buffer.from("profile-bytes") };
     },
     runVerification: async (checkout) => {
       calls.push("verification");
-      assert.equal(checkout, value.checkout);
+      assert.equal(checkout, snapshot);
       return { exit_code: 0, stdout: "verified", stderr: "" };
     },
   };
@@ -123,15 +126,25 @@ test("prepare installs the exact locked dependencies before profile and verifica
   assert.deepEqual(calls, [
     "repository",
     {
+      file: "git",
+      args: ["-C", value.checkout, "checkout-index", "--all", `--prefix=${snapshot}/`],
+      cwd: value.checkout,
+      shell: false,
+    },
+    {
       file: "npm",
       args: ["ci", "--ignore-scripts", "--no-audit", "--no-fund"],
-      cwd: value.checkout,
+      cwd: snapshot,
       shell: false,
     },
     "repository",
     "profile",
     "verification",
   ]);
+  assert.equal(commandEnvironments[0].NUANU_AGENT_KEY, undefined);
+  assert.equal(commandEnvironments[1].NUANU_AGENT_KEY, undefined);
+  assert.equal(commandEnvironments[1].TMPDIR, join(snapshot, ".qah-runtime", "tmp"));
+  assert.equal(commandEnvironments[1].NPM_CONFIG_CACHE, join(snapshot, ".qah-runtime", "npm-cache"));
 });
 
 test("single-task canary publishes exact verification and finalization refs before Proof Gate completion", async (t) => {
