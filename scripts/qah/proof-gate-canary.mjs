@@ -280,7 +280,7 @@ export async function runProofGateCanaryPhase(phase, input, options = {}) {
   const taskRoot = options.taskRoot ?? process.env.NUANU_TASK_DIR;
   const outputDir = await secureOutputDirectory(taskRoot, options.outputDir ?? join(taskRoot, "qah", "proof-gate-canary"));
   if (phase === "prepare" && (await readdir(outputDir)).length !== 0) throw new Error("prepare output directory must be empty");
-  const checkout = options.checkout ?? process.env.NUANU_CODEX_CWD ?? process.cwd();
+  const checkout = options.checkout ?? process.cwd();
   const injected = options.dependencies ?? options;
   const context = {
     outputDir,

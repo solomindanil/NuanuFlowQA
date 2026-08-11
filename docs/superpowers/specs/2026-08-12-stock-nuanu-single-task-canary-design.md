@@ -65,6 +65,30 @@ No task invokes `get_artifact`. No raw stdout/stderr, credential, environment,
 prompt, or response body enters an Artifact; only bounded byte counts and
 SHA-256 digests are recorded.
 
+## Repository authority correction
+
+The live Assist probe proved that `NUANU_CODEX_CWD` is launcher configuration,
+not task repository authority. The worker correctly executes the Agent inside
+the supervisor-owned repository worktree, but the canary runner previously
+preferred `NUANU_CODEX_CWD` when selecting the checkout to verify. That allowed
+the runner to report the launcher branch commit while Nuanu held a different
+canonical `WorkItemRepositoryWorkspace` head; stock stage-handoff validation
+correctly rejected the result as stale.
+
+The corrected contract is:
+
+- the canary CLI is loaded from `./scripts/qah/proof-gate-canary.mjs` in the
+  supervisor-owned task worktree;
+- `process.cwd()` is the default and sole production checkout authority;
+- an explicit `options.checkout` remains test-only dependency injection;
+- `NUANU_CODEX_CWD` is ignored by repository identity and evidence generation;
+- the QAH implementation must first be reachable from the project repository's
+  canonical default branch, so the server-admitted head contains the exact CLI,
+  profile, package scripts, and tests being executed.
+
+No host checkout commit may appear in `tested_head_sha`, repository evidence,
+or a Proof Gate claim.
+
 ## Canary semantics
 
 This iteration proves repository/worker/Process/Proof-Gate compatibility. It is

@@ -56,6 +56,36 @@ async function fixture(t, verification = { exit_code: 0, stdout: "verified", std
   return { taskRoot, outputDir, checkout, commit, origin, profile, dependencies };
 }
 
+test("production canary ignores the launcher checkout and verifies the supervisor task worktree", async (t) => {
+  const value = await fixture(t);
+  const previous = process.env.NUANU_CODEX_CWD;
+  process.env.NUANU_CODEX_CWD = "/foreign/launcher-checkout";
+  t.after(() => {
+    if (previous === undefined) delete process.env.NUANU_CODEX_CWD;
+    else process.env.NUANU_CODEX_CWD = previous;
+  });
+  let observedCheckout = null;
+  const { checkout: _testCheckout, ...options } = value;
+  options.dependencies = {
+    ...value.dependencies,
+    readRepositoryIdentity: async (checkout) => {
+      observedCheckout = checkout;
+      return { checkout, commit: value.commit, origin: value.origin, clean: true };
+    },
+  };
+
+  await runProofGateCanaryPhase("prepare", {
+    phase: "prepare",
+    source_ref: SOURCE_REF,
+    source_name: "PAYD-33 · Task-owned repository authority",
+    source_media_type: "application/vnd.nuanu.flow-item+json",
+  }, options);
+
+  assert.equal(observedCheckout, process.cwd());
+  const verification = JSON.parse(await readFile(join(value.outputDir, "qah-verification.json"), "utf8"));
+  assert.equal(verification.tested_head_sha, value.commit);
+});
+
 test("single-task canary publishes exact verification and finalization refs before Proof Gate completion", async (t) => {
   const value = await fixture(t);
   const prepared = await runProofGateCanaryPhase("prepare", {
