@@ -16,7 +16,11 @@ import {
   publishComment,
   renderComment,
 } from "../../scripts/qah/render-comment.mjs";
-import { finalizeTransition } from "../../scripts/qah/finalize.mjs";
+import {
+  finalizeTransition,
+  finalizeTransitionAdmission,
+  validateFinalizationClassification,
+} from "../../scripts/qah/finalize.mjs";
 import {
   aggregateFixture,
   aggregateFixtureResult,
@@ -100,7 +104,7 @@ function noneReceipt(runId = processRunId, attemptId = "attempt-1") {
 }
 
 async function trustedFixture({ none = false, storedDecision = "derived", reviewMutator, sourceMutator, entryOverrides = {}, expectedRoute = "READY_FOR_PRODUCTION" } = {}) {
-  const applicability = none ? { code: "NOT_APPLICABLE", api: "NOT_APPLICABLE", ui: "NOT_APPLICABLE", domain: "NOT_APPLICABLE" } : undefined;
+  const applicability = none ? { code: "REQUIRED", api: "NOT_APPLICABLE", ui: "NOT_APPLICABLE", domain: "NOT_APPLICABLE" } : undefined;
   const aggregateBase = aggregateFixture({
     applicability,
     receipt: none ? noneReceipt() : undefined,
@@ -288,7 +292,7 @@ test("invalid aggregate axes never become cleanup authority even with null or ma
     await assert.rejects(publishComment(publicationInput(fixture), fixture.dependencies), /INVALID_AGGREGATE/);
     const result = await finalizeTransition(finalizationInput(fixture, receipt, cleanup), fixture.dependencies);
     assert.equal(result.transition_allowed, false);
-    assert.equal(result.target_state, "in_progress");
+    assert.equal(result.target_state, "ready_for_qa");
     assert.deepEqual(result.reason_codes, ["INVALID_AGGREGATE"]);
   }
 });
@@ -311,7 +315,7 @@ test("authenticated FAIL cannot publish or finalize with caller-forged invariant
   assert.deepEqual(result, {
     schema_version: "nuanu.qa-finalization-result.v1",
     transition_allowed: false,
-    target_state: "in_progress",
+    target_state: "ready_for_qa",
     reason_codes: ["INVALID_AGGREGATE"],
   });
 });
@@ -431,7 +435,20 @@ test("managed STOPPED exact lease plus one trusted global marker gates READY tra
   const fixture = await trustedFixture();
   const receipt = await publishComment(publicationInput(fixture), fixture.dependencies);
   const result = await finalizeTransition(finalizationInput(fixture, receipt, stoppedReceipt(fixture.aggregate)), fixture.dependencies);
-  assert.deepEqual(result, { schema_version: "nuanu.qa-finalization-result.v1", transition_allowed: true, target_state: "ready_for_production", reason_codes: [] });
+  assert.deepEqual(result, {
+    schema_version: "nuanu.qa-finalization-result.v1",
+    transition_allowed: true,
+    target_state: "ready_for_production",
+    reason_codes: [],
+    kind: "qa",
+    verdict: "pass",
+    tested_head_sha: fixture.aggregate.commit,
+    checks: fixture.aggregate.branches.map((branch) => ({
+      name: `universal_qah_${branch.branch}`,
+      status: "passed",
+      evidence: `artifact:${branch.artifacts.evidence.artifact_id}@${branch.artifacts.evidence.version_id}`,
+    })),
+  });
 });
 
 test("a structurally and authentically valid FAIL aggregate still cleans up and maps to in_progress", async () => {
@@ -441,7 +458,20 @@ test("a structurally and authentically valid FAIL aggregate still cleans up and 
   });
   const receipt = await publishComment(publicationInput(fixture), fixture.dependencies);
   const result = await finalizeTransition(finalizationInput(fixture, receipt, stoppedReceipt(fixture.aggregate)), fixture.dependencies);
-  assert.deepEqual(result, { schema_version: "nuanu.qa-finalization-result.v1", transition_allowed: true, target_state: "in_progress", reason_codes: [] });
+  assert.deepEqual(result, {
+    schema_version: "nuanu.qa-finalization-result.v1",
+    transition_allowed: true,
+    target_state: "in_progress",
+    reason_codes: [],
+    kind: "qa",
+    verdict: "fail",
+    tested_head_sha: fixture.aggregate.commit,
+    checks: fixture.aggregate.branches.map((branch) => ({
+      name: `universal_qah_${branch.branch}`,
+      status: branch.branch === "api" ? "failed" : "passed",
+      evidence: `artifact:${branch.artifacts.evidence.artifact_id}@${branch.artifacts.evidence.version_id}`,
+    })),
+  });
 });
 
 test("managed ABSENT/missing nonce and recovery uncertainty always block", async () => {
@@ -455,7 +485,7 @@ test("managed ABSENT/missing nonce and recovery uncertainty always block", async
     if (cleanup.instance_nonce === undefined) delete cleanup.instance_nonce;
     const result = await finalizeTransition(finalizationInput(fixture, receipt, cleanup), fixture.dependencies);
     assert.equal(result.transition_allowed, false);
-    assert.equal(result.target_state, "ready_for_production");
+    assert.equal(result.target_state, "ready_for_qa");
     assert.ok(result.reason_codes.some((code) => code.startsWith("CLEANUP_")));
   }
 });
@@ -513,6 +543,105 @@ test("final output is closed and no caller mutation callback is invoked", async 
   let mutationCalls = 0;
   fixture.dependencies.updateIssue = async () => { mutationCalls += 1; };
   const result = await finalizeTransition(finalizationInput(fixture, receipt, stoppedReceipt(fixture.aggregate)), fixture.dependencies);
-  assert.deepEqual(Object.keys(result).sort(), ["reason_codes", "schema_version", "target_state", "transition_allowed"]);
+  assert.deepEqual(Object.keys(result).sort(), ADMITTED_KEYS);
   assert.equal(mutationCalls, 0);
+});
+
+const ADMITTED_KEYS = [
+  "checks", "kind", "reason_codes", "schema_version", "target_state",
+  "tested_head_sha", "transition_allowed", "verdict",
+];
+const DIAGNOSTIC_KEYS = ["reason_codes", "schema_version", "target_state", "transition_allowed"];
+
+async function admit(fixture) {
+  const receipt = await publishComment(publicationInput(fixture), fixture.dependencies);
+  return finalizeTransitionAdmission(
+    finalizationInput(fixture, receipt, stoppedReceipt(fixture.aggregate)),
+    fixture.dependencies,
+  );
+}
+
+test("admission returns the exact PASS report plus separate trusted authority", async () => {
+  const fixture = await trustedFixture();
+  const admitted = await admit(fixture);
+  assert.deepEqual(Object.keys(admitted).sort(), ["aggregate", "decision", "report"]);
+  assert.deepEqual(Object.keys(admitted.report).sort(), ADMITTED_KEYS);
+  assert.deepEqual(admitted.report, {
+    schema_version: "nuanu.qa-finalization-result.v1",
+    transition_allowed: true,
+    target_state: "ready_for_production",
+    reason_codes: [],
+    kind: "qa",
+    verdict: "pass",
+    tested_head_sha: fixture.aggregate.commit,
+    checks: fixture.aggregate.branches.map((branch) => ({
+      name: `universal_qah_${branch.branch}`,
+      status: "passed",
+      evidence: `artifact:${branch.artifacts.evidence.artifact_id}@${branch.artifacts.evidence.version_id}`,
+    })),
+  });
+  assert.deepEqual(admitted.aggregate, fixture.aggregate);
+  assert.deepEqual(admitted.decision, fixture.decision);
+  assert.notEqual(admitted.aggregate, fixture.aggregate);
+  assert.notEqual(admitted.decision, fixture.decision);
+});
+
+test("admission returns exact FAIL and HOLD reports without laundering blockers", async (t) => {
+  const cases = [
+    ["product failure", {
+      fixture: {
+        entryOverrides: { api: { product_result: "FAIL", code: "API_CONTRACT_VIOLATION", observations: [{ code: "CONTRACT_FAILED", status: "FAIL", value_sha256: sha256("fail") }] } },
+        expectedRoute: "RETURN_TO_IN_PROGRESS",
+      },
+      expected: { target_state: "in_progress", verdict: "fail", failed: ["universal_qah_api"] },
+    }],
+    ["infrastructure uncertainty", {
+      fixture: {
+        entryOverrides: { api: { product_result: "INCONCLUSIVE", environment_status: "INFRA_FAILURE", evidence_status: "UNVERIFIED", confidence: 0, code: "TRANSPORT_FAILURE" } },
+        expectedRoute: "HOLD_IN_READY_FOR_QA",
+      },
+      expected: { target_state: "ready_for_qa", verdict: "blocked", failed: [] },
+    }],
+  ];
+  for (const [name, row] of cases) await t.test(name, async () => {
+    const fixture = await trustedFixture(row.fixture);
+    const admitted = await admit(fixture);
+    assert.deepEqual(Object.keys(admitted.report).sort(), ADMITTED_KEYS);
+    assert.equal(admitted.report.target_state, row.expected.target_state);
+    assert.equal(admitted.report.verdict, row.expected.verdict);
+    assert.deepEqual(admitted.report.checks.filter(({ status }) => status === "failed").map(({ name: checkName }) => checkName), row.expected.failed);
+    assert.equal(admitted.report.tested_head_sha, fixture.aggregate.commit);
+  });
+});
+
+test("every post-review integrity failure returns only a neutral diagnostic", async () => {
+  const fixture = await trustedFixture();
+  const receipt = await publishComment(publicationInput(fixture), fixture.dependencies);
+  fixture.dependencies.listIssueComments = async () => boundedCommentList(fixture.state.comments, { complete: false });
+  const admitted = await finalizeTransitionAdmission(
+    finalizationInput(fixture, receipt, stoppedReceipt(fixture.aggregate)),
+    fixture.dependencies,
+  );
+  assert.deepEqual(admitted, {
+    report: {
+      schema_version: "nuanu.qa-finalization-result.v1",
+      transition_allowed: false,
+      target_state: "ready_for_qa",
+      reason_codes: ["COMMENT_READBACK_INVALID"],
+    },
+    aggregate: null,
+    decision: null,
+  });
+  assert.deepEqual(Object.keys(admitted.report).sort(), DIAGNOSTIC_KEYS);
+});
+
+test("pure classification agreement rejects a digest-valid route mismatch", async () => {
+  const fixture = await trustedFixture();
+  const { decision_sha256: ignored, ...unsigned } = fixture.decision;
+  const mismatchedUnsigned = { ...unsigned, route: "RETURN_TO_IN_PROGRESS" };
+  const mismatched = { ...mismatchedUnsigned, decision_sha256: sha256(mismatchedUnsigned) };
+  assert.throws(
+    () => validateFinalizationClassification({ aggregate: fixture.aggregate, decision: mismatched }),
+    /FINALIZATION_CLASSIFICATION_INVALID/,
+  );
 });

@@ -8,20 +8,28 @@ import {
   resolveTrustedPublication,
   same,
 } from "./render-comment.mjs";
+import { classifyValidatedRelease } from "./release-policy.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const RECEIPT_KEYS = ["schema_version", "publication_status", "workspace_id", "project_id", "issue_id", "comment_id", "source_artifact", "review_bundle", "decision_sha256", "marker", "comment_html_sha256"];
 const MANAGED_CLEANUP_KEYS = ["environment_status", "run_id", "attempt_id", "environment_id", "target_namespace", "instance_nonce"];
 const NONE_CLEANUP_KEYS = ["environment_status", "run_id", "attempt_id", "environment_id", "target_namespace"];
 
-function result(decision, reasons) {
+function diagnostic(reasons) {
   const reasonCodes = [...new Set(reasons)].sort();
   return {
     schema_version: "nuanu.qa-finalization-result.v1",
-    transition_allowed: reasonCodes.length === 0,
-    target_state: decision?.route === "READY_FOR_PRODUCTION" ? "ready_for_production" : "in_progress",
+    transition_allowed: false,
+    target_state: "ready_for_qa",
     reason_codes: reasonCodes,
   };
+}
+
+export function validateFinalizationClassification({ aggregate, decision } = {}) {
+  if (!exactKeys(arguments[0], ["aggregate", "decision"])) throw new Error("FINALIZATION_CLASSIFICATION_INVALID");
+  const classification = classifyValidatedRelease({ valid: true, aggregate, reason_codes: decision?.reason_codes });
+  if (classification.route !== decision?.route) throw new Error("FINALIZATION_CLASSIFICATION_INVALID");
+  return classification;
 }
 
 function validReceipt(value, input, trusted, rendered) {
@@ -77,26 +85,52 @@ function verifyCleanup(cleanup, trusted, reasons) {
   reasons.add("CLEANUP_POLICY_INVALID");
 }
 
-export async function finalizeTransition(input, dependencies = {}) {
+export async function finalizeTransitionAdmission(input, dependencies = {}) {
   const reasons = new Set();
   let trusted;
   try {
     if (!exactKeys(input, ["workspace_id", "project_id", "issue_id", "source_artifact", "review_bundle", "comment_receipt", "cleanup_receipt"])
       || !UUID.test(input?.workspace_id ?? "") || !UUID.test(input?.project_id ?? "") || !UUID.test(input?.issue_id ?? "")) {
-      return result(null, ["FINALIZATION_INPUT_INVALID"]);
+      return { report: diagnostic(["FINALIZATION_INPUT_INVALID"]), aggregate: null, decision: null };
     }
     artifactReference(input.source_artifact, "flow_item", "source");
     artifactReference(input.review_bundle, "document", "evidence");
     trusted = await resolveTrustedPublication(input, dependencies);
   } catch (error) {
-    return result(null, [error?.message === "INVALID_AGGREGATE" ? "INVALID_AGGREGATE" : "TRUSTED_REVIEW_INVALID"]);
+    return {
+      report: diagnostic([error?.message === "INVALID_AGGREGATE" ? "INVALID_AGGREGATE" : "TRUSTED_REVIEW_INVALID"]),
+      aggregate: null,
+      decision: null,
+    };
   }
   try {
     const rendered = renderComment({ source_artifact: input.source_artifact, decision: trusted.decision, review_bundle: input.review_bundle, review_summary: trusted.review_summary });
     await verifyComment(input, trusted, rendered, dependencies, reasons);
     verifyCleanup(input.cleanup_receipt, trusted, reasons);
-  } catch {
-    reasons.add("FINALIZATION_INPUT_INVALID");
+    if (reasons.size === 0) {
+      const classification = validateFinalizationClassification({ aggregate: trusted.aggregate, decision: trusted.decision });
+      return {
+        report: {
+          schema_version: "nuanu.qa-finalization-result.v1",
+          transition_allowed: true,
+          target_state: classification.target_state,
+          reason_codes: [],
+          kind: "qa",
+          verdict: classification.verdict,
+          tested_head_sha: trusted.aggregate.commit,
+          checks: classification.checks,
+        },
+        aggregate: structuredClone(trusted.aggregate),
+        decision: structuredClone(trusted.decision),
+      };
+    }
+  } catch (error) {
+    if (error?.message === "FINALIZATION_CLASSIFICATION_INVALID") reasons.add("FINALIZATION_CLASSIFICATION_INVALID");
+    else reasons.add("FINALIZATION_INPUT_INVALID");
   }
-  return result(trusted.decision, reasons);
+  return { report: diagnostic(reasons), aggregate: null, decision: null };
+}
+
+export async function finalizeTransition(input, dependencies = {}) {
+  return (await finalizeTransitionAdmission(input, dependencies)).report;
 }
