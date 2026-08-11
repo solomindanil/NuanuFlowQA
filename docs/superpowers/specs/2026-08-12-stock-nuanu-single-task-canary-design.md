@@ -60,6 +60,10 @@ lease and task directory:
 4. `complete` verifies the task-local state and exact canonical files, then
    returns the raw worker completion `{item, artifact_outputs}`. The stock
    worker materializes both same-task output references into the Process item.
+   Because the Agent output contract also declares `verified_commit` with kind
+   `git.commit`, the repository supervisor verifies and pushes the unchanged
+   task HEAD, then injects that server-owned commit reference into the same
+   completion before Proof Gate evaluation.
 
 No task invokes `get_artifact`. No raw stdout/stderr, credential, environment,
 prompt, or response body enters an Artifact; only bounded byte counts and
@@ -89,6 +93,25 @@ The corrected contract is:
 No host checkout commit may appear in `tested_head_sha`, repository evidence,
 or a Proof Gate claim.
 
+## Provider branch publication
+
+Stock `qa_result_v1@1` verifies a passing claim against the remote task branch,
+not merely against the local task worktree. That publication is worker-owned:
+
+- `finalize_transition.config.output.artifacts.verified_commit` is exactly one
+  `git.commit` output;
+- QAH does not create a commit and never receives GitHub credentials;
+- the stock repository supervisor verifies the task worktree HEAD and pushes
+  that exact unchanged HEAD to the canonical task branch;
+- the worker injects the resulting verified commit reference, so free-form
+  Agent output cannot forge it;
+- Proof Gate verifies the same branch and `tested_head_sha` before returning
+  `passed`.
+
+The operator pushes the intended product commit to the canonical default branch
+before creating the Flow item. The final flow contains no manual pre-push of a
+task branch.
+
 ## Canary semantics
 
 This iteration proves repository/worker/Process/Proof-Gate compatibility. It is
@@ -103,7 +126,9 @@ not yet a full Freeland product verdict.
 
 Stock `qa_result_v1` still requires a server-observed repository workspace with
 the same head. A missing or stale workspace produces `unable_to_verify`, even
-when local repository verification passed.
+when local repository verification passed. The stock worker repository
+supervisor, activated by the declared `git.commit` output, owns publication of
+that exact workspace branch; the QAH runtime must not emulate it.
 
 ## Live execution rules
 

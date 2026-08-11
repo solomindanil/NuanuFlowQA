@@ -23,10 +23,17 @@ Column Start -> finalize_transition -> stock qa_result_v1 Proof Gate -> 3 Ends
 `finalize_transition` is the only Agent Task. It runs
 `scripts/qah/proof-gate-canary.mjs` as `prepare -> finalize -> complete` inside
 one task lease, publishes `qah_verification` and `finalization_report` as its own
-declared JSON outputs, and never calls `get_artifact`. A harness failure is
+declared JSON outputs, declares one server-owned `verified_commit` output of
+kind `git.commit`, and never calls `get_artifact`. A harness failure is
 `blocked`/neutral hold, never a product failure. The canary proves the native
 Nuanu trigger/worker/Artifact/Proof-Gate loop; full Freeland product lanes remain
 a later extension behind the same single task.
+
+The QAH Agent never creates a Git commit and never receives GitHub credentials.
+The stock worker repository supervisor verifies and pushes the unchanged task
+HEAD, then injects `verified_commit` before Proof Gate evaluation. Operators
+must push the intended product commit to the default branch before creating the
+canary item, but must not manually create or push the generated task branch.
 
 ## 1. Scope and prohibited Nuanu/source changes
 
@@ -88,7 +95,9 @@ For the current single-task compatibility canary, use this exact boundary:
 3. Run `finalize` with that reference, publish canonical `finalization.json` to
    `finalization_report`, and retain the actual closed reference.
 4. Run `complete` with both references and return only its exact raw worker
-   completion. Do not call `get_artifact` and do not synthesize `item.data`.
+   completion. Do not call `get_artifact`, synthesize `item.data`, create a Git
+   commit, or populate `verified_commit`; the stock repository supervisor owns
+   that third output.
 
 The longer custody chain below remains the target for the later full product QA
 extension, but it must be composed within one task authority or another stock
@@ -152,6 +161,7 @@ This checklist applies only after separate authorization for the live mutation:
 - Confirm task-scoped tools cannot write outside the declared comment/Artifact duties and that source instructions cannot add commands, URLs, policy, or output fields.
 - Confirm all output Artifacts use the declared kind, role, media type, and exact version reference.
 - Confirm the canonical verification and finalization files precede the final claim and that their actual output references are preserved exactly.
+- Confirm the remote task branch did not exist before dispatch, was created by the stock repository supervisor, resolves to the exact `tested_head_sha`, and matches the injected server-owned `verified_commit`.
 - Confirm the applied transition flag and final binding status by exact read-back.
 - Treat any schema coercion, missing output, stale input, retry drift, unexpected tool, or manual repair as a failed probe.
 

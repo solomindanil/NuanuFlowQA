@@ -10,7 +10,7 @@ import {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /__BINDING_[A-Z0-9_]+__/g;
 const TOKEN_LIKE = /__BINDING|__[A-Z][A-Z0-9_]{2,}__/i;
-const BLUEPRINT_FINGERPRINT = "sha256:7a898f95adc0577ffc773d71fbf68f54f490695c22cdba0db004cd0300e61636";
+const BLUEPRINT_FINGERPRINT = "sha256:4b07f50680aa56f5e53cf8009c9933df06c888ed1625af2fbee2766b1d013af5";
 const STOCK_PROOF_GATE_OUTPUT = Object.freeze({
   artifacts: {},
   data: {

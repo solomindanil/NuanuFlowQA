@@ -118,3 +118,36 @@ Require matching `tested_head_sha`, repository result, exact JSON Artifact versi
 - [ ] **Step 7: Record only verified sanitized evidence**
 
 Append IDs, hashes, commit, outcome, Artifact IDs/versions, and final paused state to the runbook only after successful exact read-back. If blocked, record the blocker without claiming a canary pass.
+
+### Task 3: Make provider branch publication worker-owned
+
+**Files:**
+- Modify: `processes/universal-qa-flow.graph.json`
+- Modify: `tests/qah/process-blueprint.test.mjs`
+- Modify: `scripts/qah/render-process.mjs`
+- Modify: `docs/superpowers/specs/2026-08-12-stock-nuanu-single-task-canary-design.md`
+- Modify: `docs/operations/universal-qa-proof-gate-runbook.md`
+
+**Interfaces:**
+- Consumes: the exact clean supervisor-owned task HEAD and stock worker 0.3.14 repository supervision.
+- Produces: one server-owned `verified_commit` output of kind `git.commit`; QAH still produces only the two canonical JSON document outputs.
+
+- [x] **Step 1: Write and run the failing output-contract test**
+
+Require `finalize_transition` to declare exactly `verified_commit: { kind: "git.commit" }`, retain the two JSON document outputs, and explicitly forbid the Agent from creating a commit. Run the focused blueprint tests and observe failure because the output is absent.
+
+- [x] **Step 2: Add the minimal stock-native contract and run GREEN**
+
+Add the commit output and instruction, update the reviewed blueprint fingerprint, and rerun the focused blueprint and canary tests with zero failures and zero skips.
+
+- [ ] **Step 3: Run the complete repository gate and publish the product commit**
+
+Run `npm run verify:qah:proof-gate`, `git diff --check`, commit the exact reviewed paths, push `codex/universal-qah`, fast-forward `main`, and read back both remote refs at the exact commit.
+
+- [ ] **Step 4: Patch and read back the paused Process**
+
+With a fresh ETag, paused binding, and zero active runs, update only the exact Agent instruction/output contract. Validate and read back the graph, output slots, hash, ETag, and paused binding.
+
+- [ ] **Step 5: Prove one fresh Assist run without manual task-branch push**
+
+Create a fresh Assist item after the default-branch push. Do not create or push its task branch manually. Run one dedicated worker and one guarded dispatch, then require the stock supervisor-created remote task branch, injected `verified_commit`, matching `tested_head_sha`, `passed` Proof Gate, suppressed Assist transition, unchanged Ready-for-QA item state, paused binding, and zero active run.

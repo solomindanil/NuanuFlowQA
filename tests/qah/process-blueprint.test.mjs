@@ -136,10 +136,17 @@ test("uses closed Process v1 outputs and worker 0.3.14 Artifact contracts", () =
       assert.equal(typeof descriptor.description, "string");
       assert.ok(descriptor.description.length > 0);
     }
-    for (const descriptor of Object.values(node.config.output.artifacts)) {
-      assert.equal(descriptor.kind, "document");
-      assert.deepEqual(descriptor.restrictions, { media_types: ["application/json"] });
-      assert.equal(typeof descriptor.description, "string");
+    for (const [slot, descriptor] of Object.entries(node.config.output.artifacts)) {
+      if (slot === "verified_commit") {
+        assert.deepEqual(descriptor, {
+          description: "Server-verified task branch commit used by the stock Proof Gate",
+          kind: "git.commit",
+        });
+      } else {
+        assert.equal(descriptor.kind, "document");
+        assert.deepEqual(descriptor.restrictions, { media_types: ["application/json"] });
+        assert.equal(typeof descriptor.description, "string");
+      }
     }
     assert.match(node.config.instruction, /scripts\/qah\/proof-gate-canary\.mjs/);
     assert.match(node.config.instruction, /artifact_id, version_id, kind, role/);
@@ -147,7 +154,7 @@ test("uses closed Process v1 outputs and worker 0.3.14 Artifact contracts", () =
     assert.doesNotMatch(node.config.instruction, /scripts\/qah\/(?:aggregate|context|decide|environment|finalize|plan|render-comment|run-branch)\.mjs/);
   }
 
-  assert.deepEqual(Object.keys(byKey(graph).get("finalize_transition").config.output.artifacts), ["finalization_report", "qah_verification"]);
+  assert.deepEqual(Object.keys(byKey(graph).get("finalize_transition").config.output.artifacts), ["finalization_report", "qah_verification", "verified_commit"]);
 });
 
 test("binds the immutable Column Start and exactly one pinned QA Agent version", () => {
@@ -173,6 +180,17 @@ test("does not delegate the compatibility canary to a second racing worker", () 
   const graph = renderProcess(blueprint, bindings);
   assert.deepEqual(graph.nodes.filter((node) => node.type === "agent_task").map((node) => node.key), ["finalize_transition"]);
   assert.doesNotMatch(JSON.stringify(graph), /independent_release_decision|task-scoped Nuanu MCP.*get_artifact/is);
+});
+
+test("declares one supervisor-pushed commit output for stock provider verification", () => {
+  const graph = renderProcess(blueprint, bindings);
+  const finalizer = byKey(graph).get("finalize_transition");
+  assert.deepEqual(finalizer.config.output.artifacts.verified_commit, {
+    description: "Server-verified task branch commit used by the stock Proof Gate",
+    kind: "git.commit",
+  });
+  assert.match(finalizer.config.instruction, /repository supervisor/i);
+  assert.match(finalizer.config.instruction, /verified_commit/);
 });
 
 test("uses a fresh Proof Gate identity instead of mutating the legacy gateway type", () => {
