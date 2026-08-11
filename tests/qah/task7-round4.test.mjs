@@ -79,7 +79,10 @@ async function apiFixture(git, override = {}) {
   const server = createServer((req, res) => {
     calls.push(req.url);
     if (override.redirectBinding && req.url.includes("/process-bindings/")) { res.writeHead(302, { location: `${base}/blob/profile` }).end(); return; }
-    if (req.url === `/be/api/workspaces/acme/artifacts/${ids.artifact}/download/?version=${ids.artifactv}&proxy=1`) { res.writeHead(200, { "content-type": "application/yaml" }).end(override.oversize ? Buffer.alloc(300000) : profile); return; }
+    if (req.url === `/be/api/workspaces/acme/artifacts/${ids.artifact}/download/?version=${ids.artifactv}&proxy=1`) {
+      if (req.headers.accept !== "*/*") { res.writeHead(406, { "content-type": "application/json" }).end(JSON.stringify({ detail: "not acceptable" })); return; }
+      res.writeHead(200, { "content-type": "application/yaml" }).end(override.oversize ? Buffer.alloc(300000) : profile); return;
+    }
     const lookup = req.url.startsWith("/be/api/") ? req.url.slice(3) : req.url;
     const value = responses[lookup];
     if (!value) { res.writeHead(404).end("{}"); return; }
