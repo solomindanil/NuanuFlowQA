@@ -77,7 +77,7 @@ test("CLI rejects every argv path and byte-custody violation", async (t) => {
 
 test("report rejects closed-shape coercion hostile values and secret reflection", async (t) => {
   const missing = structuredClone(payload); delete missing.graph_hash;
-  const cyclic = {}; cyclic.self = cyclic;
+  const cyclic = structuredClone(payload); cyclic.bindings.self = cyclic.bindings;
   const proxy = new Proxy({}, { ownKeys() { throw new Error("hostile"); } });
   const cases = [
     ["extra consumed field", { result: { ...payload, extra: true }, environment: {} }],
@@ -85,10 +85,22 @@ test("report rejects closed-shape coercion hostile values and secret reflection"
     ["cycle", { result: cyclic, environment: {} }],
     ["Proxy", { result: proxy, environment: {} }],
     ["install_ready string coercion", { result: { ...payload, install_ready: "false" }, environment: {} }],
-    ["test mode in production", { result: { ...payload, test_mode: true }, environment: { NUANU_QAH_PREFLIGHT_TEST_MODE: "1" } }],
+    ["test mode in production", { result: { ...payload, test_mode: true }, environment: {} }],
     ["secret reflected in output", {
       result: { ...payload, unmet_preconditions: ["must-not-leak"] },
       environment: { NUANU_API_KEY: "must-not-leak" },
+    }],
+    ["newline secret reflected in output", {
+      result: { ...payload, unmet_preconditions: ["line\nsecret"] },
+      environment: { NUANU_API_KEY: "line\nsecret" },
+    }],
+    ["quote secret reflected in output", {
+      result: { ...payload, unmet_preconditions: ["quote\"secret"] },
+      environment: { NUANU_QA_AGENT_KEY: "quote\"secret" },
+    }],
+    ["backslash secret reflected in output", {
+      result: { ...payload, unmet_preconditions: ["slash\\secret"] },
+      environment: { NUANU_DECISION_AGENT_KEY: "slash\\secret" },
     }],
   ];
   for (const [name, { result, environment }] of cases) await t.test(name, async () => {

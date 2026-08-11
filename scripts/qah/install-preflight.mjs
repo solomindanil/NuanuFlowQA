@@ -15,6 +15,15 @@ const POLICY_PATH = "qah/install-policy.v1.json";
 const ALLOWED_REPOSITORY_ORIGIN = "https://github.com/solomindanil/NuanuFlowQA.git";
 const INSTALL_POLICY_SHA256 = "sha256:ae833be3ff1ea80b19d39b3f575becf9e5e564246bbe355663ffb79b848d4c27";
 const ATTESTATIONS = new WeakMap();
+const GIT_CHILD_ENVIRONMENT = Object.freeze({
+  PATH: "/usr/bin:/bin",
+  LANG: "C",
+  LC_ALL: "C",
+  GIT_OPTIONAL_LOCKS: "0",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+});
 
 export const DIRECT_READ_PATH_KINDS = Object.freeze(["binding", "graph", "agents", "agent_version", "artifact", "artifact_download", "worker_whoami"]);
 
@@ -91,10 +100,15 @@ async function json(origin, path, key, label, agentKey = false) {
   try { return JSON.parse(text); } catch { throw new Error(`${label} returned invalid JSON`); }
 }
 
-async function git(repositoryPath, args, maxBuffer = MAX_FILE) {
+async function git(executeGit, repositoryPath, args, maxBuffer = MAX_FILE) {
   const metadata = await lstat(repositoryPath);
   if (!metadata.isDirectory() || metadata.isSymbolicLink() || await realpath(repositoryPath) !== repositoryPath) throw new Error("repository path must be an exact real directory");
-  const result = await execFile("git", ["-C", repositoryPath, ...args], { encoding: "buffer", timeout: 10000, maxBuffer });
+  const result = await executeGit("git", ["-C", repositoryPath, ...args], {
+    encoding: "buffer",
+    timeout: 10000,
+    maxBuffer,
+    env: { ...GIT_CHILD_ENVIRONMENT },
+  });
   return Buffer.from(result.stdout);
 }
 
@@ -143,7 +157,8 @@ function verifyAgent(agent, version, whoami, request, role) {
   if (whoami?.agent_id !== employee || whoami.workspace !== request.workspace_slug || whoami.is_active !== true) throw new Error(`${role} worker whoami binding is foreign`);
 }
 
-export async function runDirectInstallPreflight(rawRequest, { environment = process.env } = {}) {
+export async function runDirectInstallPreflight(rawRequest, { environment = process.env, executeGit = execFile } = {}) {
+  if (typeof executeGit !== "function") throw new TypeError("Git executor must be a function");
   const request = requestShape(rawRequest);
   const { origin, testMode } = apiOrigin(environment);
   if (!testMode && request.repository_origin !== ALLOWED_REPOSITORY_ORIGIN) throw new Error("repository origin is not on the code-owned production allowlist");
@@ -164,17 +179,21 @@ export async function runDirectInstallPreflight(rawRequest, { environment = proc
   const decisionWhoami = await json(origin, workerPath("/agent-worker/whoami/"), decisionKey, "decision worker whoami", true);
   verifyAgent(agents.find((agent) => agent.id === request.qa_agent_employee_id), qaVersion, qaWhoami, request, "qa");
   verifyAgent(agents.find((agent) => agent.id === request.decision_agent_employee_id), decisionVersion, decisionWhoami, request, "decision");
-  const remote = (await git(request.repository_path, ["remote", "get-url", "origin"], 4096)).toString("utf8").trim();
+  const remote = (await git(executeGit, request.repository_path, ["remote", "get-url", "origin"], 4096)).toString("utf8").trim();
   if (remote !== request.repository_origin) throw new Error("Git repository origin is foreign");
-  await git(request.repository_path, ["fetch", "--no-tags", "origin", request.commit], 8192);
-  const policyBytes = await git(request.repository_path, ["show", `${request.commit}:${POLICY_PATH}`]);
+  try {
+    await git(executeGit, request.repository_path, ["cat-file", "-e", `${request.commit}^{commit}`], 4096);
+  } catch {
+    throw new Error("pinned Git commit is not present locally");
+  }
+  const policyBytes = await git(executeGit, request.repository_path, ["show", `${request.commit}:${POLICY_PATH}`]);
   if (prefixedDigest(policyBytes) !== INSTALL_POLICY_SHA256) throw new Error("Git install policy bytes do not match the code-owned pinned SHA");
   let policy; try { policy = JSON.parse(policyBytes.toString("utf8")); } catch { throw new Error("Git install policy is invalid JSON"); }
   if (policy.repository?.origin !== ALLOWED_REPOSITORY_ORIGIN || policy.repository?.profile_path !== "qa-harness.yaml") throw new Error("Git install policy repository contract is invalid");
-  const qaPrompt = await git(request.repository_path, ["show", `${request.commit}:${policy.profiles.qa.prompt_path}`]);
-  const decisionPrompt = await git(request.repository_path, ["show", `${request.commit}:${policy.profiles.decision.prompt_path}`]);
+  const qaPrompt = await git(executeGit, request.repository_path, ["show", `${request.commit}:${policy.profiles.qa.prompt_path}`]);
+  const decisionPrompt = await git(executeGit, request.repository_path, ["show", `${request.commit}:${policy.profiles.decision.prompt_path}`]);
   verifyProfilePolicy(policy, "qa", qaVersion, qaPrompt); verifyProfilePolicy(policy, "decision", decisionVersion, decisionPrompt);
-  const profileGit = await git(request.repository_path, ["show", `${request.commit}:qa-harness.yaml`]);
+  const profileGit = await git(executeGit, request.repository_path, ["show", `${request.commit}:qa-harness.yaml`]);
   const artifact = await json(origin, managementPath(`/api/workspaces/${ws}/artifacts/${request.profile_artifact.artifact_id}/`), apiKey, "profile Artifact");
   const stored = artifact.versions?.find((version) => version.id === request.profile_artifact.version_id);
   if (artifact.id !== request.profile_artifact.artifact_id || artifact.workspace !== request.workspace_id || artifact.kind !== "document" || artifact.status !== "stored" || !stored) throw new Error("profile ArtifactVersion readback is foreign");

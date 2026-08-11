@@ -4,8 +4,9 @@ import { createServer } from "node:http";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { promisify } from "node:util";
 
 const root = new URL("../..", import.meta.url);
 const ids = {
@@ -19,6 +20,7 @@ const ids = {
   first: "99999999-9999-4999-8999-999999999999", edge: "12121212-1212-4121-8121-121212121212",
 };
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const execFile = promisify(execFileCallback);
 
 async function gitFixture() {
   const dir = await realpath(await mkdtemp(join(tmpdir(), "qah-direct-preflight-")));
@@ -102,6 +104,51 @@ test("direct fixed-route preflight accepts a faithful loopback API and actual Gi
     `/be/api/workspaces/acme/artifacts/${ids.artifact}/`,
     `/be/api/workspaces/acme/artifacts/${ids.artifact}/download/?version=${ids.artifactv}&proxy=1`,
   ]);
+});
+
+test("Git reads require a present local commit and use one from-nothing child environment", async (t) => {
+  const preflight = await import("../../scripts/qah/install-preflight.mjs");
+  const git = await gitFixture(); t.after(() => rm(git.dir, { recursive: true, force: true }));
+  const api = await apiFixture(git); t.after(api.close);
+  const calls = [];
+  const executeGit = async (...args) => {
+    calls.push(args);
+    return execFile(...args);
+  };
+  const environment = {
+    NUANU_API_URL: api.base,
+    NUANU_API_KEY: "user-key",
+    NUANU_QA_AGENT_KEY: "qa-key",
+    NUANU_DECISION_AGENT_KEY: "decision-key",
+    NUANU_QAH_PREFLIGHT_TEST_MODE: "1",
+    AMBIENT_SECRET: "must-not-reach-git",
+    NODE_OPTIONS: "--must-not-reach-git",
+    HTTPS_PROXY: "https://must-not-reach-git.invalid",
+  };
+  await preflight.runDirectInstallPreflight(request(git), { environment, executeGit });
+  const expectedChildEnvironment = {
+    PATH: "/usr/bin:/bin",
+    LANG: "C",
+    LC_ALL: "C",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+  };
+  assert.ok(calls.length > 0);
+  for (const [file, args, options] of calls) {
+    assert.equal(file, "git");
+    assert.equal(args[0], "-C");
+    assert.equal(args[1], git.dir);
+    assert.deepEqual(options.env, expectedChildEnvironment);
+  }
+  assert.equal(calls.some(([, args]) => args.includes("fetch")), false);
+  assert.equal(calls.some(([, args]) => args.includes("cat-file") && args.includes("-e") && args.includes(`${git.commit}^{commit}`)), true);
+  await assert.rejects(readFile(join(git.dir, ".git", "FETCH_HEAD")), { code: "ENOENT" });
+  await assert.rejects(
+    preflight.runDirectInstallPreflight(request({ ...git, commit: "f".repeat(40) }), { environment, executeGit }),
+    /commit|present|Git/i,
+  );
 });
 
 test("Git-owned positive prompt allowlist rejects an Acme prompt even when self-hashed", async (t) => {

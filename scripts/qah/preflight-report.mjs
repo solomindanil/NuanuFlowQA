@@ -101,11 +101,20 @@ function validateConsumedPayload(payload) {
   }
 }
 
-function rejectSecretReflection(serialized, environment) {
+function containsReportText(value, text) {
+  if (typeof value === "string") return value.includes(text);
+  if (Array.isArray(value)) return value.some((entry) => containsReportText(entry, text));
+  if (value && typeof value === "object") {
+    return Object.entries(value).some(([key, entry]) => key.includes(text) || containsReportText(entry, text));
+  }
+  return false;
+}
+
+function rejectSecretReflection(report, environment) {
   for (const key of SECRET_ENVIRONMENT_FIELDS) {
-    if (serialized.includes(key)) throw new Error("preflight report reflects a credential field name");
+    if (containsReportText(report, key)) throw new Error("preflight report reflects a credential field name");
     const secret = environment?.[key];
-    if (typeof secret === "string" && secret.length > 0 && serialized.includes(secret)) {
+    if (typeof secret === "string" && secret.length > 0 && containsReportText(report, secret)) {
       throw new Error("preflight report reflects an environment credential");
     }
   }
@@ -162,8 +171,7 @@ export async function createPreflightReport(request, {
     install_ready: payload.install_ready,
     unmet_preconditions: payload.unmet_preconditions,
   }));
-  const serialized = canonicalJson(report);
-  rejectSecretReflection(serialized, environment);
+  rejectSecretReflection(report, environment);
   return report;
 }
 

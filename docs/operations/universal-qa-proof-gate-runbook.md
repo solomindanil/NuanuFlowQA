@@ -25,7 +25,16 @@ npm run test:qah
 npm run verify:qah
 npm run typecheck
 git diff --check
+if rg -n 'when"?:\s*\{[^}]*"?(var|raw|otherwise|branch)"?|worker 0\.3\.'\
+'13|READY_FOR_PRODUCTION либо RETURN_TO_IN_'\
+'PROGRESS' processes/universal-qa-flow.graph.json scripts/qah tests/qah README.md docs/operations; then exit 1; else qah_scan_rc=$?; test "$qah_scan_rc" -eq 1; fi
+if rg -n '411111111111111'\
+'1|Authorization: Bear'\
+'er|raw-response-'\
+'body' scripts/qah processes/universal-qa-flow.graph.json docs/operations README.md --glob '!local-harness.mjs'; then exit 1; else secret_scan_rc=$?; test "$secret_scan_rc" -eq 1; fi
 ```
+
+The continued adjacent shell literals above form the exact required regular expressions while preventing the runbook from becoming a match in its own scan. In each wrapper, `rg` status `0` is a prohibited match and exits `1`; only native no-match status `1` is accepted and normalized to wrapper status `0`. Any other `rg` status remains a failure.
 
 Generate a sanitized production preflight report only after placing the canonical request in an operator-controlled regular file:
 
