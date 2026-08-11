@@ -12,7 +12,7 @@ import { BRANCHES } from "./contracts.mjs";
 import { resolveContext } from "./context.mjs";
 import { validateAggregateForDecision } from "./decide.mjs";
 import { runPaydemoAdapter } from "./adapters/paydemo.mjs";
-import { normalizeRawIssueComments, runTaskCommand } from "./task-runtime.mjs";
+import { materializeFinalizationWorkerTransport, normalizeRawIssueComments, runTaskCommand } from "./task-runtime.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -35,6 +35,28 @@ const BRANCH_COMMANDS = {
   ui: "verify-ui-with-playwright",
   domain: "prepare-and-verify-domain-data",
 };
+const FINALIZATION_OUTPUT_DEFINITION = {
+  data: {
+    transition_allowed: { type: "boolean", description: "True only after authoritative comment and cleanup verification" },
+    target_state: { type: "string", description: "ready_for_production, in_progress, or ready_for_qa" },
+    reason_codes: { type: "json", description: "Closed sorted finalization reason codes" },
+    kind: { type: "string", description: "Literal qa admitted by QAH" },
+    verdict: { type: "string", description: "pass, fail, or blocked admitted by QAH" },
+    tested_head_sha: { type: "string", description: "Exact trusted 40-character repository commit" },
+    checks: { type: "json", description: "Closed checks derived from exact verified branch ArtifactVersions" },
+  },
+  artifacts: {
+    finalization_report: { description: "Verified final transition gate result", kind: "document", restrictions: { media_types: ["application/json"] } },
+  },
+};
+
+function validateFinalizationHarnessBindings(buildCanonicalCompletion, finalizationOutputDefinition) {
+  if (typeof buildCanonicalCompletion !== "function") throw new Error("buildCanonicalCompletion injection is required");
+  if (!finalizationOutputDefinition || typeof finalizationOutputDefinition !== "object" || Array.isArray(finalizationOutputDefinition)
+    || canonicalJson(finalizationOutputDefinition) !== canonicalJson(FINALIZATION_OUTPUT_DEFINITION)) {
+    throw new Error("finalizationOutputDefinition must be the exact blueprint-owned seven-field output definition");
+  }
+}
 
 function uuid(value) {
   return `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
@@ -188,17 +210,21 @@ function adapterExecution({ mode, timings, counters }) {
     await new Promise((resolve) => setTimeout(resolve, 20));
     let result;
     if (input.branch === "code") {
-      if (mode === "missing-evidence") throw new Error("code evidence unavailable");
       result = { exitCode: 0, signal: null, stdout: "typecheck passed; 4111111111111111 raw-response-body", stderr: "" };
     } else {
       if (input.branch === "ui") counters.playwright += 1;
       const passCode = { api: "API_CONTRACT_VERIFIED", ui: "UI_FLOW_VERIFIED", domain: "DOMAIN_RULE_VERIFIED" }[input.branch];
-      const axes = mode === "product-failure" && input.branch === "api"
-        ? { product_result: "FAIL", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1 }
-        : { product_result: "PASS", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1 };
-      const candidates = input.branch === "ui"
-        ? [evidenceCandidate("screenshot", "ui-main.png", "screenshot"), evidenceCandidate("trace", "ui-trace.zip", "trace")]
-        : [evidenceCandidate("document", `${input.branch}-evidence.md`, `${input.branch} evidence`)];
+      const missingEvidence = mode === "missing-evidence" && input.branch === "api";
+      const axes = missingEvidence
+        ? { product_result: "INCONCLUSIVE", environment_status: "INFRA_FAILURE", evidence_status: "UNVERIFIED", confidence: 0 }
+        : mode === "product-failure" && input.branch === "api"
+          ? { product_result: "FAIL", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1 }
+          : { product_result: "PASS", environment_status: "HEALTHY", evidence_status: "VERIFIED", confidence: 1 };
+      const candidates = missingEvidence
+        ? [evidenceCandidate("document", "api-failed-probe.md", "Authenticated API probe failed before product behavior could be verified.")]
+        : input.branch === "ui"
+          ? [evidenceCandidate("screenshot", "ui-main.png", "screenshot"), evidenceCandidate("trace", "ui-trace.zip", "trace")]
+          : [evidenceCandidate("document", `${input.branch}-evidence.md`, `${input.branch} evidence`)];
       const adapter = await runPaydemoAdapter(input, input.branch === "ui" ? {
         runUiProbe: async () => ({
           classification: { ...axes, code: passCode },
@@ -209,13 +235,12 @@ function adapterExecution({ mode, timings, counters }) {
         documentProbe: async () => ({
           result: {
             axes,
-            code: mode === "product-failure" && input.branch === "api" ? "AMOUNT_MISMATCH_ACCEPTED" : passCode,
+            code: missingEvidence ? "TRANSPORT_FAILURE" : mode === "product-failure" && input.branch === "api" ? "AMOUNT_MISMATCH_ACCEPTED" : passCode,
             occurrence_key: sha256(`bounded-${input.branch}-observation`),
           },
           candidates,
         }),
       });
-      if (mode === "missing-evidence" && input.branch === "api") adapter.candidates = [];
       result = { exitCode: 0, signal: null, stdout: canonicalJson(adapter), stderr: "" };
     }
     timing.ended_at = Date.now();
@@ -288,14 +313,15 @@ async function task(root, command, input, options = {}) {
   return { result, outputDir };
 }
 
-async function complete(root, store, command, manifest, options = {}, linksFor = {}) {
+async function complete(root, store, command, manifest, options = {}, linksFor = {}, completionFields = {}) {
   const outputDir = join(root, "qah", command);
   const refs = await persistManifest(store, outputDir, manifest, linksFor);
-  const envelope = await runTaskCommand(command, { phase: "complete", artifact_refs: refs }, { outputDir, taskRoot: root, ...options });
+  const envelope = await runTaskCommand(command, { phase: "complete", artifact_refs: refs, ...completionFields }, { outputDir, taskRoot: root, ...options });
   return { refs, envelope };
 }
 
-export async function runLocalQaHarness({ fixture, mode = "pass" }) {
+export async function runLocalQaHarness({ fixture, mode = "pass", buildCanonicalCompletion, finalizationOutputDefinition }) {
+  validateFinalizationHarnessBindings(buildCanonicalCompletion, finalizationOutputDefinition);
   if (!["api", "ui", "docs", "mixed"].includes(fixture) || !["pass", "product-failure", "missing-evidence"].includes(mode)) throw new Error("invalid local harness fixture");
   const root = await mkdtemp(join(tmpdir(), "universal-qah-e2e-"));
   const events = [];
@@ -306,7 +332,6 @@ export async function runLocalQaHarness({ fixture, mode = "pass" }) {
     const repository = fixture === "docs"
       ? await createPinnedDocsCheckout(root, profileBytes, profile.repository.allowed_origin)
       : { checkout: await realpath(root), commit: "a".repeat(40) };
-    if (fixture === "docs" && mode === "missing-evidence") await writeFile(join(repository.checkout, "README.md"), "dirty checkout\n");
     const store = new LocalArtifactVersions(profileBytes);
     const comments = [];
     const dependencies = store.dependencies(profile, comments, repository.commit);
@@ -363,6 +388,12 @@ export async function runLocalQaHarness({ fixture, mode = "pass" }) {
         execute,
         verifyEnvironment: async ({ receipt }) => ({ receipt, checkout: root }),
       } });
+      if (mode === "product-failure" && branch === "api") {
+        const evidencePath = join(branchTask.outputDir, "evidence.json");
+        const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+        evidence.confirmed_findings = 0;
+        await writeFile(evidencePath, canonicalJson(evidence));
+      }
       const primaryRefs = await persistManifest(store, branchTask.outputDir, branchTask.result);
       const linked = await runTaskCommand(command, {
         phase: "link",
@@ -420,7 +451,11 @@ export async function runLocalQaHarness({ fixture, mode = "pass" }) {
     const decision = decided.result.item.data.decision;
     const publicationInput = { workspace_id: WORKSPACE_ID, project_id: PROJECT_ID, issue_id: ISSUE_ID, source_artifact: SOURCE_REF, review_bundle: reviewRef };
     const publicationValidation = await validateAggregateForDecision(aggregate, dependencies);
-    if (!publicationValidation.valid) throw new Error(`local publication aggregate invalid: ${publicationValidation.reason_codes.join(",")}`);
+    if (publicationValidation.valid !== true) throw new Error(`local publication aggregate invalid: ${publicationValidation.reason_codes.join(",")}`);
+    const publicationValidationResult = Object.freeze({
+      valid: true,
+      reason_codes: Object.freeze([...publicationValidation.reason_codes]),
+    });
 
     const [published, cleaned] = await Promise.all([
       task(root, "publish-flow-item-comment", { phase: "prepare", publication_input: publicationInput, completion_context: { decision, cleanup_lease: cleanupLease, profile_ref: profileRef } }, { dependencies }).then((value) => { events.push("comment-complete"); return value; }),
@@ -431,10 +466,19 @@ export async function runLocalQaHarness({ fixture, mode = "pass" }) {
     ({ envelope: workerEnvelopes.publish_flow_item_comment } = await complete(root, store, "publish-flow-item-comment", published.result, { dependencies }));
     ({ envelope: workerEnvelopes.cleanup_environment } = await complete(root, store, "cleanup-environment", cleaned.result, { dependencies }));
 
-    const finalized = await task(root, "finalize-transition", { phase: "prepare", finalization_input: { ...publicationInput, comment_receipt: commentReceipt, cleanup_receipt: cleanupReceipt } }, { dependencies });
+    const finalizationInput = { ...publicationInput, comment_receipt: commentReceipt, cleanup_receipt: cleanupReceipt };
+    const finalized = await task(root, "finalize-transition", { phase: "prepare", finalization_input: finalizationInput }, { dependencies });
     events.push("transition");
     const finalization = JSON.parse(await readFile(join(finalized.outputDir, "finalization.json"), "utf8"));
-    ({ envelope: workerEnvelopes.finalize_transition } = await complete(root, store, "finalize-transition", finalized.result, { dependencies }));
+    const finalizationComplete = await complete(root, store, "finalize-transition", finalized.result, { dependencies }, {}, { finalization_input: finalizationInput });
+    const finalizationRawTransport = finalizationComplete.envelope;
+    workerEnvelopes.finalize_transition = finalizationRawTransport;
+    const finalizationCanonicalCompletion = buildCanonicalCompletion({
+      task_id: "local-finalize-transition",
+      attempt: 1,
+      request: { process: { step_key: "finalize_transition" }, output_definition: structuredClone(finalizationOutputDefinition) },
+    }, { output: canonicalJson(finalizationRawTransport), publishedArtifacts: [] });
+    const finalizationFlowStepResult = materializeFinalizationWorkerTransport(finalizationCanonicalCompletion.result);
 
     return {
       fixture,
@@ -458,6 +502,10 @@ export async function runLocalQaHarness({ fixture, mode = "pass" }) {
       comment_receipt: commentReceipt,
       cleanup_receipt: cleanupReceipt,
       finalization,
+      publication_validation: publicationValidationResult,
+      finalization_raw_transport: finalizationRawTransport,
+      finalization_canonical_completion: finalizationCanonicalCompletion,
+      finalization_flow_step_result: finalizationFlowStepResult,
       playwright_adapter_invocations: counters.playwright,
       worker_envelopes: workerEnvelopes,
       events,

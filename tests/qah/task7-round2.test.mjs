@@ -112,11 +112,30 @@ test("every graph task has a runtime-owned final worker 0.3.14 envelope protocol
     assert.deepEqual(protocol.artifact_slots, Object.keys(node.config.output.artifacts));
     assert.match(node.config.instruction, protocol.artifact_slots.length ? /phase=prepare.*phase=complete/is : /exact.*completion/is);
     const artifact_outputs = Object.fromEntries(protocol.artifact_slots.map((slot, index) => [`item.artifacts.${slot}`, ref(index + 20)]));
-    const raw = { item: { key: node.key, description: "runtime-owned", data: Object.fromEntries(Object.keys(node.config.output.data).map((key) => [key, key === "transition_allowed" ? true : key === "target_state" ? "in_progress" : key === "reason_codes" ? [] : key])), artifacts: {} }, artifact_outputs };
+    const typedFinalizerData = {
+      transition_allowed: true,
+      target_state: "ready_for_qa",
+      reason_codes: [],
+      kind: "qa",
+      verdict: "blocked",
+      tested_head_sha: "a".repeat(40),
+      checks: [],
+    };
+    const data = node.key === "finalize_transition"
+      ? typedFinalizerData
+      : Object.fromEntries(Object.keys(node.config.output.data).map((key) => [key, key === "transition_allowed" ? true : key === "target_state" ? "in_progress" : key === "reason_codes" ? [] : key]));
+    const raw = { item: { key: node.key, description: node.key === "finalize_transition" ? "Universal QAH finalization admitted" : "runtime-owned", data, artifacts: {} }, artifact_outputs };
     const completion = buildCanonicalCompletion({ task_id: "task", attempt: 1, request: { process: { step_key: node.key }, output_definition: node.config.output } }, { output: canonicalJson(raw), publishedArtifacts: [] });
     assert.equal(completion.result.item.key, node.key);
     assert.deepEqual(Object.keys(completion.result.item.data).sort(), Object.keys(node.config.output.data).sort());
     assert.deepEqual(Object.keys(completion.result.artifact_outputs).sort(), protocol.artifact_slots.map((slot) => `item.artifacts.${slot}`).sort());
+    if (node.key === "finalize_transition") {
+      const materialized = runtime.materializeFinalizationWorkerTransport(completion.result);
+      assert.deepEqual(materialized.item.data, typedFinalizerData);
+      assert.deepEqual(materialized.item.artifacts.finalization_report, artifact_outputs["item.artifacts.finalization_report"]);
+    } else {
+      assert.deepEqual(completion.result.item, raw.item);
+    }
   }
 });
 

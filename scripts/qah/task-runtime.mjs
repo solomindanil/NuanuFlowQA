@@ -7,16 +7,21 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { aggregateEvidence, resolveArtifactVersionForSlot, resolveCommitProfile, resolvePlatformEntityVersion } from "./aggregate.mjs";
 import { canonicalJson, sha256 } from "./canonical.mjs";
+import {
+  buildFinalizationFlowStepResult,
+  encodeFinalizationWorkerTransport,
+  materializeFinalizationWorkerTransport,
+} from "./claim-adapter.mjs";
 import { resolveContext } from "./context.mjs";
 import { decideRelease } from "./decide.mjs";
 import { cleanupEnvironment, prepareEnvironment } from "./environment.mjs";
-import { finalizeTransition } from "./finalize.mjs";
+import { finalizeTransitionAdmission } from "./finalize.mjs";
 import { planQaScope } from "./plan.mjs";
 import { parseProfileBytes } from "./profile.mjs";
 import { publishComment, COMMENT_LIST_MAX_BYTES, COMMENT_LIST_MAX_COMMENTS } from "./render-comment.mjs";
 import { runBranch, runtimeEnvironmentForBranch } from "./run-branch.mjs";
 
-export { runtimeEnvironmentForBranch };
+export { materializeFinalizationWorkerTransport, runtimeEnvironmentForBranch };
 
 const execFile = promisify(execFileCallback);
 
@@ -152,6 +157,25 @@ async function completePreparedTask(taskKey, input, outputDir) {
     item: { key: taskKey, description: `${taskKey} completed by deterministic task runtime`, data, artifacts: {} },
     artifact_outputs: Object.fromEntries(state.artifact_slots.map((slot) => [`item.artifacts.${slot}`, refs[slot]])),
   };
+}
+
+async function completeFinalizationTask(input, dependencies) {
+  exact(input, ["phase", "artifact_refs", "finalization_input"], "finalize_transition completion input");
+  if (input.phase !== "complete") throw new Error("finalize_transition phase must be complete");
+  exact(input.artifact_refs, ["finalization_report"], "finalize_transition actual artifact refs");
+  const finalizationReport = artifactRef(input.artifact_refs.finalization_report, "document", "output", "artifact_refs.finalization_report");
+  const admitted = await finalizeTransitionAdmission(input.finalization_input, dependencies);
+  if (admitted.report.transition_allowed !== true || !admitted.aggregate || !admitted.decision) {
+    throw new Error(`finalization blocked: ${admitted.report.reason_codes.join(",")}`);
+  }
+  const flowStepResult = await buildFinalizationFlowStepResult({
+    workspace_id: input.finalization_input.workspace_id,
+    finalization_report: finalizationReport,
+    expected_report: admitted.report,
+    aggregate: admitted.aggregate,
+    decision: admitted.decision,
+  }, dependencies);
+  return encodeFinalizationWorkerTransport(flowStepResult);
 }
 
 function prepareInput(input, keys, label) {
@@ -462,6 +486,9 @@ export async function runTaskCommand(command, input, options = {}) {
   const taskKey = TASK_KEYS[command];
   const dependencies = options.dependencies ?? (options.resolverBundle ? createResolverAdapters(options.resolverBundle) : {});
 
+  if (command === "finalize-transition" && input?.phase === "complete") {
+    return completeFinalizationTask(input, dependencies);
+  }
   if (input?.phase === "complete" && !branchName(command) && TASK_PROTOCOLS[taskKey].artifact_slots.length) {
     return completePreparedTask(taskKey, input, outputDir);
   }
@@ -567,10 +594,18 @@ export async function runTaskCommand(command, input, options = {}) {
   }
   if (command === "finalize-transition") {
     prepareInput(input, ["finalization_input"], "finalize-transition input");
-    const result = await finalizeTransition(input.finalization_input, dependencies);
-    if (result.transition_allowed !== true) throw new Error(`finalization blocked: ${result.reason_codes.join(",")}`);
-    await writeCompletionState(outputDir, taskKey, { transition_allowed: result.transition_allowed, target_state: result.target_state, reason_codes: result.reason_codes });
-    return writeSingleArtifact(taskKey, outputDir, "finalization.json", "finalization_report", result);
+    const admitted = await finalizeTransitionAdmission(input.finalization_input, dependencies);
+    if (admitted.report.transition_allowed !== true) throw new Error(`finalization blocked: ${admitted.report.reason_codes.join(",")}`);
+    await writeCompletionState(outputDir, taskKey, {
+      transition_allowed: admitted.report.transition_allowed,
+      target_state: admitted.report.target_state,
+      reason_codes: admitted.report.reason_codes,
+      kind: admitted.report.kind,
+      verdict: admitted.report.verdict,
+      tested_head_sha: admitted.report.tested_head_sha,
+      checks: admitted.report.checks,
+    });
+    return writeSingleArtifact(taskKey, outputDir, "finalization.json", "finalization_report", admitted.report);
   }
   throw new Error("unreachable task-runtime command");
 }

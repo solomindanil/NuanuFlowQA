@@ -26,7 +26,7 @@
           "agent_employee_id": "__BINDING_QA_AGENT_EMPLOYEE_ID__",
           "agent_version_id": "__BINDING_QA_AGENT_VERSION_ID__",
           "failure_handling": { "mode": "stop" },
-          "instruction": "Ты разрешаешь только закреплённую карточку непосредственного входа {{input.project_start.artifacts.flow_item}}. Через task-scoped Nuanu MCP выполни get_artifact exact версии и собери bounded canonical input/resolver bundle. Запусти repository-bound node scripts/qah/task-runtime.mjs resolve-flow-item с phase=prepare, --input <relative-task-input>, --resolver-bundle <relative-task-bundle>, --output-dir \"$NUANU_TASK_DIR/qah/resolve-flow-item\". Опубликуй resolve-flow-item.json через publish_artifact_file с output_path item.artifacts.resolved_item, kind document, role output, media_type application/json. Запиши actual ref ровно artifact_id, version_id, kind, role в phase=complete input, повтори ту же команду и верни только её exact worker 0.3.13 completion. Никаких свободно синтезированных outputs, иных команд или изменений продукта.",
+          "instruction": "Ты разрешаешь только закреплённую карточку непосредственного входа {{input.project_start.artifacts.flow_item}}. Через task-scoped Nuanu MCP выполни get_artifact exact версии и собери bounded canonical input/resolver bundle. Запусти repository-bound node scripts/qah/task-runtime.mjs resolve-flow-item с phase=prepare, --input <relative-task-input>, --resolver-bundle <relative-task-bundle>, --output-dir \"$NUANU_TASK_DIR/qah/resolve-flow-item\". Опубликуй resolve-flow-item.json через publish_artifact_file с output_path item.artifacts.resolved_item, kind document, role output, media_type application/json. Запиши actual ref ровно artifact_id, version_id, kind, role в phase=complete input, повтори ту же команду и верни только её exact worker 0.3.14 completion. Никаких свободно синтезированных outputs, иных команд или изменений продукта.",
           "output": {
             "data": {
               "source_ref": { "type": "json", "description": "Exact four-field source Flow-item Artifact reference" },
@@ -305,7 +305,7 @@
           "agent_version_id": "__BINDING_DECISION_AGENT_VERSION_ID__",
           "binding_metadata": { "requested_model": "__BINDING_DECISION_MODEL__", "required_capabilities": ["git", "nuanu_mcp", "tool_execution"] },
           "failure_handling": { "mode": "stop" },
-          "instruction": "Ты отдельный Codex-агент решения и получаешь только непосредственный {{input.aggregate_evidence}}. Через task-scoped Nuanu MCP, Git и tool execution повторно прочитай exact source/plan/profile/material ArtifactVersion и pinned Git bytes. Запусти node scripts/qah/task-runtime.mjs independent-release-decision --output-dir \"$NUANU_TASK_DIR/qah/independent-release-decision\" и верни ровно его exact worker completion с пустыми artifacts; не синтезируй output вручную. Переносимые refs имеют ровно artifact_id, version_id, kind, role. Не используй browser, не меняй код, Wiki, Flow item или статус. Runtime выдаёт только READY_FOR_PRODUCTION либо RETURN_TO_IN_PROGRESS.",
+          "instruction": "Ты отдельный Codex-агент решения и получаешь только непосредственный {{input.aggregate_evidence}}. Через task-scoped Nuanu MCP, Git и tool execution повторно прочитай exact source/plan/profile/material ArtifactVersion и pinned Git bytes. Запусти node scripts/qah/task-runtime.mjs independent-release-decision --output-dir \"$NUANU_TASK_DIR/qah/independent-release-decision\" и верни ровно его exact worker completion с пустыми artifacts; не синтезируй output вручную. Переносимые refs имеют ровно artifact_id, version_id, kind, role. Не используй browser, не меняй код, Wiki, Flow item или статус. Runtime выдаёт только READY_FOR_PRODUCTION, RETURN_TO_IN_PROGRESS либо HOLD_IN_READY_FOR_QA.",
           "output": {
             "data": {
               "decision": { "type": "json", "description": "Closed deterministic release decision" },
@@ -394,12 +394,16 @@
           "agent_employee_id": "__BINDING_QA_AGENT_EMPLOYEE_ID__",
           "agent_version_id": "__BINDING_QA_AGENT_VERSION_ID__",
           "failure_handling": { "mode": "stop" },
-          "instruction": "Ты финализируешь только из непосредственных {{input.publish_flow_item_comment}} и {{input.cleanup_environment}}. Через task-scoped Nuanu MCP повторно прочитай exact source/review и raw полный get_issue_comments; node scripts/qah/task-runtime.mjs normalize-comments использует --output-dir \"$NUANU_TASK_DIR/qah/finalize-transition\". Затем запусти node scripts/qah/task-runtime.mjs finalize-transition с phase=prepare и тем же output-dir. При failed ProcessItem, неединственном marker, неточной cleanup receipt или transition_allowed=false это ошибка: runtime завершится nonzero, не создавай ProcessItem и не достигай XOR/End. При успехе опубликуй finalization.json как item.artifacts.finalization_report, передай actual ref ровно artifact_id, version_id, kind, role в phase=complete и верни только runtime completion; статус не меняй.",
+          "instruction": "Ты финализируешь только из непосредственных {{input.publish_flow_item_comment}} и {{input.cleanup_environment}}. Через task-scoped Nuanu MCP повторно прочитай exact source/review и raw полный get_issue_comments; node scripts/qah/task-runtime.mjs normalize-comments использует --output-dir \"$NUANU_TASK_DIR/qah/finalize-transition\". Затем запусти node scripts/qah/task-runtime.mjs finalize-transition с phase=prepare и тем же output-dir. При failed ProcessItem, неединственном marker, неточной cleanup receipt или transition_allowed=false это ошибка: runtime завершится nonzero, не создавай ProcessItem и не достигай Proof Gate/End. При успехе опубликуй finalization.json как item.artifacts.finalization_report, затем через get_artifact прочитай actual exact ArtifactVersion, повтори raw полный get_issue_comments и normalize-comments, добавь ArtifactVersion и свежую comment attestation в новый resolver bundle; передай phase=complete input с тем же finalization_input и actual ref ровно artifact_id, version_id, kind, role, затем верни только runtime completion с плоскими kind, verdict, tested_head_sha и checks. Не синтезируй эти поля вручную и статус не меняй.",
           "output": {
             "data": {
               "transition_allowed": { "type": "boolean", "description": "True only after authoritative comment and cleanup verification" },
-              "target_state": { "type": "string", "description": "ready_for_production or in_progress" },
-              "reason_codes": { "type": "json", "description": "Closed sorted finalization reason codes" }
+              "target_state": { "type": "string", "description": "ready_for_production, in_progress, or ready_for_qa" },
+              "reason_codes": { "type": "json", "description": "Closed sorted finalization reason codes" },
+              "kind": { "type": "string", "description": "Literal qa admitted by QAH" },
+              "verdict": { "type": "string", "description": "pass, fail, or blocked admitted by QAH" },
+              "tested_head_sha": { "type": "string", "description": "Exact trusted 40-character repository commit" },
+              "checks": { "type": "json", "description": "Closed checks derived from exact verified branch ArtifactVersions" }
             },
             "artifacts": {
               "finalization_report": { "description": "Verified final transition gate result", "kind": "document", "restrictions": { "media_types": ["application/json"] } }
@@ -410,9 +414,9 @@
       {
         "id": "10000000-0000-5000-8000-000000000019",
         "key": "transition_route",
-        "type": "gateway",
+        "type": "proof_gate",
         "name": "Route final QA state",
-        "config": { "kind": "exclusive", "mode": "simple" }
+        "config": { "profile_key": "qa_result_v1", "profile_version": "1", "ai_assessment": "off" }
       },
       {
         "id": "10000000-0000-5000-8000-000000000020",
@@ -427,6 +431,13 @@
         "type": "end",
         "name": "Return to In Progress",
         "config": { "project_status": { "target_state_id": "__BINDING_IN_PROGRESS_STATE_ID__" } }
+      },
+      {
+        "id": "10000000-0000-5000-8000-000000000022",
+        "key": "qa_needs_human_end",
+        "type": "end",
+        "name": "Keep in Ready for QA",
+        "config": { "project_status": { "target_state_id": null } }
       }
     ],
     "edges": [
@@ -451,8 +462,9 @@
       { "id": "20000000-0000-5000-8000-000000000020", "source": "10000000-0000-5000-8000-000000000016", "target": "10000000-0000-5000-8000-000000000017" },
       { "id": "20000000-0000-5000-8000-000000000021", "source": "10000000-0000-5000-8000-000000000017", "target": "10000000-0000-5000-8000-000000000018" },
       { "id": "20000000-0000-5000-8000-000000000022", "source": "10000000-0000-5000-8000-000000000018", "target": "10000000-0000-5000-8000-000000000019" },
-      { "id": "20000000-0000-5000-8000-000000000023", "source": "10000000-0000-5000-8000-000000000019", "target": "10000000-0000-5000-8000-000000000020", "name": "ready_for_production", "when": { "var": "finalize_transition.data.target_state", "op": "eq", "value": "ready_for_production" } },
-      { "id": "20000000-0000-5000-8000-000000000024", "source": "10000000-0000-5000-8000-000000000019", "target": "10000000-0000-5000-8000-000000000021", "name": "in_progress", "when": { "otherwise": true } }
+      { "id": "20000000-0000-5000-8000-000000000023", "source": "10000000-0000-5000-8000-000000000019", "target": "10000000-0000-5000-8000-000000000020", "name": "passed", "when": { "outcome": "passed" } },
+      { "id": "20000000-0000-5000-8000-000000000024", "source": "10000000-0000-5000-8000-000000000019", "target": "10000000-0000-5000-8000-000000000021", "name": "not_passed", "when": { "outcome": "not_passed" } },
+      { "id": "20000000-0000-5000-8000-000000000025", "source": "10000000-0000-5000-8000-000000000019", "target": "10000000-0000-5000-8000-000000000022", "name": "unable_to_verify", "when": { "outcome": "unable_to_verify" } }
     ]
   }
 }

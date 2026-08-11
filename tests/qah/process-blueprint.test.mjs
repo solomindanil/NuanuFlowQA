@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { renderProcess, renderProcessJson } from "../../scripts/qah/render-process.mjs";
+import { renderProcess, renderProcessJson, validateFinalProofGate } from "../../scripts/qah/render-process.mjs";
 import { sha256 } from "../../scripts/qah/canonical.mjs";
 
 const blueprintUrl = new URL("../../processes/universal-qa-flow.graph.json", import.meta.url);
@@ -35,6 +35,10 @@ const bindings = Object.freeze({
     role: "implementation",
   },
 });
+const expectedFinalStates = Object.freeze({
+  ready_for_production_state_id: bindings.ready_for_production_state_id,
+  in_progress_state_id: bindings.in_progress_state_id,
+});
 
 const expectedKeys = [
   "project_start",
@@ -58,6 +62,7 @@ const expectedKeys = [
   "transition_route",
   "ready_for_production_end",
   "in_progress_end",
+  "qa_needs_human_end",
 ];
 
 function byKey(graph) {
@@ -73,8 +78,8 @@ test("renders the exact universal topology with structured parallel blocks", () 
   const graph = renderProcess(blueprint, bindings);
   assert.equal(graph.schema_version, 1);
   assert.deepEqual(graph.nodes.map((node) => node.key), expectedKeys);
-  assert.equal(graph.nodes.length, 21);
-  assert.equal(graph.edges.length, 24);
+  assert.equal(graph.nodes.length, 22);
+  assert.equal(graph.edges.length, 25);
 
   const nodes = byKey(graph);
   for (const key of ["parallel_checks_fork", "parallel_checks_join", "publication_cleanup_fork", "publication_cleanup_join"])
@@ -148,7 +153,7 @@ test("carries only topology-local immediate inputs through declared ProcessItems
   assert.equal(nodes.get("publication_cleanup_join").config.output, undefined);
 });
 
-test("uses closed Process v1 outputs and worker 0.3.13 Artifact contracts", () => {
+test("uses closed Process v1 outputs and worker 0.3.14 Artifact contracts", () => {
   const graph = renderProcess(blueprint, bindings);
   const agents = graph.nodes.filter((node) => node.type === "agent_task");
   assert.ok(agents.length > 0);
@@ -211,26 +216,74 @@ test("requires an explicit distinct capable strongest-Codex decision binding", (
   ]) assert.throws(() => renderProcess(blueprint, { ...bindings, ...invalid }), /decision agent.*(?:required|distinct)/i);
 });
 
-test("routes fail closed through exactly one default XOR edge and changes state only at End", () => {
+test("routes only through the exact stock qa_result_v1 Proof Gate outcomes", () => {
   const graph = renderProcess(blueprint, bindings);
   const nodes = byKey(graph);
+  const finalizer = nodes.get("finalize_transition");
   const route = nodes.get("transition_route");
-  assert.deepEqual(route.config, { kind: "exclusive", mode: "simple" });
-  const outgoing = graph.edges.filter((edge) => edge.source === route.id);
-  assert.equal(outgoing.length, 2);
-  assert.equal(outgoing.filter((edge) => edge.when?.otherwise === true).length, 1);
-  assert.deepEqual(outgoing.find((edge) => !edge.when?.otherwise).when, {
-    var: "finalize_transition.data.target_state",
-    op: "eq",
-    value: "ready_for_production",
+  const ready = nodes.get("ready_for_production_end");
+  const rejected = nodes.get("in_progress_end");
+  const hold = nodes.get("qa_needs_human_end");
+  assert.deepEqual([finalizer.id, route.id, ready.id, rejected.id, hold.id], [
+    "10000000-0000-5000-8000-000000000018",
+    "10000000-0000-5000-8000-000000000019",
+    "10000000-0000-5000-8000-000000000020",
+    "10000000-0000-5000-8000-000000000021",
+    "10000000-0000-5000-8000-000000000022",
+  ]);
+  assert.equal(route.type, "proof_gate");
+  assert.deepEqual(route.config, { profile_key: "qa_result_v1", profile_version: "1", ai_assessment: "off" });
+  assert.deepEqual(graph.edges.filter(({ target }) => target === route.id), [{
+    id: "20000000-0000-5000-8000-000000000022", source: finalizer.id, target: route.id,
+  }]);
+  assert.deepEqual(graph.edges.filter(({ source }) => source === route.id), [
+    { id: "20000000-0000-5000-8000-000000000023", source: route.id, target: ready.id, name: "passed", when: { outcome: "passed" } },
+    { id: "20000000-0000-5000-8000-000000000024", source: route.id, target: rejected.id, name: "not_passed", when: { outcome: "not_passed" } },
+    { id: "20000000-0000-5000-8000-000000000025", source: route.id, target: hold.id, name: "unable_to_verify", when: { outcome: "unable_to_verify" } },
+  ]);
+  assert.equal(ready.config.project_status.target_state_id, bindings.ready_for_production_state_id);
+  assert.equal(rejected.config.project_status.target_state_id, bindings.in_progress_state_id);
+  assert.equal(hold.config.project_status.target_state_id, null);
+  for (const edge of graph.edges.filter(({ source }) => source === route.id)) {
+    for (const key of ["var", "raw", "otherwise", "branch"]) assert.equal(Object.hasOwn(edge.when, key), false);
+  }
+  assert.deepEqual(finalizer.config.output.data, {
+    transition_allowed: { type: "boolean", description: "True only after authoritative comment and cleanup verification" },
+    target_state: { type: "string", description: "ready_for_production, in_progress, or ready_for_qa" },
+    reason_codes: { type: "json", description: "Closed sorted finalization reason codes" },
+    kind: { type: "string", description: "Literal qa admitted by QAH" },
+    verdict: { type: "string", description: "pass, fail, or blocked admitted by QAH" },
+    tested_head_sha: { type: "string", description: "Exact trusted 40-character repository commit" },
+    checks: { type: "json", description: "Closed checks derived from exact verified branch ArtifactVersions" },
   });
-  assert.equal(nodes.get("finalize_transition").config.failure_handling.mode, "stop");
-  assert.match(nodes.get("finalize_transition").config.instruction, /transition_allowed.*false.*ошибк/si);
+  for (const field of ["kind", "verdict", "tested_head_sha", "checks"]) {
+    assert.deepEqual(graph.nodes.filter((node) => Object.hasOwn(node.config?.output?.data ?? {}, field)).map(({ key }) => key), ["finalize_transition"]);
+  }
+  assert.doesNotThrow(() => validateFinalProofGate(graph, expectedFinalStates));
+});
 
-  const statusNodes = graph.nodes.filter((node) => node.config?.project_status);
-  assert.deepEqual(statusNodes.map((node) => node.key), ["ready_for_production_end", "in_progress_end"]);
-  assert.equal(statusNodes[0].config.project_status.target_state_id, bindings.ready_for_production_state_id);
-  assert.equal(statusNodes[1].config.project_status.target_state_id, bindings.in_progress_state_id);
+test("final Proof Gate validator rejects every alternate routing dialect", () => {
+  const clean = renderProcess(blueprint, bindings);
+  const mutations = [
+    ["missing outcome", (graph) => { delete graph.edges.find(({ id }) => id.endsWith("025")).when; }],
+    ["duplicate outcome", (graph) => { graph.edges.find(({ id }) => id.endsWith("025")).when = { outcome: "passed" }; }],
+    ["raw condition", (graph) => { graph.edges.find(({ id }) => id.endsWith("023")).when = { raw: "true" }; }],
+    ["var condition", (graph) => { graph.edges.find(({ id }) => id.endsWith("024")).when = { var: "finalize_transition.data.target_state", op: "eq", value: "in_progress" }; }],
+    ["wrong profile", (graph) => { byKey(graph).get("transition_route").config.profile_key = "custom_qa"; }],
+    ["wrong profile version", (graph) => { byKey(graph).get("transition_route").config.profile_version = "2"; }],
+    ["non-neutral hold", (graph) => { byKey(graph).get("qa_needs_human_end").config.project_status.target_state_id = bindings.in_progress_state_id; }],
+    ["indirect End", (graph) => { graph.edges.find(({ id }) => id.endsWith("025")).target = byKey(graph).get("publication_cleanup_join").id; }],
+    ["changed route UUID", (graph) => {
+      const route = byKey(graph).get("transition_route"); const old = route.id;
+      route.id = "17171717-1717-4717-8717-171717171717";
+      for (const edge of graph.edges) { if (edge.source === old) edge.source = route.id; if (edge.target === old) edge.target = route.id; }
+    }],
+    ["changed outcome edge UUID", (graph) => { graph.edges.find(({ id }) => id.endsWith("023")).id = "18181818-1818-4818-8818-181818181818"; }],
+  ];
+  for (const [name, mutate] of mutations) {
+    const hostile = structuredClone(clean); mutate(hostile);
+    assert.throws(() => validateFinalProofGate(hostile, expectedFinalStates), /FINAL_PROOF_GATE_INVALID/, name);
+  }
 });
 
 test("places verified comment and cleanup before either End", () => {
@@ -243,6 +296,7 @@ test("places verified comment and cleanup before either End", () => {
   assert.deepEqual(incoming.get("transition_route"), ["finalize_transition"]);
   assert.deepEqual(incoming.get("ready_for_production_end"), ["transition_route"]);
   assert.deepEqual(incoming.get("in_progress_end"), ["transition_route"]);
+  assert.deepEqual(incoming.get("qa_needs_human_end"), ["transition_route"]);
 });
 
 test("blueprint is universal and contains no product, host, path, model, or installation literals", () => {

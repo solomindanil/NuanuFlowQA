@@ -334,7 +334,7 @@ test("non-interactive graph commands execute real Task1-6 functions with trusted
       workspace_id: fixture.input.workspace_id, project_id: raw_context.project_uuid, issue_id: raw_context.issue_uuid,
     },
   }, runtimeOptions(root, "independent-release-decision", { dependencies }));
-  assert.equal(decided.item.data.decision.route, "READY_FOR_PRODUCTION");
+  assert.equal(decided.item.data.decision.route, "HOLD_IN_READY_FOR_QA");
   validateWorkerCompletion("independent-release-decision", decided);
   for (const final of [resolvedFinal, loadedFinal, plannedFinal, preparedFinal, cleanedFinal, aggregatedFinal, decided]) assert.deepEqual(JSON.parse(canonicalJson(final)), final);
   for (const result of [resolved, loaded, planned, prepared, cleaned, aggregated, decided]) assert.deepEqual(JSON.parse(canonicalJson(result)), result);
@@ -387,8 +387,8 @@ test("every Task 4 CLI command uses actual refs across execute, link, and comple
   }
 });
 
-test("comment publisher and finalizer CLI wrappers consume complete normalized MCP reads end to end", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "qah-runtime-comment-chain-"));
+async function preparedFinalizationFixture(t) {
+  const root = await mkdtemp(join(tmpdir(), "qah-runtime-finalization-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const fixture = aggregateFixture();
   const aggregate = await aggregateFixtureResult(fixture);
@@ -430,26 +430,71 @@ test("comment publisher and finalizer CLI wrappers consume complete normalized M
   publishBundle.comment_reads = [[], [rawComment]].map((comments) => ({ attestation: normalizeRawIssueComments(comments, {
     workspace_id: fixture.input.workspace_id, project_id, issue_id,
   }) }));
-  const published = await runTaskCommand("publish-flow-item-comment", { phase: "prepare", publication_input, completion_context: {
+  await runTaskCommand("publish-flow-item-comment", { phase: "prepare", publication_input, completion_context: {
     decision, profile_ref: fixture.input.profile_artifact,
     cleanup_lease: { run_id: aggregate.run_id, attempt_id: aggregate.attempt_id, environment_id: aggregate.environment_id, target_namespace: aggregate.target_namespace, instance_nonce: aggregate.instance_nonce },
   } }, runtimeOptions(root, "publish-flow-item-comment", { resolverBundle: publishBundle }));
-  assert.equal(published.files[0].name, "comment-receipt.json");
   const comment_receipt = JSON.parse(await readFile(join(root, "qah", "publish-flow-item-comment", "comment-receipt.json"), "utf8"));
-  const publishedFinal = await completePrepared(root, "publish-flow-item-comment", { comment_receipt_report: actualRef() }, { resolverBundle: publishBundle });
-  const finalizeBundle = serializedBundle(fixture, [rawComment]);
   const cleanup_receipt = {
     environment_status: "STOPPED", run_id: aggregate.run_id, attempt_id: aggregate.attempt_id,
     environment_id: aggregate.environment_id, target_namespace: aggregate.target_namespace, instance_nonce: aggregate.instance_nonce,
   };
-  const finalized = await runTaskCommand("finalize-transition", {
-    phase: "prepare", finalization_input: { ...publication_input, comment_receipt, cleanup_receipt },
-  }, runtimeOptions(root, "finalize-transition", { resolverBundle: finalizeBundle }));
-  assert.equal(finalized.files[0].name, "finalization.json");
-  assert.equal(JSON.parse(await readFile(join(root, "qah", "finalize-transition", "finalization.json"), "utf8")).transition_allowed, true);
-  const finalizedFinal = await completePrepared(root, "finalize-transition", { finalization_report: actualRef() }, { resolverBundle: finalizeBundle });
-  assert.equal(publishedFinal.item.data.comment_receipt.comment_id, comment_receipt.comment_id);
-  assert.equal(finalizedFinal.item.data.transition_allowed, true);
+  const finalization_input = { ...publication_input, comment_receipt, cleanup_receipt };
+  const prepared = await runTaskCommand("finalize-transition", {
+    phase: "prepare", finalization_input,
+  }, runtimeOptions(root, "finalize-transition", { resolverBundle: serializedBundle(fixture, [rawComment]) }));
+  const reportBytes = await readFile(join(root, "qah", "finalize-transition", "finalization.json"));
+  const finalization_report = actualRef();
+  fixture.store.set(`${finalization_report.artifact_id}@${finalization_report.version_id}`, {
+    workspace_id: fixture.input.workspace_id, enforced_max_bytes: null, byte_length: reportBytes.byteLength, links: [],
+    artifact: {
+      id: finalization_report.artifact_id, workspace_id: fixture.input.workspace_id, status: "stored", current_version: finalization_report.version_id,
+      kind: "document", name: "finalization.json", mime_type: "application/json",
+      versions: [{ id: finalization_report.version_id, version: 1, file_asset: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", size: reportBytes.byteLength, checksum: createHash("sha256").update(reportBytes).digest("hex") }],
+    },
+    bytes: reportBytes,
+  });
+  const freshResolverBundle = serializedBundle(fixture, [rawComment]);
+  const key = `${finalization_report.artifact_id}@${finalization_report.version_id}`;
+  const record = freshResolverBundle.artifact_versions.find((entry) => entry.key === key).response;
+  return {
+    prepared,
+    report: JSON.parse(reportBytes.toString("utf8")),
+    complete: { phase: "complete", artifact_refs: { finalization_report }, finalization_input },
+    runtimeOptions: runtimeOptions(root, "finalize-transition", { resolverBundle: freshResolverBundle }),
+    record,
+    freshResolverBundle,
+  };
+}
+
+test("finalization complete requires fresh admitted authority and exact published report", async (t) => {
+  const state = await preparedFinalizationFixture(t);
+  assert.equal(state.prepared.files[0].name, "finalization.json");
+  assert.equal(state.report.transition_allowed, true);
+  assert.equal(state.report.kind, "qa");
+  assert.ok(["pass", "fail", "blocked"].includes(state.report.verdict));
+  const raw = await runTaskCommand("finalize-transition", state.complete, state.runtimeOptions);
+  assert.deepEqual(Object.keys(raw).sort(), ["artifact_outputs", "item"]);
+  assert.deepEqual(Object.keys(raw.item.data).sort(), [
+    "checks", "kind", "reason_codes", "target_state", "tested_head_sha", "transition_allowed", "verdict",
+  ]);
+  assert.deepEqual(raw.artifact_outputs, {
+    "item.artifacts.finalization_report": state.complete.artifact_refs.finalization_report,
+  });
+
+  for (const [name, mutate] of [
+    ["missing finalization_input", ({ complete }) => { delete complete.finalization_input; }],
+    ["missing report ref", ({ complete }) => { delete complete.artifact_refs.finalization_report; }],
+    ["wrong version", ({ complete }) => { complete.artifact_refs.finalization_report.version_id = "17171717-1717-4717-8717-171717171717"; }],
+    ["wrong bytes", ({ record }) => { record.bytes_base64 = Buffer.from("{}").toString("base64"); }],
+    ["wrong MIME", ({ record }) => { record.artifact.mime_type = "text/plain"; }],
+    ["cross workspace", ({ record }) => { record.workspace_id = "18181818-1818-4818-8818-181818181818"; }],
+    ["stale comment attestation", ({ freshResolverBundle }) => { freshResolverBundle.comment_reads[0].attestation.complete = false; }],
+  ]) await t.test(name, async () => {
+    const state = await preparedFinalizationFixture(t);
+    mutate(state);
+    await assert.rejects(runTaskCommand("finalize-transition", state.complete, state.runtimeOptions));
+  });
 });
 
 test("normalizer command writes canonical attestation and never has silent stdout semantics", async (t) => {

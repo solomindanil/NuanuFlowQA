@@ -4,7 +4,7 @@ import { consumeDirectInstallAttestation, runDirectInstallPreflight } from "./in
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /__BINDING_[A-Z0-9_]+__/g;
 const TOKEN_LIKE = /__BINDING|__[A-Z][A-Z0-9_]{2,}__/i;
-const BLUEPRINT_FINGERPRINT = "sha256:ade26256fa47252e8374375ed6be33b594c8516738584269c3cb935f9c27fc39";
+const BLUEPRINT_FINGERPRINT = "sha256:a2bcd641b4dbfccaf741563b931f38145e823bb65438c92e8c6cd398daf97e48";
 const REQUIRED_BINDING_KEYS = Object.freeze([
   "project_process_binding_id",
   "project_id",
@@ -152,7 +152,65 @@ function validateBlueprint(blueprint) {
   if (!Array.isArray(blueprint.binding_tokens) || canonicalJson([...blueprint.binding_tokens].sort()) !== canonicalJson([...EXPECTED_TOKENS].sort())) throw new TypeError("blueprint binding_tokens do not match the renderer contract");
   if (!blueprint.graph || blueprint.graph.schema_version !== 1 || !Array.isArray(blueprint.graph.nodes) || !Array.isArray(blueprint.graph.edges)) throw new TypeError("blueprint graph must be Process graph v1");
   if (blueprint.graph.nodes.some((node) => node.type === "start" || node.key === "project_start")) throw new TypeError("blueprint must not author the platform Column Start");
-  if (blueprint.graph.nodes.length !== 20 || blueprint.graph.edges.length !== 23) throw new TypeError("blueprint semantic topology fingerprint mismatch");
+  if (blueprint.graph.nodes.length !== 21 || blueprint.graph.edges.length !== 24) throw new TypeError("blueprint semantic topology fingerprint mismatch");
+}
+
+export function validateFinalProofGate(graph, expectedStates) {
+  const fail = (message) => { throw new TypeError(`FINAL_PROOF_GATE_INVALID: ${message}`); };
+  if (!expectedStates || typeof expectedStates !== "object" || Array.isArray(expectedStates)
+    || canonicalJson(Object.keys(expectedStates).sort()) !== canonicalJson(["in_progress_state_id", "ready_for_production_state_id"])) {
+    fail("expectedStates must contain exactly ready_for_production_state_id and in_progress_state_id");
+  }
+  for (const key of ["ready_for_production_state_id", "in_progress_state_id"]) {
+    if (typeof expectedStates[key] !== "string" || !UUID.test(expectedStates[key])) fail(`${key} must be a UUID`);
+  }
+  if (!graph || typeof graph !== "object" || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) fail("graph must contain node and edge arrays");
+  const nodes = new Map(graph.nodes.map((node) => [node.key, node]));
+  const exactNodes = {
+    finalize_transition: "10000000-0000-5000-8000-000000000018",
+    transition_route: "10000000-0000-5000-8000-000000000019",
+    ready_for_production_end: "10000000-0000-5000-8000-000000000020",
+    in_progress_end: "10000000-0000-5000-8000-000000000021",
+    qa_needs_human_end: "10000000-0000-5000-8000-000000000022",
+  };
+  for (const [key, id] of Object.entries(exactNodes)) {
+    if (nodes.get(key)?.id !== id) fail(`${key} must preserve ID ${id}`);
+  }
+  const finalizer = nodes.get("finalize_transition");
+  const route = nodes.get("transition_route");
+  const ready = nodes.get("ready_for_production_end");
+  const rejected = nodes.get("in_progress_end");
+  const hold = nodes.get("qa_needs_human_end");
+  if (route.type !== "proof_gate") fail("transition_route must be proof_gate");
+  if (canonicalJson(route.config) !== canonicalJson({ profile_key: "qa_result_v1", profile_version: "1", ai_assessment: "off" })) {
+    fail("transition_route must use stock qa_result_v1@1 with AI assessment off");
+  }
+  const incoming = graph.edges.filter(({ target }) => target === route.id);
+  if (canonicalJson(incoming) !== canonicalJson([{
+    id: "20000000-0000-5000-8000-000000000022", source: finalizer.id, target: route.id,
+  }])) fail("transition_route must have the exact direct finalizer edge");
+  const expectedOutgoing = [
+    { id: "20000000-0000-5000-8000-000000000023", source: route.id, target: ready.id, name: "passed", when: { outcome: "passed" } },
+    { id: "20000000-0000-5000-8000-000000000024", source: route.id, target: rejected.id, name: "not_passed", when: { outcome: "not_passed" } },
+    { id: "20000000-0000-5000-8000-000000000025", source: route.id, target: hold.id, name: "unable_to_verify", when: { outcome: "unable_to_verify" } },
+  ];
+  const outgoing = graph.edges.filter(({ source }) => source === route.id);
+  if (canonicalJson(outgoing) !== canonicalJson(expectedOutgoing)) fail("transition_route must have the exact three direct outcome edges");
+  if (new Set(outgoing.map((edge) => edge.when?.outcome)).size !== 3) fail("Proof Gate outcomes must be unique");
+  for (const edge of outgoing) {
+    for (const key of ["var", "raw", "otherwise", "branch"]) {
+      if (Object.hasOwn(edge.when ?? {}, key)) fail(`Proof Gate edge ${edge.id} uses forbidden ${key} routing`);
+    }
+  }
+  if (ready.type !== "end" || ready.config?.project_status?.target_state_id !== expectedStates.ready_for_production_state_id) {
+    fail("passed must target the exact Ready for Production End state");
+  }
+  if (rejected.type !== "end" || rejected.config?.project_status?.target_state_id !== expectedStates.in_progress_state_id) {
+    fail("not_passed must target the exact In Progress End state");
+  }
+  if (hold.type !== "end" || hold.config?.project_status?.target_state_id !== null) {
+    fail("unable_to_verify must target the neutral Ready for QA hold End");
+  }
 }
 
 function validateRenderedGraph(graph, bindings) {
@@ -175,6 +233,10 @@ function validateRenderedGraph(graph, bindings) {
   const startEdges = graph.edges.filter((edge) => edge.source === start.id || edge.target === start.id);
   if (startEdges.length !== 1 || canonicalJson(startEdges[0]) !== canonicalJson(bindings.platform_start_edge)) throw new TypeError("rendered Column Start connection changed");
   if (graph.nodes[1]?.key !== "resolve_flow_item" || graph.nodes[1]?.id !== bindings.platform_start_edge.target) throw new TypeError("live Start edge target must be resolve_flow_item");
+  validateFinalProofGate(graph, {
+    ready_for_production_state_id: bindings.ready_for_production_state_id,
+    in_progress_state_id: bindings.in_progress_state_id,
+  });
   const decision = graph.nodes.find((node) => node.key === "independent_release_decision");
   if (canonicalJson(decision?.config?.binding_metadata) !== canonicalJson(bindings.decision_agent_metadata)) throw new TypeError("decision capability binding changed");
 }
