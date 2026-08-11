@@ -1,5 +1,33 @@
 # Universal QA Proof Gate operator runbook
 
+## 0. Current stock-compatible operating mode
+
+The current compatibility canary uses the single-task design in
+`docs/superpowers/specs/2026-08-12-stock-nuanu-single-task-canary-design.md`.
+That amendment supersedes the earlier multi-Agent-Task handoff for live canary
+execution. Nuanu Flow and its installed worker package are not modified.
+
+The first Assist probe, run `a9da17f1-3355-4695-bebe-f035cd669164`, is terminal
+failed and must not be retried. It proved that stock task-scoped authority cannot
+read a platform Flow item ArtifactVersion or an ArtifactVersion owned by another
+Agent Task lease. Its second task also produced `text/markdown` for a declared
+`application/json` output and was rejected. The exact binding was paused and
+read back paused after failure.
+
+The replacement graph is exactly:
+
+```text
+Column Start -> finalize_transition -> stock qa_result_v1 Proof Gate -> 3 Ends
+```
+
+`finalize_transition` is the only Agent Task. It runs
+`scripts/qah/proof-gate-canary.mjs` as `prepare -> finalize -> complete` inside
+one task lease, publishes `qah_verification` and `finalization_report` as its own
+declared JSON outputs, and never calls `get_artifact`. A harness failure is
+`blocked`/neutral hold, never a product failure. The canary proves the native
+Nuanu trigger/worker/Artifact/Proof-Gate loop; full Freeland product lanes remain
+a later extension behind the same single task.
+
 ## 1. Scope and prohibited Nuanu/source changes
 
 This runbook proves the repository-owned Universal QAH product locally and defines the later, approval-gated Nuanu validation sequence. Local verification is not evidence that a live Process was saved, activated, attached to a Column, or exercised by Auto.
@@ -45,6 +73,21 @@ npm run qah:preflight-report -- --request /absolute/operator-owned/preflight-req
 The report is not an installation receipt. A false `install_ready` or any `unmet_preconditions` preserves `NO_GO`. A loopback-listener `EPERM` may be classified as a restricted test-execution limitation only when the exact command passes under approved unsandboxed execution; assertion, timeout, worker-pin, or product failures are not environment exceptions.
 
 ## 3. Finalization and FlowStepResult boundary
+
+For the current single-task compatibility canary, use this exact boundary:
+
+1. Run `proof-gate-canary.mjs prepare` from the clean pinned checkout.
+2. Publish its canonical `qah-verification.json` to the same task's declared
+   `qah_verification` slot and retain the actual closed reference.
+3. Run `finalize` with that reference, publish canonical `finalization.json` to
+   `finalization_report`, and retain the actual closed reference.
+4. Run `complete` with both references and return only its exact raw worker
+   completion. Do not call `get_artifact` and do not synthesize `item.data`.
+
+The longer custody chain below remains the target for the later full product QA
+extension, but it must be composed within one task authority or another stock
+Nuanu-supported shared custody boundary; it cannot be spread across task-scoped
+Agent credentials.
 
 For every Agent Task that materializes an output, preserve this exact custody chain:
 
@@ -99,10 +142,10 @@ This checklist applies only after separate authorization for the live mutation:
 
 - Use one dedicated canary Flow item and Assist mode; do not enable Auto.
 - Record the exact item, template, binding, commit, graph hash, definition ETag, AgentVersion IDs, run, journey, and mode before execution.
-- Observe `phase=prepare`, JSON Artifact publication, exact ArtifactVersion read-back, `phase=complete`, worker transport, materialized FlowStepResult, Proof Gate outcome, and End behavior.
+- Observe `prepare`, same-task JSON publication, `finalize`, second same-task JSON publication, `complete`, worker transport, materialized FlowStepResult, Proof Gate outcome, and End behavior.
 - Confirm task-scoped tools cannot write outside the declared comment/Artifact duties and that source instructions cannot add commands, URLs, policy, or output fields.
 - Confirm all output Artifacts use the declared kind, role, media type, and exact version reference.
-- Confirm comment publication and cleanup read-back precede the final claim.
+- Confirm the canonical verification and finalization files precede the final claim and that their actual output references are preserved exactly.
 - Confirm the applied transition flag and final binding status by exact read-back.
 - Treat any schema coercion, missing output, stale input, retry drift, unexpected tool, or manual repair as a failed probe.
 

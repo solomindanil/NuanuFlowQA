@@ -10,7 +10,7 @@ import {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /__BINDING_[A-Z0-9_]+__/g;
 const TOKEN_LIKE = /__BINDING|__[A-Z][A-Z0-9_]{2,}__/i;
-const BLUEPRINT_FINGERPRINT = "sha256:b85c9e7490f8abf1812c942527ad0a16181d21db8f9d8f145980306e325ccf34";
+const BLUEPRINT_FINGERPRINT = "sha256:7a898f95adc0577ffc773d71fbf68f54f490695c22cdba0db004cd0300e61636";
 const STOCK_PROOF_GATE_OUTPUT = Object.freeze({
   artifacts: {},
   data: {
@@ -42,13 +42,6 @@ const EXPECTED_TOKENS = Object.freeze([
   "__BINDING_READY_FOR_PRODUCTION_STATE_ID__",
   "__BINDING_QA_AGENT_EMPLOYEE_ID__",
   "__BINDING_QA_AGENT_VERSION_ID__",
-  "__BINDING_DECISION_AGENT_EMPLOYEE_ID__",
-  "__BINDING_DECISION_AGENT_VERSION_ID__",
-  "__BINDING_DECISION_MODEL__",
-  "__BINDING_PROFILE_ARTIFACT_ID__",
-  "__BINDING_PROFILE_VERSION_ID__",
-  "__BINDING_PROFILE_KIND__",
-  "__BINDING_PROFILE_ROLE__",
 ]);
 function exactObject(value, required, optional, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
@@ -145,7 +138,7 @@ function validateBlueprint(blueprint) {
   if (!Array.isArray(blueprint.binding_tokens) || canonicalJson([...blueprint.binding_tokens].sort()) !== canonicalJson([...EXPECTED_TOKENS].sort())) throw new TypeError("blueprint binding_tokens do not match the renderer contract");
   if (!blueprint.graph || blueprint.graph.schema_version !== 1 || !Array.isArray(blueprint.graph.nodes) || !Array.isArray(blueprint.graph.edges)) throw new TypeError("blueprint graph must be Process graph v1");
   if (blueprint.graph.nodes.some((node) => node.type === "start" || node.key === "project_start")) throw new TypeError("blueprint must not author the platform Column Start");
-  if (blueprint.graph.nodes.length !== 21 || blueprint.graph.edges.length !== 24) throw new TypeError("blueprint semantic topology fingerprint mismatch");
+  if (blueprint.graph.nodes.length !== 5 || blueprint.graph.edges.length !== 4) throw new TypeError("blueprint semantic topology fingerprint mismatch");
 }
 
 export function validateFinalProofGate(graph, expectedStates) {
@@ -163,6 +156,39 @@ export function validateFinalProofGate(graph, expectedStates) {
     fail("legacy transition_route gateway must be absent");
   }
   const nodes = new Map(graph.nodes.map((node) => [node.key, node]));
+  const expectedNodeKeys = [
+    "project_start",
+    "finalize_transition",
+    "transition_proof_gate",
+    "ready_for_production_end",
+    "in_progress_end",
+    "qa_needs_human_end",
+  ];
+  if (graph.nodes.length !== expectedNodeKeys.length
+    || canonicalJson([...nodes.keys()].sort()) !== canonicalJson([...expectedNodeKeys].sort())) {
+    fail("graph must contain only the exact single-task Proof Gate nodes");
+  }
+  const expectedAuthoredEdgeIds = [
+    "20000000-0000-5000-8000-000000000022",
+    "20000000-0000-5000-8000-000000000023",
+    "20000000-0000-5000-8000-000000000024",
+    "20000000-0000-5000-8000-000000000025",
+  ];
+  const start = nodes.get("project_start");
+  const finalizer = nodes.get("finalize_transition");
+  const startEdges = graph.edges.filter(({ source, target }) => source === start?.id || target === start?.id);
+  if (startEdges.length !== 1
+    || canonicalJson(Object.keys(startEdges[0]).sort()) !== canonicalJson(["id", "source", "target"])
+    || !UUID.test(startEdges[0].id)
+    || startEdges[0].source !== start?.id
+    || startEdges[0].target !== finalizer?.id) {
+    fail("project_start must have one exact direct edge to finalize_transition");
+  }
+  const authoredEdgeIds = graph.edges.filter(({ id }) => id !== startEdges[0].id).map(({ id }) => id).sort();
+  if (graph.edges.length !== expectedAuthoredEdgeIds.length + 1
+    || canonicalJson(authoredEdgeIds) !== canonicalJson(expectedAuthoredEdgeIds.sort())) {
+    fail("graph must contain only the exact single-task Proof Gate edges");
+  }
   const exactNodes = {
     finalize_transition: "10000000-0000-5000-8000-000000000018",
     transition_proof_gate: "10000000-0000-5000-8000-000000000026",
@@ -173,7 +199,6 @@ export function validateFinalProofGate(graph, expectedStates) {
   for (const [key, id] of Object.entries(exactNodes)) {
     if (nodes.get(key)?.id !== id) fail(`${key} must preserve ID ${id}`);
   }
-  const finalizer = nodes.get("finalize_transition");
   const route = nodes.get("transition_proof_gate");
   const ready = nodes.get("ready_for_production_end");
   const rejected = nodes.get("in_progress_end");
@@ -235,14 +260,14 @@ function validateRenderedGraph(graph, bindings) {
   const start = graph.nodes[0];
   if (canonicalJson(start) !== canonicalJson(bindings.platform_start_node)) throw new TypeError("rendered Column Start changed");
   const startEdges = graph.edges.filter((edge) => edge.source === start.id || edge.target === start.id);
-  if (startEdges.length !== 1 || canonicalJson(startEdges[0]) !== canonicalJson(bindings.platform_start_edge)) throw new TypeError("rendered Column Start connection changed");
-  if (graph.nodes[1]?.key !== "resolve_flow_item" || graph.nodes[1]?.id !== bindings.platform_start_edge.target) throw new TypeError("live Start edge target must be resolve_flow_item");
+  const finalizer = graph.nodes.find(({ key }) => key === "finalize_transition");
+  const expectedStartEdge = { ...bindings.platform_start_edge, target: finalizer?.id };
+  if (startEdges.length !== 1 || canonicalJson(startEdges[0]) !== canonicalJson(expectedStartEdge)) throw new TypeError("rendered Column Start must target finalize_transition exactly once");
+  if (graph.nodes[1]?.key !== "finalize_transition" || graph.nodes[1]?.id !== "10000000-0000-5000-8000-000000000018") throw new TypeError("first semantic node must be the immutable finalize_transition canary task");
   validateFinalProofGate(graph, {
     ready_for_production_state_id: bindings.ready_for_production_state_id,
     in_progress_state_id: bindings.in_progress_state_id,
   });
-  const decision = graph.nodes.find((node) => node.key === "independent_release_decision");
-  if (canonicalJson(decision?.config?.binding_metadata) !== canonicalJson(bindings.decision_agent_metadata)) throw new TypeError("decision capability binding changed");
 }
 
 export function renderProcess(blueprint, rawBindings) {
@@ -250,19 +275,16 @@ export function renderProcess(blueprint, rawBindings) {
   const bindings = normalizedBindings(rawBindings);
   const authored = replaceTokens(structuredClone(blueprint.graph), tokenValues(bindings));
   if (TOKEN_LIKE.test(canonicalJson(authored))) throw new TypeError("unresolved binding token remains after rendering");
-  const originalFirstId = authored.nodes[0]?.id;
-  if (authored.nodes[0]?.key !== "resolve_flow_item") throw new TypeError("first semantic authored node must be resolve_flow_item");
-  if (authored.nodes.slice(1).some((node) => node.id === bindings.platform_start_edge.target)
-    || authored.edges.some((edge) => edge.id === bindings.platform_start_edge.id)) throw new TypeError("platform_start_edge target/id collides with authored topology");
-  authored.nodes[0].id = bindings.platform_start_edge.target;
-  for (const edge of authored.edges) {
-    if (edge.source === originalFirstId) edge.source = bindings.platform_start_edge.target;
-    if (edge.target === originalFirstId) edge.target = bindings.platform_start_edge.target;
+  if (authored.nodes[0]?.key !== "finalize_transition" || authored.nodes[0]?.id !== "10000000-0000-5000-8000-000000000018") {
+    throw new TypeError("first semantic authored node must be the immutable finalize_transition canary task");
   }
+  if (authored.nodes.some((node) => node.id === bindings.platform_start_node.id)
+    || authored.edges.some((edge) => edge.id === bindings.platform_start_edge.id)) throw new TypeError("platform Start identity collides with authored topology");
+  const renderedStartEdge = { ...structuredClone(bindings.platform_start_edge), target: authored.nodes[0].id };
   const graph = {
     ...authored,
     nodes: [structuredClone(bindings.platform_start_node), ...authored.nodes],
-    edges: [structuredClone(bindings.platform_start_edge), ...authored.edges],
+    edges: [renderedStartEdge, ...authored.edges],
   };
   validateRenderedGraph(graph, bindings);
   return JSON.parse(canonicalJson(graph));

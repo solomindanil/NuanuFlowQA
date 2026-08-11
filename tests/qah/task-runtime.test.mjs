@@ -14,6 +14,8 @@ import { decideRelease } from "../../scripts/qah/decide.mjs";
 import { renderComment } from "../../scripts/qah/render-comment.mjs";
 import {
   GRAPH_TASK_COMMANDS,
+  TASK_COMMAND_KEYS,
+  TASK_PROTOCOLS,
   createResolverAdapters,
   normalizeRawIssueComments,
   readCanonicalInputFile,
@@ -31,8 +33,6 @@ const GRAPH_COMMANDS = [
   "prepare-and-verify-domain-data", "aggregate-evidence", "independent-release-decision",
   "publish-flow-item-comment", "cleanup-environment", "finalize-transition",
 ];
-const processBlueprint = JSON.parse(await readFile(new URL("../../processes/universal-qa-flow.graph.json", import.meta.url), "utf8"));
-const taskNodeByCommand = new Map(GRAPH_COMMANDS.map((command) => [command, processBlueprint.graph.nodes.find((node) => node.key === command.replaceAll("-", "_"))]));
 let artifactSequence = 200;
 
 function actualRef(role = "output") {
@@ -46,15 +46,26 @@ function actualRef(role = "output") {
 }
 
 function validateWorkerCompletion(command, result) {
-  const node = taskNodeByCommand.get(command);
-  assert.ok(node, command);
-  assert.deepEqual(Object.keys(result.item.data).sort(), Object.keys(node.config.output.data).sort(), `${command} data keys`);
+  const stepKey = TASK_COMMAND_KEYS[command];
+  assert.ok(stepKey, command);
+  const artifactSlots = TASK_PROTOCOLS[stepKey].artifact_slots;
+  const outputDefinition = {
+    data: Object.fromEntries(Object.entries(result.item.data).map(([key, value]) => [key, {
+      type: typeof value === "boolean" ? "boolean" : typeof value === "number" ? "number" : typeof value === "string" ? "string" : "json",
+      description: `Closed ${stepKey}.${key} test contract`,
+    }])),
+    artifacts: Object.fromEntries(artifactSlots.map((slot) => [slot, {
+      kind: "document",
+      description: `Closed ${stepKey}.${slot} test artifact`,
+      restrictions: { media_types: ["application/json"] },
+    }])),
+  };
   const completion = buildCanonicalCompletion({
     task_id: `task-${command}`, attempt: 1,
-    request: { process: { step_key: node.key }, output_definition: node.config.output },
+    request: { process: { step_key: stepKey }, output_definition: outputDefinition },
   }, { output: canonicalJson(result), publishedArtifacts: [] });
-  assert.equal(completion.result.item.key, node.key);
-  assert.deepEqual(Object.keys(completion.result.artifact_outputs).sort(), Object.keys(node.config.output.artifacts).map((slot) => `item.artifacts.${slot}`).sort());
+  assert.equal(completion.result.item.key, stepKey);
+  assert.deepEqual(Object.keys(completion.result.artifact_outputs).sort(), artifactSlots.map((slot) => `item.artifacts.${slot}`).sort());
   for (const output of Object.values(completion.result.artifact_outputs)) assert.equal(output.mode, "reference");
 }
 

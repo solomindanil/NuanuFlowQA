@@ -1,0 +1,103 @@
+# Stock Nuanu single-task QAH canary
+
+## Status
+
+Approved implementation correction after the first live Assist probe. Nuanu Flow,
+its backend, plugin, worker package, BPMN compiler, Proof Gate profiles, and MCP
+contracts remain unchanged. Only this repository and the project-owned Process
+graph are changed.
+
+## Observed incompatibility
+
+The first bounded Assist run (`a9da17f1-3355-4695-bebe-f035cd669164`)
+completed its first Agent Task and failed in its second task. Exact read-back
+showed two stock boundaries:
+
+- a task-scoped Agent credential cannot read the platform-owned Flow item
+  ArtifactVersion or an ArtifactVersion published by another Agent Task lease;
+- the failed worker generation materialized a JSON-only `document` output as
+  `text/markdown`, which the Process output contract rejected.
+
+The binding was paused and read back paused after the failure. That run is
+terminal and must never be retried or silently reconstructed.
+
+The first boundary makes the previous 15-Agent-Task pipeline structurally
+incompatible with the current stock Nuanu task-artifact authority. A later task
+cannot safely consume the previous task's evidence through task-scoped tools.
+
+## Replacement topology
+
+The compatibility canary is reduced to the smallest stock-native graph:
+
+```text
+Column Start
+  -> finalize_transition (one repository-bound Agent Task)
+  -> transition_proof_gate (stock qa_result_v1@1, AI off)
+       | passed            -> Ready for Production
+       | not_passed        -> In Progress
+       ` unable_to_verify  -> neutral hold in Ready for QA
+```
+
+There is exactly one Agent Task and no cross-task Artifact read. Nuanu owns the
+Column trigger, execution mode, run/journey lifecycle, Artifact publication,
+Proof Gate evaluation, and End behavior. QAH owns only deterministic repository
+verification and the closed claim emitted by that one task.
+
+## Three-phase same-task protocol
+
+`scripts/qah/proof-gate-canary.mjs` is invoked three times inside the same task
+lease and task directory:
+
+1. `prepare` validates the platform source reference, exact clean Git root,
+   single origin, profile/origin binding, and runs `npm run verify:qah` with a
+   minimal environment. It writes canonical `qah-verification.json`.
+2. The Agent publishes that file to the declared `qah_verification` output slot
+   as `document/output/application-json` and passes only the actual closed
+   `{artifact_id, version_id, kind, role}` reference to `finalize`.
+3. `finalize` binds the exact verification reference and writes canonical
+   `finalization.json`. The Agent publishes it to `finalization_report`, then
+   passes both actual closed references to `complete`.
+4. `complete` verifies the task-local state and exact canonical files, then
+   returns the raw worker completion `{item, artifact_outputs}`. The stock
+   worker materializes both same-task output references into the Process item.
+
+No task invokes `get_artifact`. No raw stdout/stderr, credential, environment,
+prompt, or response body enters an Artifact; only bounded byte counts and
+SHA-256 digests are recorded.
+
+## Canary semantics
+
+This iteration proves repository/worker/Process/Proof-Gate compatibility. It is
+not yet a full Freeland product verdict.
+
+- clean repository plus `verify:qah` exit `0` emits `kind=qa`, `verdict=pass`,
+  the exact tested HEAD, and one passed evidence check;
+- any verification failure emits `verdict=blocked`, an empty check list, and a
+  neutral Ready-for-QA target;
+- it never turns a harness, worker, environment, provider, or repository error
+  into a product failure or an In-Progress transition.
+
+Stock `qa_result_v1` still requires a server-observed repository workspace with
+the same head. A missing or stale workspace produces `unable_to_verify`, even
+when local repository verification passed.
+
+## Live execution rules
+
+- Patch only while the binding is paused, after a fresh ETag and zero-active-run
+  read-back. Validate the complete candidate before one atomic patch.
+- Read back exactly six nodes and five edges, the stock Proof Gate configuration,
+  the three outcome edges, End targets, AgentVersion, graph hash, and ETag.
+- Commit and push the repository before starting a worker or canary.
+- Use a new dedicated Assist item and a new idempotency key. Never reuse the
+  failed run or PAYD-29 run identity.
+- Enter the pause guard before activation. On success, error, timeout, or an
+  ambiguous response, read the binding, pause if necessary, and prove the final
+  paused state. Never blindly retrigger.
+- Auto remains disabled until isolated `passed`, `not_passed`, and
+  `unable_to_verify` behavior is proven with exact read-back.
+
+## Extension path
+
+Freeland Playwright, TMA, Computer Use, Telegram, and payment checks can later
+be composed behind this same single task and closed finalization boundary. The
+Nuanu control plane and BPMN topology do not need to be reimplemented.

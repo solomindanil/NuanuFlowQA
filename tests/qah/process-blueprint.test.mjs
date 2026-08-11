@@ -51,22 +51,6 @@ const stockProofGateOutput = Object.freeze({
 
 const expectedKeys = [
   "project_start",
-  "resolve_flow_item",
-  "load_project_context",
-  "plan_qa_scope",
-  "prepare_environment",
-  "parallel_checks_fork",
-  "verify_requirements_and_code",
-  "verify_api_contracts",
-  "verify_ui_with_playwright",
-  "prepare_and_verify_domain_data",
-  "parallel_checks_join",
-  "aggregate_evidence",
-  "independent_release_decision",
-  "publication_cleanup_fork",
-  "publish_flow_item_comment",
-  "cleanup_environment",
-  "publication_cleanup_join",
   "finalize_transition",
   "transition_proof_gate",
   "ready_for_production_end",
@@ -83,36 +67,19 @@ function edgePairs(graph) {
   return graph.edges.map((edge) => [keyById.get(edge.source), keyById.get(edge.target), edge.when]);
 }
 
-test("renders the exact universal topology with structured parallel blocks", () => {
+test("renders the exact stock-compatible single-task topology", () => {
   const graph = renderProcess(blueprint, bindings);
   assert.equal(graph.schema_version, 1);
   assert.deepEqual(graph.nodes.map((node) => node.key), expectedKeys);
-  assert.equal(graph.nodes.length, 22);
-  assert.equal(graph.edges.length, 25);
-
-  const nodes = byKey(graph);
-  for (const key of ["parallel_checks_fork", "parallel_checks_join", "publication_cleanup_fork", "publication_cleanup_join"])
-    assert.equal(nodes.get(key).config.kind, "parallel");
-  assert.equal(nodes.get("parallel_checks_join").config.join_timeout, "1800");
-  assert.equal(nodes.get("publication_cleanup_join").config.join_timeout, "900");
-
-  const pairs = edgePairs(graph);
-  const expectedBranchPairs = [
-    ["parallel_checks_fork", "verify_requirements_and_code"],
-    ["parallel_checks_fork", "verify_api_contracts"],
-    ["parallel_checks_fork", "verify_ui_with_playwright"],
-    ["parallel_checks_fork", "prepare_and_verify_domain_data"],
-    ["verify_requirements_and_code", "parallel_checks_join"],
-    ["verify_api_contracts", "parallel_checks_join"],
-    ["verify_ui_with_playwright", "parallel_checks_join"],
-    ["prepare_and_verify_domain_data", "parallel_checks_join"],
-    ["publication_cleanup_fork", "publish_flow_item_comment"],
-    ["publication_cleanup_fork", "cleanup_environment"],
-    ["publish_flow_item_comment", "publication_cleanup_join"],
-    ["cleanup_environment", "publication_cleanup_join"],
-  ];
-  for (const [source, target] of expectedBranchPairs)
-    assert.ok(pairs.some(([from, to]) => from === source && to === target), `${source} -> ${target}`);
+  assert.equal(graph.nodes.length, 6);
+  assert.equal(graph.edges.length, 5);
+  assert.deepEqual(edgePairs(graph).map(([source, target]) => [source, target]), [
+    ["project_start", "finalize_transition"],
+    ["finalize_transition", "transition_proof_gate"],
+    ["transition_proof_gate", "ready_for_production_end"],
+    ["transition_proof_gate", "in_progress_end"],
+    ["transition_proof_gate", "qa_needs_human_end"],
+  ]);
 });
 
 test("preserves the live generated Column Start byte-equivalently and authors no trigger", () => {
@@ -125,7 +92,7 @@ test("preserves the live generated Column Start byte-equivalently and authors no
   assert.deepEqual(graph.edges.find((edge) => edge.source === renderedStart.id), {
     id: liveStart.edge.id,
     source: renderedStart.id,
-    target: byKey(graph).get("resolve_flow_item").id,
+    target: byKey(graph).get("finalize_transition").id,
   });
   for (const mutation of [
     undefined,
@@ -137,31 +104,21 @@ test("preserves the live generated Column Start byte-equivalently and authors no
   ]) assert.throws(() => renderProcess(blueprint, { ...bindings, platform_start_node: mutation }), /platform_start_node|platform Start|Column Start/);
 });
 
-test("carries only topology-local immediate inputs through declared ProcessItems", () => {
+test("single Agent Task consumes only the platform-owned Column Start and uses no cross-task Artifact read", () => {
   const graph = renderProcess(blueprint, bindings);
   const nodes = byKey(graph);
   const instructions = Object.fromEntries(
     graph.nodes.filter((node) => node.type === "agent_task").map((node) => [node.key, node.config.instruction]),
   );
-  assert.match(instructions.resolve_flow_item, /input\.project_start\.artifacts\.flow_item/);
-  assert.match(instructions.load_project_context, /input\.resolve_flow_item/);
-  assert.match(instructions.plan_qa_scope, /input\.load_project_context/);
-  assert.match(instructions.prepare_environment, /input\.plan_qa_scope/);
-  for (const key of ["verify_requirements_and_code", "verify_api_contracts", "verify_ui_with_playwright", "prepare_and_verify_domain_data"])
-    assert.match(instructions[key], /input\.prepare_environment/);
-  for (const key of ["publish_flow_item_comment", "cleanup_environment"])
-    assert.match(instructions[key], /input\.independent_release_decision/);
-  assert.match(instructions.aggregate_evidence, /input\.verify_requirements_and_code/);
-  assert.match(instructions.aggregate_evidence, /input\.verify_api_contracts/);
-  assert.match(instructions.aggregate_evidence, /input\.verify_ui_with_playwright/);
-  assert.match(instructions.aggregate_evidence, /input\.prepare_and_verify_domain_data/);
-  assert.match(instructions.finalize_transition, /input\.publish_flow_item_comment/);
-  assert.match(instructions.finalize_transition, /input\.cleanup_environment/);
+  assert.deepEqual(Object.keys(instructions), ["finalize_transition"]);
+  assert.match(instructions.finalize_transition, /input\.project_start\.artifacts\.flow_item/);
+  assert.match(instructions.finalize_transition, /proof-gate-canary\.mjs/);
+  assert.match(instructions.finalize_transition, /prepare.*finalize.*complete/is);
+  assert.match(instructions.finalize_transition, /не вызывай get_artifact|do not call get_artifact/i);
 
   const serialized = JSON.stringify(graph);
   assert.doesNotMatch(serialized, /input_bindings|\$\{steps|process_context|backward_lookup/);
-  assert.equal(nodes.get("parallel_checks_join").config.output, undefined);
-  assert.equal(nodes.get("publication_cleanup_join").config.output, undefined);
+  assert.equal(nodes.get("finalize_transition").type, "agent_task");
 });
 
 test("uses closed Process v1 outputs and worker 0.3.14 Artifact contracts", () => {
@@ -182,18 +139,16 @@ test("uses closed Process v1 outputs and worker 0.3.14 Artifact contracts", () =
       assert.deepEqual(descriptor.restrictions, { media_types: ["application/json"] });
       assert.equal(typeof descriptor.description, "string");
     }
-    assert.match(node.config.instruction, /scripts\/qah\/task-runtime\.mjs/);
+    assert.match(node.config.instruction, /scripts\/qah\/proof-gate-canary\.mjs/);
     assert.match(node.config.instruction, /artifact_id, version_id, kind, role/);
     assert.doesNotMatch(node.config.instruction, /artifact_id, version_id, kind, role, name|latest.version/i);
     assert.doesNotMatch(node.config.instruction, /scripts\/qah\/(?:aggregate|context|decide|environment|finalize|plan|render-comment|run-branch)\.mjs/);
   }
 
-  for (const key of ["verify_requirements_and_code", "verify_api_contracts", "verify_ui_with_playwright", "prepare_and_verify_domain_data"])
-    assert.deepEqual(Object.keys(byKey(graph).get(key).config.output.artifacts), ["branch_payload"]);
-  assert.deepEqual(Object.keys(byKey(graph).get("independent_release_decision").config.output.artifacts), []);
+  assert.deepEqual(Object.keys(byKey(graph).get("finalize_transition").config.output.artifacts), ["finalization_report", "qah_verification"]);
 });
 
-test("binds the immutable Column Start, existing profile ArtifactVersion, and pinned Agent versions", () => {
+test("binds the immutable Column Start and exactly one pinned QA Agent version", () => {
   const graph = renderProcess(blueprint, bindings);
   const nodes = byKey(graph);
   assert.deepEqual(nodes.get("project_start").config.project_process_start, {
@@ -202,29 +157,20 @@ test("binds the immutable Column Start, existing profile ArtifactVersion, and pi
     state_id: bindings.ready_for_qa_state_id,
   });
   assert.deepEqual(nodes.get("project_start"), liveStart.node);
-  for (const node of graph.nodes.filter((entry) => entry.type === "agent_task" && entry.key !== "independent_release_decision")) {
-    assert.equal(node.config.agent_employee_id, bindings.qa_agent_employee_id);
-    assert.equal(node.config.agent_version_id, bindings.qa_agent_version_id);
-  }
+  const agent = graph.nodes.filter((entry) => entry.type === "agent_task");
+  assert.equal(agent.length, 1);
+  assert.equal(agent[0].config.agent_employee_id, bindings.qa_agent_employee_id);
+  assert.equal(agent[0].config.agent_version_id, bindings.qa_agent_version_id);
   const serialized = JSON.stringify(graph);
-  for (const value of Object.values(bindings.profile_artifact)) assert.ok(serialized.includes(value));
-  assert.match(nodes.get("load_project_context").config.instruction, /role&quot;|"role":"implementation"/);
+  assert.equal(serialized.includes(bindings.profile_artifact.artifact_id), false);
+  assert.equal(serialized.includes(bindings.profile_artifact.version_id), false);
+  assert.equal(serialized.includes(bindings.decision_agent_employee_id), false);
 });
 
-test("requires an explicit distinct capable strongest-Codex decision binding", () => {
+test("does not delegate the compatibility canary to a second racing worker", () => {
   const graph = renderProcess(blueprint, bindings);
-  const nodes = byKey(graph);
-  assert.equal(nodes.get("independent_release_decision").config.agent_employee_id, bindings.decision_agent_employee_id);
-  assert.equal(nodes.get("independent_release_decision").config.agent_version_id, bindings.decision_agent_version_id);
-  assert.equal(nodes.get("aggregate_evidence").config.agent_version_id, bindings.qa_agent_version_id);
-  assert.deepEqual(nodes.get("independent_release_decision").config.binding_metadata, bindings.decision_agent_metadata);
-  assert.match(nodes.get("independent_release_decision").config.instruction, /task-scoped Nuanu MCP/i);
-  assert.match(nodes.get("independent_release_decision").config.instruction, /Git/i);
-  for (const invalid of [
-    { decision_agent_employee_id: undefined, decision_agent_version_id: undefined },
-    { decision_agent_employee_id: bindings.qa_agent_employee_id },
-    { decision_agent_version_id: bindings.qa_agent_version_id },
-  ]) assert.throws(() => renderProcess(blueprint, { ...bindings, ...invalid }), /decision agent.*(?:required|distinct)/i);
+  assert.deepEqual(graph.nodes.filter((node) => node.type === "agent_task").map((node) => node.key), ["finalize_transition"]);
+  assert.doesNotMatch(JSON.stringify(graph), /independent_release_decision|task-scoped Nuanu MCP.*get_artifact/is);
 });
 
 test("uses a fresh Proof Gate identity instead of mutating the legacy gateway type", () => {
@@ -313,7 +259,7 @@ test("final Proof Gate validator rejects every alternate routing dialect", () =>
     ["wrong profile", (graph) => { byKey(graph).get("transition_proof_gate").config.profile_key = "custom_qa"; }],
     ["wrong profile version", (graph) => { byKey(graph).get("transition_proof_gate").config.profile_version = "2"; }],
     ["non-neutral hold", (graph) => { byKey(graph).get("qa_needs_human_end").config.project_status.target_state_id = bindings.in_progress_state_id; }],
-    ["indirect End", (graph) => { graph.edges.find(({ id }) => id.endsWith("025")).target = byKey(graph).get("publication_cleanup_join").id; }],
+    ["indirect End", (graph) => { graph.edges.find(({ id }) => id.endsWith("025")).target = byKey(graph).get("finalize_transition").id; }],
     ["changed route UUID", (graph) => {
       const route = byKey(graph).get("transition_proof_gate"); const old = route.id;
       route.id = "17171717-1717-4717-8717-171717171717";
@@ -332,6 +278,15 @@ test("final Proof Gate validator rejects every alternate routing dialect", () =>
         target: "10000000-0000-5000-8000-000000000019",
       });
     }],
+    ["unrelated extra node", (graph) => {
+      graph.nodes.push({
+        id: "19191919-1919-4919-8919-191919191919",
+        key: "synthetic_side_path",
+        type: "end",
+        name: "Synthetic side path",
+        config: { project_status: { target_state_id: null } },
+      });
+    }],
     ["changed outcome edge UUID", (graph) => { graph.edges.find(({ id }) => id.endsWith("023")).id = "18181818-1818-4818-8818-181818181818"; }],
   ];
   for (const [name, mutate] of mutations) {
@@ -340,13 +295,12 @@ test("final Proof Gate validator rejects every alternate routing dialect", () =>
   }
 });
 
-test("places verified comment and cleanup before either End", () => {
+test("places the single verified canary task before either End", () => {
   const graph = renderProcess(blueprint, bindings);
   const pairs = edgePairs(graph);
   const incoming = new Map(expectedKeys.map((key) => [key, []]));
   for (const [source, target] of pairs) incoming.get(target).push(source);
-  assert.deepEqual(incoming.get("publication_cleanup_join"), ["publish_flow_item_comment", "cleanup_environment"]);
-  assert.deepEqual(incoming.get("finalize_transition"), ["publication_cleanup_join"]);
+  assert.deepEqual(incoming.get("finalize_transition"), ["project_start"]);
   assert.deepEqual(incoming.get("transition_proof_gate"), ["finalize_transition"]);
   assert.deepEqual(incoming.get("ready_for_production_end"), ["transition_proof_gate"]);
   assert.deepEqual(incoming.get("in_progress_end"), ["transition_proof_gate"]);
@@ -362,21 +316,6 @@ test("blueprint is universal and contains no product, host, path, model, or inst
     assert.equal(typeof node.name, "string");
     assert.ok(node.name.length > 0 && node.name.length <= 40);
   }
-});
-
-test("UI runtime owns the isolated context and instructions never close the worker browser", () => {
-  const instruction = byKey(renderProcess(blueprint, bindings)).get("verify_ui_with_playwright").config.instruction;
-  assert.match(instruction, /adapter.*isolated.*context/is);
-  assert.match(instruction, /detach/is);
-  assert.doesNotMatch(instruction, /(?:закрой|закрывай|close).{0,40}(?:browser|браузер|context)/is);
-});
-
-test("publication carries bounded finalization context through the second parallel join", () => {
-  const nodes = byKey(renderProcess(blueprint, bindings));
-  assert.deepEqual(Object.keys(nodes.get("publish_flow_item_comment").config.output.data).sort(), [
-    "cleanup_lease", "comment_receipt", "decision", "issue_id", "profile_ref", "project_id", "review_bundle_ref", "source_ref", "workspace_id",
-  ]);
-  assert.match(nodes.get("finalize_transition").config.instruction, /только.*input\.publish_flow_item_comment.*input\.cleanup_environment/is);
 });
 
 test("renderer is canonical, immutable, and rejects invalid or unresolved bindings", () => {
@@ -402,6 +341,6 @@ test("renderer is canonical, immutable, and rejects invalid or unresolved bindin
   deletedEdge.graph.edges.pop();
   assert.throws(() => renderProcess(deletedEdge, bindings), /topology fingerprint|blueprint integrity/);
   const mutatedConfig = structuredClone(blueprint);
-  mutatedConfig.graph.nodes.find((node) => node.key === "aggregate_evidence").config.failure_handling.mode = "continue";
+  mutatedConfig.graph.nodes.find((node) => node.key === "finalize_transition").config.failure_handling.mode = "continue";
   assert.throws(() => renderProcess(mutatedConfig, bindings), /topology fingerprint|blueprint integrity/);
 });

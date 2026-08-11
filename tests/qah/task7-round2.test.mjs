@@ -97,53 +97,45 @@ test("runtime output is confined to a real NUANU_TASK_DIR/qah child and authored
   assert.equal(JSON.parse(await readFile(join(root, "qah", "publish-flow-item-comment", "comments-attestation.json"), "utf8")).complete, true);
 
   const graph = renderer.renderProcess(blueprint, bindings);
-  for (const node of graph.nodes.filter((entry) => entry.type === "agent_task")) {
-    const command = Object.entries(runtime.TASK_COMMAND_KEYS).find(([, key]) => key === node.key)?.[0];
-    assert.ok(command, node.key);
-    assert.match(node.config.instruction, new RegExp(`--output-dir \\\"\\$NUANU_TASK_DIR/qah/${command}\\\"`));
-  }
+  const [node] = graph.nodes.filter((entry) => entry.type === "agent_task");
+  assert.equal(node.key, "finalize_transition");
+  assert.match(node.config.instruction, /scripts\/qah\/proof-gate-canary\.mjs/);
+  assert.match(node.config.instruction, /--output-dir "\$NUANU_TASK_DIR\/qah\/proof-gate-canary"/);
 });
 
-test("every graph task has a runtime-owned final worker 0.3.14 envelope protocol", () => {
+test("the single graph task has one same-lease final worker 0.3.14 envelope protocol", () => {
   const graph = renderer.renderProcess(blueprint, bindings);
-  for (const node of graph.nodes.filter((entry) => entry.type === "agent_task")) {
-    const protocol = runtime.TASK_PROTOCOLS[node.key];
-    assert.ok(protocol, node.key);
-    assert.deepEqual(protocol.artifact_slots, Object.keys(node.config.output.artifacts));
-    assert.match(node.config.instruction, protocol.artifact_slots.length ? /phase=prepare.*phase=complete/is : /exact.*completion/is);
-    const artifact_outputs = Object.fromEntries(protocol.artifact_slots.map((slot, index) => [`item.artifacts.${slot}`, ref(index + 20)]));
-    const typedFinalizerData = {
-      transition_allowed: true,
-      target_state: "ready_for_qa",
-      reason_codes: [],
-      kind: "qa",
-      verdict: "blocked",
-      tested_head_sha: "a".repeat(40),
-      checks: [],
-    };
-    const data = node.key === "finalize_transition"
-      ? typedFinalizerData
-      : Object.fromEntries(Object.keys(node.config.output.data).map((key) => [key, key === "transition_allowed" ? true : key === "target_state" ? "in_progress" : key === "reason_codes" ? [] : key]));
-    const raw = { item: { key: node.key, description: node.key === "finalize_transition" ? "Universal QAH finalization admitted" : "runtime-owned", data, artifacts: {} }, artifact_outputs };
-    const completion = buildCanonicalCompletion({ task_id: "task", attempt: 1, request: { process: { step_key: node.key }, output_definition: node.config.output } }, { output: canonicalJson(raw), publishedArtifacts: [] });
-    assert.equal(completion.result.item.key, node.key);
-    assert.deepEqual(Object.keys(completion.result.item.data).sort(), Object.keys(node.config.output.data).sort());
-    assert.deepEqual(Object.keys(completion.result.artifact_outputs).sort(), protocol.artifact_slots.map((slot) => `item.artifacts.${slot}`).sort());
-    if (node.key === "finalize_transition") {
-      const materialized = runtime.materializeFinalizationWorkerTransport(completion.result);
-      assert.deepEqual(materialized.item.data, typedFinalizerData);
-      assert.deepEqual(materialized.item.artifacts.finalization_report, artifact_outputs["item.artifacts.finalization_report"]);
-    } else {
-      assert.deepEqual(completion.result.item, raw.item);
-    }
-  }
+  const [node] = graph.nodes.filter((entry) => entry.type === "agent_task");
+  assert.equal(node.key, "finalize_transition");
+  const slots = Object.keys(node.config.output.artifacts);
+  assert.deepEqual(slots, ["finalization_report", "qah_verification"]);
+  assert.match(node.config.instruction, /prepare.*finalize.*complete/is);
+  const artifact_outputs = Object.fromEntries(slots.map((slot, index) => [`item.artifacts.${slot}`, ref(index + 20)]));
+  const typedFinalizerData = {
+    transition_allowed: true,
+    target_state: "ready_for_qa",
+    reason_codes: [],
+    kind: "qa",
+    verdict: "blocked",
+    tested_head_sha: "a".repeat(40),
+    checks: [],
+  };
+  const raw = { item: { key: node.key, description: "Universal QAH repository canary held", data: typedFinalizerData, artifacts: {} }, artifact_outputs };
+  const completion = buildCanonicalCompletion({ task_id: "task", attempt: 1, request: { process: { step_key: node.key }, output_definition: node.config.output } }, { output: canonicalJson(raw), publishedArtifacts: [] });
+  assert.equal(completion.result.item.key, node.key);
+  assert.deepEqual(Object.keys(completion.result.item.data).sort(), Object.keys(node.config.output.data).sort());
+  assert.deepEqual(Object.keys(completion.result.artifact_outputs).sort(), slots.map((slot) => `item.artifacts.${slot}`).sort());
 });
 
-test("renderer byte-preserves the complete live Start edge and binds resolve_flow_item to its target", () => {
+test("renderer preserves the live Start identity and atomically retargets its edge to the single canary", () => {
   const graph = renderer.renderProcess(blueprint, bindings);
   assert.deepEqual(graph.nodes[0], liveStart.node);
-  assert.deepEqual(graph.edges[0], liveStart.edge);
-  assert.equal(graph.nodes.find((node) => node.key === "resolve_flow_item").id, liveStart.edge.target);
+  assert.deepEqual(graph.edges[0], {
+    id: liveStart.edge.id,
+    source: liveStart.edge.source,
+    target: "10000000-0000-5000-8000-000000000018",
+  });
+  assert.equal(graph.nodes.find((node) => node.key === "finalize_transition").id, graph.edges[0].target);
   assert.throws(() => renderer.renderProcess(blueprint, { ...bindings, platform_start_edge: { ...liveStart.edge, target: bindings.qa_agent_employee_id } }), /target|collision|edge/i);
   assert.throws(() => renderer.renderProcess(blueprint, { ...bindings, platform_start_edge: { ...liveStart.edge, source: bindings.qa_agent_employee_id } }), /source|edge/i);
 });

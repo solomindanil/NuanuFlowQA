@@ -6,7 +6,7 @@ import YAML from "yaml";
 
 import { loadWorkerCompletionValidator } from "./helpers/worker-contract.mjs";
 import { BRANCHES } from "../../scripts/qah/contracts.mjs";
-import { runLocalQaHarness } from "../../scripts/qah/local-harness.mjs";
+import { FULL_QAH_FINALIZATION_OUTPUT_DEFINITION, runLocalQaHarness } from "../../scripts/qah/local-harness.mjs";
 
 const { buildCanonicalCompletion } = await loadWorkerCompletionValidator();
 
@@ -18,10 +18,7 @@ const expectedApplicability = {
 };
 
 const secretCanaries = ["4111111111111111", "Authorization: Bearer", "raw-response-body"];
-const qahBlueprint = JSON.parse(await readFile(new URL("../../processes/universal-qa-flow.graph.json", import.meta.url), "utf8"));
-const finalizationOutputDefinition = structuredClone(
-  qahBlueprint.graph.nodes.find(({ key }) => key === "finalize_transition").config.output,
-);
+const finalizationOutputDefinition = structuredClone(FULL_QAH_FINALIZATION_OUTPUT_DEFINITION);
 
 function assertExactBranchMatrix(result, fixture) {
   assert.deepEqual(result.plan.applicability, expectedApplicability[fixture]);

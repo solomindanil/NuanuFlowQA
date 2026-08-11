@@ -35,7 +35,7 @@ const BRANCH_COMMANDS = {
   ui: "verify-ui-with-playwright",
   domain: "prepare-and-verify-domain-data",
 };
-const FINALIZATION_OUTPUT_DEFINITION = {
+export const FULL_QAH_FINALIZATION_OUTPUT_DEFINITION = Object.freeze({
   data: {
     transition_allowed: { type: "boolean", description: "True only after authoritative comment and cleanup verification" },
     target_state: { type: "string", description: "ready_for_production, in_progress, or ready_for_qa" },
@@ -48,13 +48,13 @@ const FINALIZATION_OUTPUT_DEFINITION = {
   artifacts: {
     finalization_report: { description: "Verified final transition gate result", kind: "document", restrictions: { media_types: ["application/json"] } },
   },
-};
+});
 
 function validateFinalizationHarnessBindings(buildCanonicalCompletion, finalizationOutputDefinition) {
   if (typeof buildCanonicalCompletion !== "function") throw new Error("buildCanonicalCompletion injection is required");
   if (!finalizationOutputDefinition || typeof finalizationOutputDefinition !== "object" || Array.isArray(finalizationOutputDefinition)
-    || canonicalJson(finalizationOutputDefinition) !== canonicalJson(FINALIZATION_OUTPUT_DEFINITION)) {
-    throw new Error("finalizationOutputDefinition must be the exact blueprint-owned seven-field output definition");
+    || canonicalJson(finalizationOutputDefinition) !== canonicalJson(FULL_QAH_FINALIZATION_OUTPUT_DEFINITION)) {
+    throw new Error("finalizationOutputDefinition must be the exact source-owned full-QAH seven-field output definition");
   }
 }
 
