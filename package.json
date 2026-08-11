@@ -19,7 +19,7 @@
     "test:qah": "node --test tests/qah/*.test.mjs",
     "test:qah:proof-gate": "node --test tests/qah/release-policy.test.mjs tests/qah/decision.test.mjs tests/qah/finalize.test.mjs tests/qah/claim-adapter.test.mjs tests/qah/task-runtime.test.mjs tests/qah/e2e.test.mjs tests/qah/process-blueprint.test.mjs tests/qah/proof-gate-canary.test.mjs tests/qah/preflight-report.test.mjs",
     "qah:preflight-report": "node scripts/qah/preflight-report.mjs",
-    "verify:qah:proof-gate": "npm run test:qah:proof-gate && npm run test:paydemo:harness && npm run typecheck",
+    "verify:qah:proof-gate": "npm run test:qah:proof-gate && npm run typecheck",
     "verify:qah": "npm run test:qah && npm run test:paydemo:harness && npm run typecheck",
     "test": "playwright test",
     "test:ui": "playwright test --ui",

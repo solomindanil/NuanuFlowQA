@@ -7,6 +7,15 @@ import test from "node:test";
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
 import { runProofGateCanaryPhase } from "../../scripts/qah/proof-gate-canary.mjs";
 
+test("remote Proof Gate verification excludes host-only listener suites", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
+  assert.equal(
+    packageJson.scripts["verify:qah:proof-gate"],
+    "npm run test:qah:proof-gate && npm run typecheck",
+  );
+  assert.doesNotMatch(packageJson.scripts["verify:qah:proof-gate"], /test:paydemo:harness/);
+});
+
 const SOURCE_REF = Object.freeze({
   artifact_id: "92400946-cc1f-5731-b1aa-af14a9765b7a",
   version_id: "103a0d1b-7d39-4512-b5f6-06cc1b64a527",
