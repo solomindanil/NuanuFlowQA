@@ -57,16 +57,25 @@ function validChecks(checks) {
   return true;
 }
 
+function validExecutionFailureCheck(checks) {
+  return Array.isArray(checks) && checks.length === 1
+    && exactKeys(checks[0], ["name", "status", "evidence"])
+    && checks[0].name === "graph_qah_execution"
+    && checks[0].status === "failed"
+    && EVIDENCE.test(checks[0].evidence ?? "");
+}
+
 function validClaimData(value) {
   if (!exactKeys(value, DATA_KEYS) || value.transition_allowed !== true || !Array.isArray(value.reason_codes)
     || value.reason_codes.length !== 0 || value.kind !== "qa" || !COMMIT.test(value.tested_head_sha ?? "")
-    || !validChecks(value.checks)) return false;
+    || !Array.isArray(value.checks)) return false;
   if (value.verdict === "pass") return value.target_state === "ready_for_production"
-    && value.checks.length > 0 && value.checks.every(({ status }) => status === "passed");
+    && validChecks(value.checks) && value.checks.length > 0 && value.checks.every(({ status }) => status === "passed");
   if (value.verdict === "fail") return value.target_state === "in_progress"
-    && value.checks.some(({ status }) => status === "failed");
+    && validChecks(value.checks) && value.checks.some(({ status }) => status === "failed");
   if (value.verdict === "blocked") return value.target_state === "ready_for_qa"
-    && value.checks.every(({ status }) => status === "passed");
+    && ((validChecks(value.checks) && value.checks.length > 0 && value.checks.every(({ status }) => status === "passed"))
+      || validExecutionFailureCheck(value.checks));
   return false;
 }
 

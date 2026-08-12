@@ -5,8 +5,10 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import YAML from "yaml";
 
 import { canonicalJson, sha256 } from "./canonical.mjs";
+import { validateProfile } from "./contracts.mjs";
 import { createSyntheticGraphPlan } from "./graph-plan.mjs";
 import { FULL_QAH_FINALIZATION_OUTPUT_DEFINITION, runLocalQaHarness } from "./local-harness.mjs";
 import { createOfflineHarnessExecutor, runOfflineGraphQaFlow } from "./offline-graph-flow.mjs";
@@ -95,19 +97,20 @@ function validatePrepareInput(input) {
   return { sourceRef, snapshot };
 }
 
-function ticketEvent(snapshot, scenario) {
+function ticketEvent(snapshot, scenario, qaProjectKey) {
+  if (!PROJECT.test(qaProjectKey)) throw new Error("QA profile project key is invalid");
   const revision = sha256(snapshot);
   return {
     schema_version: "nuanu.qa-column-ticket-event.v1",
     event_id: `event-${snapshot.identifier.toLowerCase()}-${revision.slice(7, 19)}`,
     ticket_id: snapshot.identifier,
-    project_key: snapshot.project_key,
+    project_key: qaProjectKey,
     from_state: "in_progress",
     to_state: "ready_for_qa",
     candidate: {
       candidate_id: `flow-item-${snapshot.issue_id}`,
       candidate_revision: revision,
-      environment_id: `ui-demo-${snapshot.project_key}`,
+      environment_id: `ui-demo-${qaProjectKey}`,
       change_hints: scenario.change_hints,
     },
     triggered_at: snapshot.updated_at,
@@ -176,6 +179,11 @@ async function readRepositoryHead() {
   return head;
 }
 
+async function readQaProjectKey() {
+  const source = await readFile(new URL("../../qa-harness.yaml", import.meta.url), "utf8");
+  return validateProfile(YAML.parse(source)).project_key;
+}
+
 async function defaultExecute(event, graphPlan, scenario, testedHeadSha) {
   const { buildCanonicalCompletion } = await loadWorkerCompletionValidator();
   const executeAssignment = createOfflineHarnessExecutor({
@@ -191,11 +199,15 @@ async function defaultExecute(event, graphPlan, scenario, testedHeadSha) {
 async function prepare(input, context) {
   const { sourceRef, snapshot } = validatePrepareInput(input);
   const classification = deriveUiGraphCanaryScenario(snapshot);
-  const event = ticketEvent(snapshot, classification);
+  const [qaProjectKey, testedHeadSha] = await Promise.all([
+    context.readQaProjectKey(),
+    context.readRepositoryHead(),
+  ]);
+  const event = ticketEvent(snapshot, classification, qaProjectKey);
   const graphPlan = createSyntheticGraphPlan(event, classification.scenario);
-  const testedHeadSha = await context.readRepositoryHead();
   const receipt = await context.execute(event, graphPlan, classification.scenario, testedHeadSha);
-  if (!receipt?.proof_gate_claim || !["READY_FOR_PRODUCTION", "HUMAN_REVIEW", "RETURN_TO_WORK"].includes(receipt.route)) {
+  if (!receipt || !["READY_FOR_PRODUCTION", "HUMAN_REVIEW", "RETURN_TO_WORK", "HOLD"].includes(receipt.route)
+    || (receipt.route !== "HOLD" && !receipt.proof_gate_claim)) {
     throw new Error(`graph QAH did not produce an admissible claim: ${receipt?.reason_codes?.join(",") ?? "unknown"}`);
   }
   const verification = {
@@ -203,6 +215,7 @@ async function prepare(input, context) {
     source_ref: sourceRef,
     source_snapshot: snapshot,
     source_snapshot_digest: sha256(snapshot),
+    tested_head_sha: testedHeadSha,
     graph_scenario: classification.scenario,
     matched_knowledge_rules: classification.matched_knowledge_rules,
     event,
@@ -232,7 +245,21 @@ async function finalize(input, context) {
   if (sha256(canonicalJson(verification)) !== state.verification_file_sha256 || canonicalJson(verification) !== canonicalJson(state.verification)) {
     throw new Error("verification evidence changed after prepare");
   }
-  const claim = structuredClone(verification.receipt.proof_gate_claim);
+  const claim = verification.receipt.proof_gate_claim === null
+    ? {
+        transition_allowed: true,
+        target_state: "ready_for_qa",
+        reason_codes: [],
+        kind: "qa",
+        verdict: "blocked",
+        tested_head_sha: verification.tested_head_sha,
+        checks: [{
+          name: "graph_qah_execution",
+          status: "failed",
+          evidence: `artifact:${verificationRef.artifact_id}@${verificationRef.version_id}`,
+        }],
+      }
+    : structuredClone(verification.receipt.proof_gate_claim);
   const report = {
     schema_version: "nuanu.qah-ui-graph-finalization.v1",
     route: verification.receipt.route,
@@ -286,6 +313,7 @@ export async function runUiGraphCanaryPhase(phase, input, options = {}) {
   const context = {
     outputDir,
     execute: options.execute ?? defaultExecute,
+    readQaProjectKey: options.readQaProjectKey ?? readQaProjectKey,
     readRepositoryHead: options.readRepositoryHead ?? readRepositoryHead,
   };
   if (phase === "prepare") return prepare(input, context);

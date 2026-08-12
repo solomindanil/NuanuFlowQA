@@ -5,6 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { canonicalJson } from "../../scripts/qah/canonical.mjs";
+import { validateFinalProofGateClaim } from "../../scripts/qah/claim-adapter.mjs";
+import { runOfflineGraphQaFlow } from "../../scripts/qah/offline-graph-flow.mjs";
 import {
   deriveUiGraphCanaryScenario,
   runUiGraphCanaryPhase,
@@ -34,7 +36,7 @@ const CRITICAL_SNAPSHOT = Object.freeze({
   identifier: "PAYD-29",
   title: "[CANARY] Verify card checkout change",
   description: "The ticket changes card payment confirmation and checkout business rules.",
-  project_key: "paydemo",
+  project_key: "payd",
   state_name: "Ready for QA",
   labels: ["canary", "payments"],
   updated_at: "2026-08-12T00:00:00.000Z",
@@ -95,6 +97,8 @@ test("Ready for QA UI canary executes the graph plan and publishes a human-revie
   assert.equal(verificationSource, canonicalJson(verification));
   assert.equal(verification.schema_version, "nuanu.qah-ui-graph-verification.v1");
   assert.equal(verification.source_snapshot.identifier, "PAYD-29");
+  assert.equal(verification.source_snapshot.project_key, "payd");
+  assert.equal(verification.event.project_key, "paydemo");
   assert.equal(verification.graph_scenario, "critical");
   assert.equal(verification.receipt.trigger, "column:ready_for_qa");
   assert.equal(verification.receipt.route, "HUMAN_REVIEW");
@@ -141,6 +145,47 @@ test("Ready for QA UI canary executes the graph plan and publishes a human-revie
     "item.artifacts.qah_verification": VERIFICATION_REF,
     "item.artifacts.finalization_report": FINALIZATION_REF,
   });
+});
+
+test("executor failure still reaches stock Proof Gate as truthful unable-to-verify evidence", async (t) => {
+  const value = await fixture(t);
+  const testedHeadSha = "c".repeat(40);
+  const prepared = await runUiGraphCanaryPhase("prepare", prepareInput(), {
+    ...value,
+    readQaProjectKey: async () => "paydemo",
+    readRepositoryHead: async () => testedHeadSha,
+    execute: async (event, graphPlan) => runOfflineGraphQaFlow({
+      event,
+      graphPlan,
+      executeAssignment: async () => { throw new Error("synthetic executor failure"); },
+    }),
+  });
+  assert.equal(prepared.phase, "prepared");
+  const verification = JSON.parse(await readFile(join(value.outputDir, "qah-verification.json"), "utf8"));
+  assert.equal(verification.receipt.route, "HOLD");
+  assert.equal(verification.receipt.proof_gate_claim, null);
+  assert.deepEqual(verification.receipt.reason_codes, ["EXECUTION_FAILED"]);
+  assert.equal(verification.tested_head_sha, testedHeadSha);
+
+  await runUiGraphCanaryPhase("finalize", {
+    phase: "finalize",
+    artifact_refs: { qah_verification: VERIFICATION_REF },
+  }, value);
+  const report = JSON.parse(await readFile(join(value.outputDir, "finalization.json"), "utf8"));
+  assert.deepEqual(report.claim, {
+    transition_allowed: true,
+    target_state: "ready_for_qa",
+    reason_codes: [],
+    kind: "qa",
+    verdict: "blocked",
+    tested_head_sha: testedHeadSha,
+    checks: [{
+      name: "graph_qah_execution",
+      status: "failed",
+      evidence: `artifact:${VERIFICATION_REF.artifact_id}@${VERIFICATION_REF.version_id}`,
+    }],
+  });
+  assert.equal(validateFinalProofGateClaim(report.claim), true);
 });
 
 test("UI canary rejects unbounded or identity-conflicting Flow snapshots before execution", async (t) => {
