@@ -112,8 +112,10 @@ test("single Agent Task consumes only the platform-owned Column Start and uses n
   );
   assert.deepEqual(Object.keys(instructions), ["finalize_transition"]);
   assert.match(instructions.finalize_transition, /input\.project_start\.artifacts\.flow_item/);
-  assert.match(instructions.finalize_transition, /proof-gate-canary\.mjs/);
-  assert.match(instructions.finalize_transition, /node scripts\/qah\/proof-gate-canary\.mjs/);
+  assert.match(instructions.finalize_transition, /ui-graph-canary\.mjs/);
+  assert.match(instructions.finalize_transition, /node scripts\/qah\/ui-graph-canary\.mjs/);
+  assert.match(instructions.finalize_transition, /source_snapshot/);
+  assert.match(instructions.finalize_transition, /Product Graph|граф/i);
   assert.doesNotMatch(instructions.finalize_transition, /NUANU_CODEX_CWD|absolute runner|абсолютн(?:ый|ого) runner/i);
   assert.match(instructions.finalize_transition, /prepare.*finalize.*complete/is);
   assert.match(instructions.finalize_transition, /не вызывай get_artifact|do not call get_artifact/i);
@@ -148,7 +150,7 @@ test("uses closed Process v1 outputs and worker 0.3.14 Artifact contracts", () =
         assert.equal(typeof descriptor.description, "string");
       }
     }
-    assert.match(node.config.instruction, /scripts\/qah\/proof-gate-canary\.mjs/);
+    assert.match(node.config.instruction, /scripts\/qah\/ui-graph-canary\.mjs/);
     assert.match(node.config.instruction, /artifact_id, version_id, kind, role/);
     assert.doesNotMatch(node.config.instruction, /artifact_id, version_id, kind, role, name|latest.version/i);
     assert.doesNotMatch(node.config.instruction, /scripts\/qah\/(?:aggregate|context|decide|environment|finalize|plan|render-comment|run-branch)\.mjs/);

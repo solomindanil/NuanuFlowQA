@@ -99,8 +99,8 @@ test("runtime output is confined to a real NUANU_TASK_DIR/qah child and authored
   const graph = renderer.renderProcess(blueprint, bindings);
   const [node] = graph.nodes.filter((entry) => entry.type === "agent_task");
   assert.equal(node.key, "finalize_transition");
-  assert.match(node.config.instruction, /scripts\/qah\/proof-gate-canary\.mjs/);
-  assert.match(node.config.instruction, /--output-dir "\$NUANU_TASK_DIR\/qah\/proof-gate-canary"/);
+  assert.match(node.config.instruction, /scripts\/qah\/ui-graph-canary\.mjs/);
+  assert.match(node.config.instruction, /--output-dir "\$NUANU_TASK_DIR\/qah\/ui-graph-canary"/);
 });
 
 test("the single graph task has one same-lease final worker 0.3.14 envelope protocol", () => {
