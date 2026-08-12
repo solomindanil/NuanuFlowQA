@@ -320,7 +320,7 @@ async function complete(root, store, command, manifest, options = {}, linksFor =
   return { refs, envelope };
 }
 
-export async function runLocalQaHarness({ fixture, mode = "pass", buildCanonicalCompletion, finalizationOutputDefinition }) {
+export async function runLocalQaHarness({ fixture, mode = "pass", graphInput = undefined, buildCanonicalCompletion, finalizationOutputDefinition }) {
   validateFinalizationHarnessBindings(buildCanonicalCompletion, finalizationOutputDefinition);
   if (!["api", "ui", "docs", "mixed"].includes(fixture) || !["pass", "product-failure", "missing-evidence"].includes(mode)) throw new Error("invalid local harness fixture");
   const root = await mkdtemp(join(tmpdir(), "universal-qah-e2e-"));
@@ -351,7 +351,13 @@ export async function runLocalQaHarness({ fixture, mode = "pass", buildCanonical
     const context = resolveContext(rawContext, profile.repository);
     ({ envelope: workerEnvelopes.load_project_context } = await complete(root, store, "load-project-context", loaded.result, { dependencies }));
 
-    const planned = await task(root, "plan-qa-scope", { phase: "prepare", context, profile, carry: { profile_ref: profileRef, workspace_id: WORKSPACE_ID } }, { dependencies });
+    const planned = await task(root, "plan-qa-scope", {
+      phase: "prepare",
+      context,
+      profile,
+      ...(graphInput === undefined ? {} : { graph_input: graphInput }),
+      carry: { profile_ref: profileRef, workspace_id: WORKSPACE_ID },
+    }, { dependencies });
     const plan = JSON.parse(await readFile(join(planned.outputDir, "test-plan.json"), "utf8"));
     const planComplete = await complete(root, store, "plan-qa-scope", planned.result, { dependencies });
     workerEnvelopes.plan_qa_scope = planComplete.envelope;

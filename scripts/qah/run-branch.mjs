@@ -13,6 +13,7 @@ import { targetNamespace } from "./environment.mjs";
 const execFile = promisify(execFileCallback);
 const DEFAULT_STATE_ROOT = join(tmpdir(), "nuanu-qah-environments");
 const PLAN_KEYS = ["schema_version", "project_key", "commit", "profile_digest", "branches", "source_artifact", "content_hash", "applicability", "branch_reasons", "expected_evidence", "risk_level", "artifact_slot", "plan_sha256"];
+const GRAPH_PLAN_KEYS = [...PLAN_KEYS, "graph_binding"];
 const READY_RECEIPT_KEYS = ["environment_status", "run_id", "attempt_id", "environment_id", "target_namespace", "repository_origin", "commit", "content_hash", "instance_nonce", "base_url", "pid_file", "state_file"];
 const NOT_REQUIRED_RECEIPT_KEYS = ["environment_status", "run_id", "attempt_id", "environment_id", "target_namespace"];
 const FAILURE_RECEIPT_KEYS = [...NOT_REQUIRED_RECEIPT_KEYS, "reason"];
@@ -56,10 +57,12 @@ function digestBytes(bytes) {
 }
 
 function validatePlan(plan, profile) {
-  exactKeys(plan, PLAN_KEYS, "test plan");
+  exactKeys(plan, plan?.graph_binding === undefined ? PLAN_KEYS : GRAPH_PLAN_KEYS, "test plan");
   validateTestPlan(plan.artifact_slot);
   const artifact = plan.artifact_slot;
   if (plan.schema_version !== artifact.schema_version || plan.project_key !== artifact.project_key || plan.commit !== artifact.commit || plan.profile_digest !== artifact.profile_digest || canonicalJson(plan.branches) !== canonicalJson(artifact.branches)) throw new Error("test plan artifact slot must match the full plan");
+  if ((plan.graph_binding === undefined) !== (artifact.graph_binding === undefined)
+    || (plan.graph_binding !== undefined && canonicalJson(plan.graph_binding) !== canonicalJson(artifact.graph_binding))) throw new Error("test plan graph binding must match the artifact slot");
   if (plan.project_key !== profile.project_key || plan.profile_digest !== sha256(profile)) throw new Error("test plan identity must match the exact profile");
   exactKeys(plan.source_artifact, SOURCE_ARTIFACT_KEYS, "test plan source artifact");
   if (!UUID.test(plan.source_artifact.artifact_id) || !UUID.test(plan.source_artifact.version_id)

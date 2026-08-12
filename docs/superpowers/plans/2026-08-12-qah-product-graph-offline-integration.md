@@ -181,6 +181,7 @@ git commit -m "feat: plan qah scope from product graph receipts"
 **Files:**
 - Create: `scripts/qah/offline-graph-flow.mjs`
 - Modify: `scripts/qah/local-harness.mjs`
+- Modify: `scripts/qah/run-branch.mjs`
 - Create: `tests/qah/offline-graph-flow.test.mjs`
 - Modify: `tests/qah/e2e.test.mjs`
 
@@ -231,13 +232,13 @@ Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `offline-graph-flow.mjs`.
 
 - [ ] **Step 3: Implement minimal orchestration**
 
-`local-harness.mjs` accepts `graphInput` and forwards it only to `plan-qa-scope`. The executor uses fixed local fixtures, requires local plan branches to equal assignment branches, and hashes a sanitized evidence summary. Route precedence is integrity HOLD, authenticated product failure, human obligation, then fully verified production readiness.
+`local-harness.mjs` accepts `graphInput` and forwards it only to `plan-qa-scope`. `run-branch.mjs` accepts either the legacy exact plan key set or the graph-bound exact key set and requires the root/artifact graph bindings to match. The executor uses fixed local fixtures, requires local plan branches to equal assignment branches, and hashes a sanitized evidence summary. Route precedence is integrity HOLD, authenticated product failure, human obligation, then fully verified production readiness.
 
 - [ ] **Step 4: Run GREEN and commit**
 
 ```bash
-node --test tests/qah/offline-graph-flow.test.mjs tests/qah/e2e.test.mjs
-git add scripts/qah/offline-graph-flow.mjs scripts/qah/local-harness.mjs tests/qah/offline-graph-flow.test.mjs tests/qah/e2e.test.mjs
+node --test tests/qah/offline-graph-flow.test.mjs tests/qah/e2e.test.mjs tests/qah/branch-runner.test.mjs
+git add scripts/qah/offline-graph-flow.mjs scripts/qah/local-harness.mjs scripts/qah/run-branch.mjs tests/qah/offline-graph-flow.test.mjs docs/superpowers/plans/2026-08-12-qah-product-graph-offline-integration.md
 git commit -m "feat: run offline graph driven qah flow"
 ```
 
