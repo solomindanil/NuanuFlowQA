@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
-import { aggregateEvidence, resolveArtifactVersionForSlot } from "../../scripts/qah/aggregate.mjs";
+import { aggregateEvidence, resolveArtifactVersionForSlot, validateFullTestPlan } from "../../scripts/qah/aggregate.mjs";
+import { classifyGraphCriticality, createSyntheticGraphPlan } from "../../scripts/qah/graph-plan.mjs";
 import { parseProfileBytes } from "../../scripts/qah/profile.mjs";
 
 const qtest = import.meta.url.includes("fixtures-only") ? () => {} : test;
@@ -88,6 +89,40 @@ function plan(rawProfile, applicability = { code: "REQUIRED", api: "REQUIRED", u
     artifact_slot: artifactSlot,
   };
   return { ...unsigned, plan_sha256: sha256(unsigned) };
+}
+
+function graphEvent(projectKey) {
+  return {
+    schema_version: "nuanu.qa-column-ticket-event.v1",
+    event_id: "event-generic-101-ready-for-qa",
+    ticket_id: "GEN-101",
+    project_key: projectKey,
+    from_state: "in_progress",
+    to_state: "ready_for_qa",
+    candidate: {
+      candidate_id: "candidate-profile-change",
+      candidate_revision: sha256("offline-candidate-profile-change"),
+      environment_id: "offline-generic",
+      change_hints: ["profile-api", "profile-ui"],
+    },
+    triggered_at: "2026-08-12T00:00:00.000Z",
+  };
+}
+
+function graphBinding(event, graphPlan) {
+  return {
+    schema_version: "nuanu.qa-graph-binding.v1",
+    event_id: event.event_id,
+    ticket_id: event.ticket_id,
+    candidate_id: event.candidate.candidate_id,
+    candidate_revision: event.candidate.candidate_revision,
+    graph_revision: graphPlan.graph_revision,
+    graph_digest: graphPlan.graph_digest,
+    knowledge_revision: graphPlan.knowledge_revision,
+    knowledge_digest: graphPlan.knowledge_digest,
+    graph_plan_digest: graphPlan.plan_digest,
+    criticality: classifyGraphCriticality(graphPlan).status,
+  };
 }
 
 function readyReceipt(overrides = {}) {
@@ -900,4 +935,24 @@ qtest("circular and hostile Proxy inputs never escape the public aggregation bou
     assert.equal(aggregate.invariants_passed, false);
     assert.equal(reasons(aggregate).has("INVALID_AGGREGATE_INPUT"), true);
   }
+});
+
+qtest("full-plan validation binds graph authority identically in plan and artifact slot", () => {
+  const rawProfile = profile();
+  const event = graphEvent(rawProfile.project_key);
+  const graphPlan = createSyntheticGraphPlan(event, "noncritical");
+  const binding = graphBinding(event, graphPlan);
+  const graphBoundPlan = plan(rawProfile, { code: "REQUIRED", api: "REQUIRED", ui: "REQUIRED", domain: "NOT_APPLICABLE" });
+  graphBoundPlan.graph_binding = structuredClone(binding);
+  graphBoundPlan.artifact_slot.graph_binding = structuredClone(binding);
+  const { plan_sha256: _old, ...unsigned } = graphBoundPlan;
+  graphBoundPlan.plan_sha256 = sha256(unsigned);
+
+  assert.deepEqual(validateFullTestPlan(graphBoundPlan), []);
+
+  const substituted = structuredClone(graphBoundPlan);
+  substituted.artifact_slot.graph_binding.graph_digest = `sha256:${"f".repeat(64)}`;
+  const { plan_sha256: _previous, ...substitutedUnsigned } = substituted;
+  substituted.plan_sha256 = sha256(substitutedUnsigned);
+  assert.deepEqual(validateFullTestPlan(substituted), ["INVALID_FULL_PLAN"]);
 });

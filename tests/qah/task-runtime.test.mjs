@@ -10,7 +10,9 @@ import YAML from "yaml";
 import { loadWorkerCompletionValidator } from "./helpers/worker-contract.mjs";
 
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
+import { resolveContext } from "../../scripts/qah/context.mjs";
 import { decideRelease } from "../../scripts/qah/decide.mjs";
+import { createSyntheticGraphPlan } from "../../scripts/qah/graph-plan.mjs";
 import { renderComment } from "../../scripts/qah/render-comment.mjs";
 import {
   GRAPH_TASK_COMMANDS,
@@ -81,6 +83,24 @@ async function completePrepared(root, command, artifact_refs, extra = {}) {
   const result = await runTaskCommand(command, { phase: "complete", artifact_refs }, runtimeOptions(root, command, extra));
   validateWorkerCompletion(command, result);
   return result;
+}
+
+function graphEvent(projectKey) {
+  return {
+    schema_version: "nuanu.qa-column-ticket-event.v1",
+    event_id: "event-generic-101-ready-for-qa",
+    ticket_id: "GEN-101",
+    project_key: projectKey,
+    from_state: "in_progress",
+    to_state: "ready_for_qa",
+    candidate: {
+      candidate_id: "candidate-profile-change",
+      candidate_revision: sha256("offline-candidate-profile-change"),
+      environment_id: "offline-generic",
+      change_hints: ["profile-api", "profile-ui"],
+    },
+    triggered_at: "2026-08-12T00:00:00.000Z",
+  };
 }
 
 function serializedBundle(fixture, comments = []) {
@@ -532,4 +552,39 @@ test("aggregate, universal blueprint, and universal runtime contain no payment p
     "../../processes/universal-qa-flow.graph.json",
   ].map((path) => readFile(new URL(path, import.meta.url), "utf8")));
   for (const source of sources) assert.doesNotMatch(source, /payment|paydemo|bank_transfer|idempotent_replay|amount_rejected/i);
+});
+
+test("plan task persists an exact graph binding when graph input is present", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "qah-runtime-graph-plan-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = aggregateFixture();
+  const rawContext = {
+    source_artifact: fixture.plan.source_artifact,
+    issue_uuid: "66666666-6666-4666-8666-666666666666",
+    project_uuid: "55555555-5555-4555-8555-555555555555",
+    project_key: fixture.profile.project_key,
+    repository_origin: fixture.profile.repository.allowed_origin,
+    commit: fixture.plan.commit,
+    content_hash: fixture.plan.content_hash,
+    profile_digest: sha256(fixture.profile),
+    changed_files: ["README.md"],
+    labels: [],
+    acceptance_capabilities: [],
+    wiki_artifacts: [],
+  };
+  const context = resolveContext(rawContext, fixture.profile.repository);
+  const event = graphEvent(fixture.profile.project_key);
+  const graphPlan = createSyntheticGraphPlan(event, "noncritical");
+
+  await runTaskCommand("plan-qa-scope", {
+    phase: "prepare",
+    context,
+    profile: fixture.profile,
+    graph_input: { event, plan: graphPlan },
+    carry: { profile_ref: fixture.input.profile_artifact, workspace_id: fixture.input.workspace_id },
+  }, runtimeOptions(root, "plan-qa-scope"));
+
+  const persisted = JSON.parse(await readFile(join(root, "qah", "plan-qa-scope", "test-plan.json"), "utf8"));
+  assert.deepEqual(persisted.graph_binding, persisted.artifact_slot.graph_binding);
+  assert.equal(persisted.graph_binding.graph_plan_digest, graphPlan.plan_digest);
 });

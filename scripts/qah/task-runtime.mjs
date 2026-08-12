@@ -515,9 +515,9 @@ export async function runTaskCommand(command, input, options = {}) {
     return writeSingleArtifact(taskKey, outputDir, "load-project-context.json", "resolved_context", context);
   }
   if (command === "plan-qa-scope") {
-    prepareInput(input, ["context", "profile", "carry"], "plan-qa-scope input");
+    prepareInput(input, "graph_input" in input ? ["context", "profile", "graph_input", "carry"] : ["context", "profile", "carry"], "plan-qa-scope input");
     exact(input.carry, ["profile_ref", "workspace_id"], "plan-qa-scope carry");
-    const plan = planQaScope(input.context, input.profile);
+    const plan = planQaScope(input.context, input.profile, input.graph_input);
     await writeCompletionState(outputDir, taskKey, {
       source_ref: plan.source_artifact, profile_ref: input.carry.profile_ref, test_plan_ref: null, workspace_id: input.carry.workspace_id,
       project_id: input.context.project_uuid, issue_id: input.context.issue_uuid, repository_origin: input.context.repository_origin,

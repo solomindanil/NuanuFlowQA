@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { planQaScope } from "../../scripts/qah/plan.mjs";
 import { resolveContext } from "../../scripts/qah/context.mjs";
 import { canonicalJson, sha256 } from "../../scripts/qah/canonical.mjs";
+import { createSyntheticGraphPlan } from "../../scripts/qah/graph-plan.mjs";
 
 const profile = {
   schema_version: "nuanu.qa-project-profile.v1",
@@ -26,6 +27,24 @@ const profile = {
 async function fixture(name) {
   const raw = JSON.parse(await readFile(new URL(`./fixtures/context-${name}.json`, import.meta.url), "utf8"));
   return resolveContext(raw, profile.repository);
+}
+
+function graphEvent(projectKey = "paydemo") {
+  return {
+    schema_version: "nuanu.qa-column-ticket-event.v1",
+    event_id: "event-payd-101-ready-for-qa",
+    ticket_id: "PAYD-101",
+    project_key: projectKey,
+    from_state: "in_progress",
+    to_state: "ready_for_qa",
+    candidate: {
+      candidate_id: "candidate-profile-change",
+      candidate_revision: sha256("offline-candidate-profile-change"),
+      environment_id: "offline-paydemo",
+      change_hints: ["profile-api", "profile-ui"],
+    },
+    triggered_at: "2026-08-12T00:00:00.000Z",
+  };
 }
 
 test("UI-only change requires code and UI but skips API and domain", async () => {
@@ -96,4 +115,36 @@ test("capability-only tokens do not activate a branch without a profile mapping"
   const plan = planQaScope(context, profile);
   assert.equal(plan.applicability.api, "NOT_APPLICABLE");
   assert.deepEqual(plan.branch_reasons.api, []);
+});
+
+test("graph-driven planning ignores contradictory path and label heuristics", async () => {
+  const context = await fixture("docs");
+  context.changed_files = ["docs/readme.md"];
+  context.labels = [];
+  const event = graphEvent();
+  const graphPlan = createSyntheticGraphPlan(event, "noncritical");
+
+  const plan = planQaScope(context, profile, { event, plan: graphPlan });
+
+  assert.deepEqual(plan.applicability, {
+    code: "REQUIRED",
+    api: "REQUIRED",
+    ui: "REQUIRED",
+    domain: "NOT_APPLICABLE",
+  });
+  assert.equal(plan.graph_binding.graph_plan_digest, graphPlan.plan_digest);
+  assert.deepEqual(plan.graph_binding, plan.artifact_slot.graph_binding);
+  assert.deepEqual(plan.branches, ["code", "api", "ui"]);
+});
+
+test("graph-required planning never falls back after admission failure", async () => {
+  const event = graphEvent();
+  const graphPlan = createSyntheticGraphPlan(event, "noncritical");
+  graphPlan.plan_digest = `sha256:${"0".repeat(64)}`;
+  const context = await fixture("mixed");
+
+  assert.throws(
+    () => planQaScope(context, profile, { event, plan: graphPlan }),
+    /graph plan admission failed/i,
+  );
 });

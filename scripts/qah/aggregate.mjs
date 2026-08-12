@@ -21,6 +21,7 @@ const MAX_EVIDENCE_KINDS = 16;
 
 const INPUT_KEYS = ["workspace_id", "plan", "plan_artifact", "profile_artifact", "branches", "environment_receipt", "repository_origin", "run_id", "attempt_id"];
 const PLAN_KEYS = ["schema_version", "project_key", "commit", "profile_digest", "branches", "source_artifact", "content_hash", "applicability", "branch_reasons", "expected_evidence", "risk_level", "artifact_slot", "plan_sha256"];
+const GRAPH_PLAN_KEYS = [...PLAN_KEYS, "graph_binding"];
 const EXECUTION_KEYS = ["schema_version", "run_id", "attempt_id", "attempt_namespace", "branch_namespace", "environment_status", "confidence", "code", "evidence_sha256", "evidence_candidate"];
 const READY_RECEIPT_KEYS = ["environment_status", "run_id", "attempt_id", "environment_id", "target_namespace", "repository_origin", "commit", "content_hash", "instance_nonce", "base_url", "pid_file", "state_file"];
 const NOT_REQUIRED_RECEIPT_KEYS = ["environment_status", "run_id", "attempt_id", "environment_id", "target_namespace"];
@@ -272,12 +273,14 @@ export async function resolveCommitProfile(context, repositoryOrigin, commit) {
 
 export function validateFullTestPlan(plan) {
   const reasons = new Set();
-  if (!exactKeys(plan, PLAN_KEYS)) {
+  const expectedKeys = plan?.graph_binding === undefined ? PLAN_KEYS : GRAPH_PLAN_KEYS;
+  if (!exactKeys(plan, expectedKeys)) {
     reasons.add("INVALID_FULL_PLAN");
     return [...reasons];
   }
   try { validateTestPlan(plan.artifact_slot); } catch { reasons.add("INVALID_FULL_PLAN"); }
   if (plan.schema_version !== plan.artifact_slot?.schema_version || plan.project_key !== plan.artifact_slot?.project_key || plan.commit !== plan.artifact_slot?.commit || plan.profile_digest !== plan.artifact_slot?.profile_digest || !same(plan.branches, plan.artifact_slot?.branches)) reasons.add("INVALID_FULL_PLAN");
+  if ((plan.graph_binding === undefined) !== (plan.artifact_slot?.graph_binding === undefined) || (plan.graph_binding !== undefined && !same(plan.graph_binding, plan.artifact_slot?.graph_binding))) reasons.add("INVALID_FULL_PLAN");
   if (!sourceReference(plan.source_artifact) || !DIGEST.test(plan.content_hash) || !["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(plan.risk_level)) reasons.add("INVALID_FULL_PLAN");
   if (!exactKeys(plan.applicability, BRANCHES) || !exactKeys(plan.branch_reasons, BRANCHES) || !exactKeys(plan.expected_evidence, BRANCHES)) reasons.add("INVALID_FULL_PLAN");
   for (const branch of BRANCHES) {

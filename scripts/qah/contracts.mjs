@@ -1,3 +1,5 @@
+import { validateGraphBinding } from "./graph-plan.mjs";
+
 export const BRANCHES = Object.freeze(["code", "api", "ui", "domain"]);
 export const PRODUCT_RESULTS = Object.freeze(["PASS", "FAIL", "INCONCLUSIVE", "SKIPPED"]);
 export const ENVIRONMENT_STATUSES = Object.freeze(["HEALTHY", "INFRA_FAILURE", "NOT_REQUIRED"]);
@@ -211,13 +213,14 @@ export function validateResolvedContext(value) {
 }
 
 export function validateTestPlan(value) {
-  exactKeys(value, ["schema_version", "project_key", "commit", "profile_digest", "branches"]);
+  exactKeys(value, ["schema_version", "project_key", "commit", "profile_digest", "branches"], ["graph_binding"]);
   schema(value.schema_version, "nuanu.qa-test-plan.v1");
   projectKey(value.project_key);
   commit(value.commit);
   digest(value.profile_digest);
   if (!Array.isArray(value.branches) || value.branches.length > BRANCHES.length || new Set(value.branches).size !== value.branches.length) throw new Error("branches must be a bounded array with unique branches");
   for (const branch of value.branches) member(branch, BRANCHES, "branch");
+  if ("graph_binding" in value) validateGraphBinding(value.graph_binding);
   return value;
 }
 

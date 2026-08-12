@@ -175,6 +175,43 @@ export function classifyGraphCriticality(plan) {
   return { status: "HUMAN_REQUIRED", human_check_ids: humanCheckIds, reason_codes: reasons.sort() };
 }
 
+export function validateGraphBinding(value) {
+  exact(value, [
+    "schema_version", "event_id", "ticket_id", "candidate_id", "candidate_revision", "graph_revision",
+    "graph_digest", "knowledge_revision", "knowledge_digest", "graph_plan_digest", "criticality",
+  ], "graph binding");
+  if (value.schema_version !== "nuanu.qa-graph-binding.v1") throw new Error("graph binding schema is invalid");
+  identifier(value.event_id, "graph binding event_id");
+  if (!TICKET.test(value.ticket_id)) throw new Error("graph binding ticket_id is invalid");
+  identifier(value.candidate_id, "graph binding candidate_id");
+  digest(value.candidate_revision, "graph binding candidate_revision");
+  identifier(value.graph_revision, "graph binding graph_revision");
+  digest(value.graph_digest, "graph binding graph_digest");
+  identifier(value.knowledge_revision, "graph binding knowledge_revision");
+  digest(value.knowledge_digest, "graph binding knowledge_digest");
+  digest(value.graph_plan_digest, "graph binding graph_plan_digest");
+  if (!["AUTOMATED_ONLY", "HUMAN_REQUIRED"].includes(value.criticality)) throw new Error("graph binding criticality is invalid");
+  return value;
+}
+
+export function createGraphBinding(event, plan) {
+  const admitted = admitGraphTestPlan(event, plan);
+  if (admitted.status !== "ACCEPTED") throw new Error(`graph plan admission failed: ${admitted.reason_codes.join(",")}`);
+  return validateGraphBinding({
+    schema_version: "nuanu.qa-graph-binding.v1",
+    event_id: event.event_id,
+    ticket_id: event.ticket_id,
+    candidate_id: event.candidate.candidate_id,
+    candidate_revision: event.candidate.candidate_revision,
+    graph_revision: plan.graph_revision,
+    graph_digest: plan.graph_digest,
+    knowledge_revision: plan.knowledge_revision,
+    knowledge_digest: plan.knowledge_digest,
+    graph_plan_digest: plan.plan_digest,
+    criticality: classifyGraphCriticality(plan).status,
+  });
+}
+
 export function compileGraphExecutionAssignment(event, plan) {
   const admitted = admitGraphTestPlan(event, plan);
   if (admitted.status !== "ACCEPTED") throw new Error(`graph plan admission failed: ${admitted.reason_codes.join(",")}`);
