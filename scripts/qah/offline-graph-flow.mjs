@@ -1,4 +1,5 @@
 import { canonicalJson, sha256 } from "./canonical.mjs";
+import { validateFinalProofGateClaim } from "./claim-adapter.mjs";
 import { admitGraphTestPlan, compileGraphExecutionAssignment } from "./graph-plan.mjs";
 
 const EMPTY_TELEMETRY = Object.freeze({
@@ -26,6 +27,7 @@ function receipt(fields) {
     human_check_ids: fields.human_check_ids,
     route: fields.route,
     proof_gate_outcome: fields.proof_gate_outcome,
+    proof_gate_claim: fields.proof_gate_claim,
     reason_codes: fields.reason_codes,
     authority_telemetry: fields.authority_telemetry,
     execution: fields.execution,
@@ -45,6 +47,7 @@ function hold(event, graphPlan, reasonCodes, executionAttempts = 0, execution = 
     human_check_ids: [],
     route: "HOLD",
     proof_gate_outcome: "unable_to_verify",
+    proof_gate_claim: null,
     reason_codes: [...reasonCodes].sort(),
     authority_telemetry: { ...EMPTY_TELEMETRY },
     execution,
@@ -67,7 +70,8 @@ export async function runOfflineGraphQaFlow({ event, graphPlan, executeAssignmen
   if (!execution || execution.assignment_digest !== assignment.assignment_digest
     || execution.graph_binding?.graph_plan_digest !== graphPlan.plan_digest
     || canonicalJson(execution.executed_check_ids) !== canonicalJson(expectedChecks)
-    || !exactTelemetry(execution.authority_telemetry)) {
+    || !exactTelemetry(execution.authority_telemetry)
+    || !validateFinalProofGateClaim(execution.proof_gate_claim)) {
     return hold(event, graphPlan, ["EXECUTION_INTEGRITY_FAILED"], 1);
   }
 
@@ -91,6 +95,14 @@ export async function runOfflineGraphQaFlow({ event, graphPlan, executeAssignmen
     proofGateOutcome = "passed";
   }
 
+  const proofGateClaim = structuredClone(execution.proof_gate_claim);
+  if (proofGateOutcome === "unable_to_verify") {
+    proofGateClaim.verdict = "blocked";
+    proofGateClaim.target_state = "ready_for_qa";
+    proofGateClaim.reason_codes = [];
+  }
+  if (!validateFinalProofGateClaim(proofGateClaim)) return hold(event, graphPlan, ["EXECUTION_INTEGRITY_FAILED"], 1);
+
   return receipt({
     event_id: event.event_id,
     ticket_id: event.ticket_id,
@@ -102,6 +114,7 @@ export async function runOfflineGraphQaFlow({ event, graphPlan, executeAssignmen
     human_check_ids: assignment.human_checks.map(({ check_id }) => check_id),
     route,
     proof_gate_outcome: proofGateOutcome,
+    proof_gate_claim: proofGateClaim,
     reason_codes: [...reasonCodes].sort(),
     authority_telemetry: execution.authority_telemetry,
     execution,

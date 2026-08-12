@@ -108,9 +108,10 @@ test("the single graph task has one same-lease final worker 0.3.14 envelope prot
   const [node] = graph.nodes.filter((entry) => entry.type === "agent_task");
   assert.equal(node.key, "finalize_transition");
   const slots = Object.keys(node.config.output.artifacts);
-  assert.deepEqual(slots, ["finalization_report", "qah_verification"]);
+  assert.deepEqual(slots, ["finalization_report", "qah_verification", "verified_commit"]);
   assert.match(node.config.instruction, /prepare.*finalize.*complete/is);
-  const artifact_outputs = Object.fromEntries(slots.map((slot, index) => [`item.artifacts.${slot}`, ref(index + 20)]));
+  const rawSlots = slots.filter((slot) => slot !== "verified_commit");
+  const artifact_outputs = Object.fromEntries(rawSlots.map((slot, index) => [`item.artifacts.${slot}`, ref(index + 20)]));
   const typedFinalizerData = {
     transition_allowed: true,
     target_state: "ready_for_qa",
@@ -124,7 +125,7 @@ test("the single graph task has one same-lease final worker 0.3.14 envelope prot
   const completion = buildCanonicalCompletion({ task_id: "task", attempt: 1, request: { process: { step_key: node.key }, output_definition: node.config.output } }, { output: canonicalJson(raw), publishedArtifacts: [] });
   assert.equal(completion.result.item.key, node.key);
   assert.deepEqual(Object.keys(completion.result.item.data).sort(), Object.keys(node.config.output.data).sort());
-  assert.deepEqual(Object.keys(completion.result.artifact_outputs).sort(), slots.map((slot) => `item.artifacts.${slot}`).sort());
+  assert.deepEqual(Object.keys(completion.result.artifact_outputs).sort(), rawSlots.map((slot) => `item.artifacts.${slot}`).sort());
 });
 
 test("renderer preserves the live Start identity and atomically retargets its edge to the single canary", () => {

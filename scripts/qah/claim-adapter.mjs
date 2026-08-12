@@ -70,6 +70,10 @@ function validClaimData(value) {
   return false;
 }
 
+export function validateFinalProofGateClaim(value) {
+  return validClaimData(value);
+}
+
 function validateExpectedReport(value) {
   if (!exactKeys(value, REPORT_KEYS) || value.schema_version !== "nuanu.qa-finalization-result.v1"
     || !validClaimData(Object.fromEntries(DATA_KEYS.map((key) => [key, value[key]])))) {

@@ -46,6 +46,8 @@ test("Ready for QA noncritical event executes graph scope and proposes productio
   assert.deepEqual(receipt.executed_check_ids, ["qah.contracts", "profile.api", "profile.ui"]);
   assert.equal(receipt.route, "READY_FOR_PRODUCTION");
   assert.equal(receipt.proof_gate_outcome, "passed");
+  assert.equal(receipt.proof_gate_claim.verdict, "pass");
+  assert.equal(receipt.proof_gate_claim.target_state, "ready_for_production");
   assert.equal(receipt.graph_plan_digest, receipt.execution.graph_binding.graph_plan_digest);
   assert.deepEqual(receipt.authority_telemetry, {
     product_repository_reads: 0,
@@ -60,6 +62,10 @@ test("critical payment impact runs automation but routes to a human", async () =
   assert.equal(receipt.execution.automated_route, "READY_FOR_PRODUCTION");
   assert.equal(receipt.route, "HUMAN_REVIEW");
   assert.equal(receipt.proof_gate_outcome, "unable_to_verify");
+  assert.equal(receipt.proof_gate_claim.verdict, "blocked");
+  assert.equal(receipt.proof_gate_claim.target_state, "ready_for_qa");
+  assert.deepEqual(receipt.proof_gate_claim.reason_codes, []);
+  assert.equal(receipt.proof_gate_claim.checks.some(({ status }) => status === "failed"), false);
   assert.deepEqual(receipt.human_check_ids, ["payment.card-human-approval"]);
   assert.deepEqual(receipt.executed_check_ids, ["qah.contracts", "payment.api", "payment.domain"]);
 });
@@ -68,6 +74,8 @@ test("confirmed impacted check failure returns the ticket to work", async () => 
   const receipt = await runScenario("product-failure");
   assert.equal(receipt.route, "RETURN_TO_WORK");
   assert.equal(receipt.proof_gate_outcome, "not_passed");
+  assert.equal(receipt.proof_gate_claim.verdict, "fail");
+  assert.equal(receipt.proof_gate_claim.target_state, "in_progress");
   assert.equal(receipt.execution.automated_route, "RETURN_TO_IN_PROGRESS");
 });
 
@@ -103,6 +111,30 @@ test("one column event is executed once even when the executor fails", async () 
   assert.equal(receipt.execution_attempts, 1);
   assert.equal(receipt.route, "HOLD");
   assert.deepEqual(receipt.reason_codes, ["EXECUTION_FAILED"]);
+});
+
+test("executor output without an exact Proof Gate claim fails closed", async () => {
+  const event = ticketEvent();
+  const graphPlan = createSyntheticGraphPlan(event, "noncritical");
+  const receipt = await runOfflineGraphQaFlow({
+    event,
+    graphPlan,
+    executeAssignment: async (assignment) => ({
+      assignment_digest: assignment.assignment_digest,
+      graph_binding: { graph_plan_digest: graphPlan.plan_digest },
+      executed_check_ids: assignment.automated_checks.map(({ check_id }) => check_id),
+      automated_route: "READY_FOR_PRODUCTION",
+      authority_telemetry: {
+        product_repository_reads: 0,
+        git_commands: 0,
+        product_network_requests: 0,
+        credential_reads: 0,
+      },
+    }),
+  });
+  assert.equal(receipt.route, "HOLD");
+  assert.equal(receipt.proof_gate_claim, null);
+  assert.deepEqual(receipt.reason_codes, ["EXECUTION_INTEGRITY_FAILED"]);
 });
 
 export { runScenario, ticketEvent };
