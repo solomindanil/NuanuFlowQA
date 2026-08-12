@@ -220,6 +220,28 @@ test("Ready for QA UI canary executes the graph plan and publishes a human-revie
     "item.artifacts.qah_verification": VERIFICATION_REF,
     "item.artifacts.finalization_report": FINALIZATION_REF,
   });
+
+  const noRepositoryCompletion = await runUiGraphCanaryPhase("complete-no-repository", {
+    phase: "complete-no-repository",
+    artifact_refs: {
+      qah_verification: VERIFICATION_REF,
+      finalization_report: FINALIZATION_REF,
+    },
+  }, value);
+  assert.deepEqual(noRepositoryCompletion.item.data, {
+    schema_version: "nuanu.qah-no-repository-result.v1",
+    transition_allowed: true,
+    target_state: "ready_for_qa",
+    reason_codes: [],
+    verdict: "blocked",
+    checks: report.claim.checks,
+    harness_head_sha: report.claim.tested_head_sha,
+  });
+  assert.equal(Object.hasOwn(noRepositoryCompletion.item.data, "kind"), false);
+  assert.equal(Object.hasOwn(noRepositoryCompletion.item.data, "tested_head_sha"), false);
+  assert.deepEqual(noRepositoryCompletion.artifact_outputs, completed.artifact_outputs);
+  assert.equal(report.claim.kind, "qa");
+  assert.equal(report.claim.tested_head_sha, verification.receipt.proof_gate_claim.tested_head_sha);
 });
 
 test("executor failure still reaches stock Proof Gate as truthful unable-to-verify evidence", async (t) => {

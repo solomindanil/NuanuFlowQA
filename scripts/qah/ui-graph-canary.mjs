@@ -326,9 +326,22 @@ async function finalize(input, context) {
   return manifest("finalization_prepared", "finalization_report", FINALIZATION_NAME, file);
 }
 
-async function complete(input, context) {
+function noRepositoryProcessData(claim) {
+  return {
+    schema_version: "nuanu.qah-no-repository-result.v1",
+    transition_allowed: claim.transition_allowed,
+    target_state: claim.target_state,
+    reason_codes: structuredClone(claim.reason_codes),
+    verdict: claim.verdict,
+    checks: structuredClone(claim.checks),
+    harness_head_sha: claim.tested_head_sha,
+  };
+}
+
+async function complete(input, context, noRepository = false) {
   exact(input, ["phase", "artifact_refs"], "complete input");
-  if (input.phase !== "complete") throw new Error("complete phase is invalid");
+  const expectedPhase = noRepository ? "complete-no-repository" : "complete";
+  if (input.phase !== expectedPhase) throw new Error("complete phase is invalid");
   exact(input.artifact_refs, ["qah_verification", "finalization_report"], "complete artifact_refs");
   const verificationRef = artifactRef(input.artifact_refs.qah_verification, "document", "output", "qah_verification ref");
   const finalizationRef = artifactRef(input.artifact_refs.finalization_report, "document", "output", "finalization_report ref");
@@ -341,7 +354,7 @@ async function complete(input, context) {
     item: {
       key: "finalize_transition",
       description: report.route === "READY_FOR_PRODUCTION" ? "Graph-bound QAH proposes production" : report.route === "RETURN_TO_WORK" ? "Graph-bound QAH returns ticket to work" : "Graph-bound QAH requires human review",
-      data: report.claim,
+      data: noRepository ? noRepositoryProcessData(report.claim) : report.claim,
       artifacts: {},
     },
     artifact_outputs: {
@@ -352,7 +365,7 @@ async function complete(input, context) {
 }
 
 export async function runUiGraphCanaryPhase(phase, input, options = {}) {
-  if (!["prepare", "finalize", "complete"].includes(phase)) throw new Error("unknown UI graph canary phase");
+  if (!["prepare", "finalize", "complete", "complete-no-repository"].includes(phase)) throw new Error("unknown UI graph canary phase");
   const taskRoot = options.taskRoot ?? process.env.NUANU_TASK_DIR;
   const outputDir = await secureOutputDirectory(taskRoot, options.outputDir ?? join(taskRoot, "qah", "ui-graph-canary"));
   if (phase === "prepare" && (await readdir(outputDir)).length !== 0) throw new Error("prepare output directory must be empty");
@@ -365,7 +378,7 @@ export async function runUiGraphCanaryPhase(phase, input, options = {}) {
   };
   if (phase === "prepare") return prepare(input, context);
   if (phase === "finalize") return finalize(input, context);
-  return complete(input, context);
+  return complete(input, context, phase === "complete-no-repository");
 }
 
 async function readInput(path, taskRoot) {
@@ -383,8 +396,8 @@ async function readInput(path, taskRoot) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  if (argv.length !== 5 || !["prepare", "finalize", "complete"].includes(argv[0]) || argv[1] !== "--input" || argv[3] !== "--output-dir") {
-    throw new Error("usage: ui-graph-canary.mjs <prepare|finalize|complete> --input <absolute-task-file> --output-dir <absolute-task-dir>");
+  if (argv.length !== 5 || !["prepare", "finalize", "complete", "complete-no-repository"].includes(argv[0]) || argv[1] !== "--input" || argv[3] !== "--output-dir") {
+    throw new Error("usage: ui-graph-canary.mjs <prepare|finalize|complete|complete-no-repository> --input <absolute-task-file> --output-dir <absolute-task-dir>");
   }
   const taskRoot = process.env.NUANU_TASK_DIR;
   const input = await readInput(argv[2], taskRoot);
