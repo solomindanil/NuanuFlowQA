@@ -13,6 +13,7 @@ import { createSyntheticGraphPlan } from "./graph-plan.mjs";
 import { FULL_QAH_FINALIZATION_OUTPUT_DEFINITION, runLocalQaHarness } from "./local-harness.mjs";
 import { createOfflineHarnessExecutor, runOfflineGraphQaFlow } from "./offline-graph-flow.mjs";
 import { loadWorkerCompletionValidator } from "./worker-contract.mjs";
+import { runOnyxPublicUiProbe } from "./onyx-browser-probe.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TICKET = /^[A-Z][A-Z0-9]{1,15}-[1-9][0-9]{0,9}$/;
@@ -76,6 +77,16 @@ function knowledgeText(snapshot) {
 export function deriveUiGraphCanaryScenario(snapshotValue) {
   const snapshot = validateSnapshot(snapshotValue);
   const text = knowledgeText(snapshot);
+  const targetDirective = /qah target:\s*([^\s<]+)/iu.exec([snapshot.title, snapshot.description, ...snapshot.labels].join("\n"));
+  if (targetDirective) {
+    if (targetDirective[1] !== "https://onyxcampus.com/") throw new Error("QAH target is not in the code-owned allowlist");
+    return {
+      scenario: "noncritical",
+      change_hints: ["profile-ui"],
+      matched_knowledge_rules: ["onyx-public-ui"],
+      browser_target: "https://onyxcampus.com/",
+    };
+  }
   if (/\[qah:product-failure\]|qah-product-failure/u.test(text)) {
     return { scenario: "product-failure", change_hints: ["profile-api"], matched_knowledge_rules: ["confirmed-product-failure"] };
   }
@@ -184,7 +195,7 @@ async function readQaProjectKey() {
   return validateProfile(YAML.parse(source)).project_key;
 }
 
-async function defaultExecute(event, graphPlan, scenario, testedHeadSha) {
+async function defaultExecute(event, graphPlan, scenario, testedHeadSha, browserProbe = null) {
   const { buildCanonicalCompletion } = await loadWorkerCompletionValidator();
   const executeAssignment = createOfflineHarnessExecutor({
     runHarness: runLocalQaHarness,
@@ -193,7 +204,27 @@ async function defaultExecute(event, graphPlan, scenario, testedHeadSha) {
     mode: scenario === "product-failure" ? "product-failure" : "pass",
     testedHeadSha,
   });
-  return runOfflineGraphQaFlow({ event, graphPlan, executeAssignment });
+  return runOfflineGraphQaFlow({
+    event,
+    graphPlan,
+    executeAssignment: async (...args) => {
+      const execution = await executeAssignment(...args);
+      if (!browserProbe) return execution;
+      if (browserProbe.status !== "passed" && browserProbe.status !== "failed") throw new Error("browser probe status is invalid");
+      execution.browser_probe = structuredClone(browserProbe);
+      execution.authority_telemetry.product_network_requests = browserProbe.product_network_requests;
+      if (browserProbe.status === "failed") {
+        const uiCheck = execution.proof_gate_claim.checks.find(({ name }) => name === "universal_qah_ui");
+        if (!uiCheck) throw new Error("Onyx browser probe lacks a UI branch claim");
+        uiCheck.status = "failed";
+        execution.automated_route = "RETURN_TO_IN_PROGRESS";
+        execution.proof_gate_claim.verdict = "fail";
+        execution.proof_gate_claim.target_state = "in_progress";
+      }
+      execution.evidence_digest = sha256({ previous: execution.evidence_digest, browser_probe: browserProbe });
+      return execution;
+    },
+  });
 }
 
 async function prepare(input, context) {
@@ -205,7 +236,21 @@ async function prepare(input, context) {
   ]);
   const event = ticketEvent(snapshot, classification, qaProjectKey);
   const graphPlan = createSyntheticGraphPlan(event, classification.scenario);
-  const receipt = await context.execute(event, graphPlan, classification.scenario, testedHeadSha);
+  let browserProbe = null;
+  if (classification.browser_target) {
+    try {
+      browserProbe = await context.runBrowserProbe({ targetUrl: classification.browser_target });
+    } catch {
+      browserProbe = {
+        schema_version: "nuanu.qah-onyx-browser-probe.v1",
+        status: "blocked",
+        target_url: classification.browser_target,
+        failure_codes: ["BROWSER_RUNTIME_UNAVAILABLE"],
+        product_network_requests: 0,
+      };
+    }
+  }
+  const receipt = await context.execute(event, graphPlan, classification.scenario, testedHeadSha, browserProbe);
   if (!receipt || !["READY_FOR_PRODUCTION", "HUMAN_REVIEW", "RETURN_TO_WORK", "HOLD"].includes(receipt.route)
     || (receipt.route !== "HOLD" && !receipt.proof_gate_claim)) {
     throw new Error(`graph QAH did not produce an admissible claim: ${receipt?.reason_codes?.join(",") ?? "unknown"}`);
@@ -218,6 +263,7 @@ async function prepare(input, context) {
     tested_head_sha: testedHeadSha,
     graph_scenario: classification.scenario,
     matched_knowledge_rules: classification.matched_knowledge_rules,
+    browser_probe: browserProbe,
     event,
     graph_plan: graphPlan,
     receipt,
@@ -315,6 +361,7 @@ export async function runUiGraphCanaryPhase(phase, input, options = {}) {
     execute: options.execute ?? defaultExecute,
     readQaProjectKey: options.readQaProjectKey ?? readQaProjectKey,
     readRepositoryHead: options.readRepositoryHead ?? readRepositoryHead,
+    runBrowserProbe: options.runBrowserProbe ?? runOnyxPublicUiProbe,
   };
   if (phase === "prepare") return prepare(input, context);
   if (phase === "finalize") return finalize(input, context);

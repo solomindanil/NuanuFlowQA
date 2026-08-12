@@ -116,6 +116,7 @@ test("single Agent Task consumes only the platform-owned Column Start and uses n
   assert.match(instructions.finalize_transition, /node scripts\/qah\/ui-graph-canary\.mjs/);
   assert.match(instructions.finalize_transition, /source_snapshot/);
   assert.match(instructions.finalize_transition, /Product Graph|граф/i);
+  assert.match(instructions.finalize_transition, /browser/i);
   assert.doesNotMatch(instructions.finalize_transition, /NUANU_CODEX_CWD|absolute runner|абсолютн(?:ый|ого) runner/i);
   assert.match(instructions.finalize_transition, /prepare.*finalize.*complete/is);
   assert.match(instructions.finalize_transition, /не вызывай get_artifact|do not call get_artifact/i);
@@ -123,6 +124,9 @@ test("single Agent Task consumes only the platform-owned Column Start and uses n
   const serialized = JSON.stringify(graph);
   assert.doesNotMatch(serialized, /input_bindings|\$\{steps|process_context|backward_lookup/);
   assert.equal(nodes.get("finalize_transition").type, "agent_task");
+  assert.deepEqual(nodes.get("finalize_transition").config.runtime_hints, {
+    required_worker_capabilities: ["browser_qa_v1"],
+  });
 });
 
 test("uses closed Process v1 outputs and worker 0.3.14 Artifact contracts", () => {

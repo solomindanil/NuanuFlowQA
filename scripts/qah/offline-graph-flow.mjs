@@ -10,7 +10,9 @@ const EMPTY_TELEMETRY = Object.freeze({
 });
 
 function exactTelemetry(value) {
-  return value && canonicalJson(value) === canonicalJson(EMPTY_TELEMETRY);
+  return value && Number.isSafeInteger(value.product_network_requests) && value.product_network_requests >= 0
+    && value.product_repository_reads === 0 && value.git_commands === 0 && value.credential_reads === 0
+    && canonicalJson(Object.keys(value).sort()) === canonicalJson(Object.keys(EMPTY_TELEMETRY).sort());
 }
 
 function receipt(fields) {

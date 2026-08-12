@@ -80,6 +80,81 @@ test("ordinary UI and API changes remain machine-analyzable", () => {
   });
 });
 
+test("an exact Onyx target directive selects the code-owned public browser profile", () => {
+  const snapshot = {
+    ...CRITICAL_SNAPSHOT,
+    title: "Verify Onyx landing-page navigation",
+    description: "QAH target: https://onyxcampus.com/\nCheck the public UI without submitting the application form.",
+    labels: ["onyx", "public-ui"],
+  };
+  assert.deepEqual(deriveUiGraphCanaryScenario(snapshot), {
+    scenario: "noncritical",
+    change_hints: ["profile-ui"],
+    matched_knowledge_rules: ["onyx-public-ui"],
+    browser_target: "https://onyxcampus.com/",
+  });
+});
+
+test("real Onyx browser evidence is bound into verification and a product failure returns the ticket to work", async (t) => {
+  const value = await fixture(t);
+  const snapshot = {
+    ...CRITICAL_SNAPSHOT,
+    identifier: "PAYD-38",
+    title: "Verify Onyx public UI",
+    description: "QAH target: https://onyxcampus.com/",
+    labels: ["onyx", "public-ui"],
+  };
+  const browserProbe = {
+    schema_version: "nuanu.qah-onyx-browser-probe.v1",
+    status: "failed",
+    target_url: "https://onyxcampus.com/",
+    checked_at: "2026-08-12T00:00:00.000Z",
+    pages: [],
+    form_count: 1,
+    apply_cta_count: 9,
+    ignored_media_aborts: 0,
+    product_network_requests: 3,
+    failure_codes: ["HTTP_500"],
+  };
+  await runUiGraphCanaryPhase("prepare", prepareInput(snapshot), {
+    ...value,
+    readRepositoryHead: async () => "d".repeat(40),
+    runBrowserProbe: async () => browserProbe,
+  });
+  const verification = JSON.parse(await readFile(join(value.outputDir, "qah-verification.json"), "utf8"));
+  assert.deepEqual(verification.browser_probe, browserProbe);
+  assert.equal(verification.receipt.route, "RETURN_TO_WORK");
+  assert.equal(verification.receipt.proof_gate_outcome, "not_passed");
+  assert.equal(verification.receipt.proof_gate_claim.verdict, "fail");
+  assert.equal(verification.receipt.authority_telemetry.product_network_requests, 3);
+});
+
+test("an unavailable browser runtime produces bounded unable-to-verify evidence instead of a false product failure", async (t) => {
+  const value = await fixture(t);
+  const snapshot = {
+    ...CRITICAL_SNAPSHOT,
+    identifier: "PAYD-39",
+    title: "Verify Onyx public UI",
+    description: "QAH target: https://onyxcampus.com/",
+    labels: ["onyx", "public-ui"],
+  };
+  await runUiGraphCanaryPhase("prepare", prepareInput(snapshot), {
+    ...value,
+    readRepositoryHead: async () => "e".repeat(40),
+    runBrowserProbe: async () => { throw new Error("sensitive host detail"); },
+  });
+  const verification = JSON.parse(await readFile(join(value.outputDir, "qah-verification.json"), "utf8"));
+  assert.deepEqual(verification.browser_probe, {
+    schema_version: "nuanu.qah-onyx-browser-probe.v1",
+    status: "blocked",
+    target_url: "https://onyxcampus.com/",
+    failure_codes: ["BROWSER_RUNTIME_UNAVAILABLE"],
+    product_network_requests: 0,
+  });
+  assert.equal(verification.receipt.route, "HOLD");
+  assert.deepEqual(verification.receipt.reason_codes, ["EXECUTION_FAILED"]);
+});
+
 test("Ready for QA UI canary executes the graph plan and publishes a human-review Proof Gate claim", async (t) => {
   const value = await fixture(t);
   const testedHeadSha = "b".repeat(40);

@@ -17,7 +17,7 @@
     "verify:paydemo": "npm run build:paydemo && npm run test:paydemo:harness && npm run test:paydemo:provenance && npm run test:paydemo:identity && npm run test:paydemo && npm run test:paydemo:bugs",
     "test:qah:contracts": "node --test tests/qah/contracts.test.mjs",
     "test:qah": "node --test tests/qah/*.test.mjs",
-    "test:qah:proof-gate": "node --test tests/qah/release-policy.test.mjs tests/qah/decision.test.mjs tests/qah/finalize.test.mjs tests/qah/claim-adapter.test.mjs tests/qah/task-runtime.test.mjs tests/qah/e2e.test.mjs tests/qah/process-blueprint.test.mjs tests/qah/proof-gate-canary.test.mjs tests/qah/ui-graph-canary.test.mjs tests/qah/preflight-report.test.mjs",
+    "test:qah:proof-gate": "node --test tests/qah/release-policy.test.mjs tests/qah/decision.test.mjs tests/qah/finalize.test.mjs tests/qah/claim-adapter.test.mjs tests/qah/task-runtime.test.mjs tests/qah/e2e.test.mjs tests/qah/process-blueprint.test.mjs tests/qah/proof-gate-canary.test.mjs tests/qah/ui-graph-canary.test.mjs tests/qah/onyx-browser-probe.test.mjs tests/qah/preflight-report.test.mjs",
     "qah:preflight-report": "node scripts/qah/preflight-report.mjs",
     "demo:qah:graph-offline": "node scripts/qah/offline-graph-demo.mjs",
     "verify:qah:proof-gate": "npm run test:qah:proof-gate && npm run typecheck",
