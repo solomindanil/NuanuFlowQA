@@ -80,7 +80,11 @@ test("ordinary UI and API changes remain machine-analyzable", () => {
 
 test("Ready for QA UI canary executes the graph plan and publishes a human-review Proof Gate claim", async (t) => {
   const value = await fixture(t);
-  const prepared = await runUiGraphCanaryPhase("prepare", prepareInput(), value);
+  const testedHeadSha = "b".repeat(40);
+  const prepared = await runUiGraphCanaryPhase("prepare", prepareInput(), {
+    ...value,
+    readRepositoryHead: async () => testedHeadSha,
+  });
   assert.equal(prepared.phase, "prepared");
   assert.deepEqual(prepared.files.map(({ slot, media_type }) => ({ slot, media_type })), [
     { slot: "qah_verification", media_type: "application/json" },
@@ -96,6 +100,7 @@ test("Ready for QA UI canary executes the graph plan and publishes a human-revie
   assert.equal(verification.receipt.route, "HUMAN_REVIEW");
   assert.equal(verification.receipt.proof_gate_outcome, "unable_to_verify");
   assert.equal(verification.receipt.criticality, "HUMAN_REQUIRED");
+  assert.equal(verification.receipt.proof_gate_claim.tested_head_sha, testedHeadSha);
   assert.deepEqual(verification.receipt.human_check_ids, ["payment.card-human-approval"]);
   assert.deepEqual(verification.receipt.executed_check_ids, ["qah.contracts", "payment.api", "payment.domain"]);
   assert.deepEqual(verification.receipt.authority_telemetry, {

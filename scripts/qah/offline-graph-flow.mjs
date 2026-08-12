@@ -121,9 +121,10 @@ export async function runOfflineGraphQaFlow({ event, graphPlan, executeAssignmen
   });
 }
 
-export function createOfflineHarnessExecutor({ runHarness, buildCanonicalCompletion, finalizationOutputDefinition, mode = "pass" }) {
+export function createOfflineHarnessExecutor({ runHarness, buildCanonicalCompletion, finalizationOutputDefinition, mode = "pass", testedHeadSha = null }) {
   if (typeof runHarness !== "function" || typeof buildCanonicalCompletion !== "function" || !finalizationOutputDefinition) throw new Error("offline harness dependencies are required");
   if (!["pass", "product-failure"].includes(mode)) throw new Error("offline harness mode is invalid");
+  if (testedHeadSha !== null && !/^[0-9a-f]{40}$/u.test(testedHeadSha)) throw new Error("tested head SHA is invalid");
   return async function executeAssignment(assignment, { event, graphPlan }) {
     const result = await runHarness({
       fixture: "mixed",
@@ -144,13 +145,15 @@ export function createOfflineHarnessExecutor({ runHarness, buildCanonicalComplet
         target_state: result.finalization_flow_step_result.item.data.target_state,
       },
     };
+    const proofGateClaim = structuredClone(result.finalization_flow_step_result.item.data);
+    if (testedHeadSha !== null) proofGateClaim.tested_head_sha = testedHeadSha;
     return {
       schema_version: "nuanu.qa-offline-harness-execution.v1",
       assignment_digest: assignment.assignment_digest,
       graph_binding: graphBinding,
       executed_check_ids: assignment.automated_checks.map(({ check_id }) => check_id),
       automated_route: result.decision.route,
-      proof_gate_claim: result.finalization_flow_step_result.item.data,
+      proof_gate_claim: proofGateClaim,
       evidence_digest: sha256(evidenceSummary),
       authority_telemetry: { ...EMPTY_TELEMETRY },
     };

@@ -3,6 +3,8 @@
 import { lstat, mkdir, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { canonicalJson, sha256 } from "./canonical.mjs";
 import { createSyntheticGraphPlan } from "./graph-plan.mjs";
@@ -20,6 +22,7 @@ const VERIFICATION_NAME = "qah-verification.json";
 const FINALIZATION_NAME = "finalization.json";
 const REF_KEYS = Object.freeze(["artifact_id", "version_id", "kind", "role"]);
 const SNAPSHOT_KEYS = Object.freeze(["issue_id", "identifier", "title", "description", "project_key", "state_name", "labels", "updated_at"]);
+const execFileAsync = promisify(execFile);
 
 function object(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -162,13 +165,25 @@ function manifest(phase, slot, name, file) {
   };
 }
 
-async function defaultExecute(event, graphPlan, scenario) {
+async function readRepositoryHead() {
+  const { stdout } = await execFileAsync("/usr/bin/git", ["-C", process.cwd(), "rev-parse", "--verify", "HEAD^{commit}"], {
+    env: { PATH: "/usr/bin:/bin" },
+    encoding: "utf8",
+    maxBuffer: 1024,
+  });
+  const head = stdout.trim();
+  if (!/^[0-9a-f]{40}$/u.test(head)) throw new Error("QA repository HEAD is invalid");
+  return head;
+}
+
+async function defaultExecute(event, graphPlan, scenario, testedHeadSha) {
   const { buildCanonicalCompletion } = await loadWorkerCompletionValidator();
   const executeAssignment = createOfflineHarnessExecutor({
     runHarness: runLocalQaHarness,
     buildCanonicalCompletion,
     finalizationOutputDefinition: structuredClone(FULL_QAH_FINALIZATION_OUTPUT_DEFINITION),
     mode: scenario === "product-failure" ? "product-failure" : "pass",
+    testedHeadSha,
   });
   return runOfflineGraphQaFlow({ event, graphPlan, executeAssignment });
 }
@@ -178,7 +193,8 @@ async function prepare(input, context) {
   const classification = deriveUiGraphCanaryScenario(snapshot);
   const event = ticketEvent(snapshot, classification);
   const graphPlan = createSyntheticGraphPlan(event, classification.scenario);
-  const receipt = await context.execute(event, graphPlan, classification.scenario);
+  const testedHeadSha = await context.readRepositoryHead();
+  const receipt = await context.execute(event, graphPlan, classification.scenario, testedHeadSha);
   if (!receipt?.proof_gate_claim || !["READY_FOR_PRODUCTION", "HUMAN_REVIEW", "RETURN_TO_WORK"].includes(receipt.route)) {
     throw new Error(`graph QAH did not produce an admissible claim: ${receipt?.reason_codes?.join(",") ?? "unknown"}`);
   }
@@ -267,7 +283,11 @@ export async function runUiGraphCanaryPhase(phase, input, options = {}) {
   const taskRoot = options.taskRoot ?? process.env.NUANU_TASK_DIR;
   const outputDir = await secureOutputDirectory(taskRoot, options.outputDir ?? join(taskRoot, "qah", "ui-graph-canary"));
   if (phase === "prepare" && (await readdir(outputDir)).length !== 0) throw new Error("prepare output directory must be empty");
-  const context = { outputDir, execute: options.execute ?? defaultExecute };
+  const context = {
+    outputDir,
+    execute: options.execute ?? defaultExecute,
+    readRepositoryHead: options.readRepositoryHead ?? readRepositoryHead,
+  };
   if (phase === "prepare") return prepare(input, context);
   if (phase === "finalize") return finalize(input, context);
   return complete(input, context);
